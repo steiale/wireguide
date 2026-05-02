@@ -20,69 +20,70 @@
    Values match macOS dark appearance (System Settings → Appearance → Dark)
    ============================================================ */
 :root {
-    /* --- Surface (macOS dark window chrome) --- */
-    --bg-primary:   #1E1E1E;                          /* window background */
-    --bg-secondary: #2A2A2E;                          /* sidebar, grouped content */
-    --bg-card:      #323236;                          /* raised card / popover */
-    --bg-input:     #1C1C1E;                          /* text field bg */
-    --bg-hover:     rgba(255, 255, 255, 0.08);        /* hover overlay */
-    --bg-active:    rgba(255, 255, 255, 0.12);        /* pressed state */
-    --bg-selected:  rgba(10, 132, 255, 0.22);         /* accent-tinted row */
-    --border:       rgba(84, 84, 88, 0.65);           /* AppKit separatorColor */
-    --border-strong: rgba(84, 84, 88, 0.72);          /* input control border */
+    /* --- Surface (Jarvis deep navy) --- */
+    --bg-primary:   #001429;
+    --bg-secondary: #001d36;
+    --bg-card:      #0d2b47;
+    --bg-input:     #000f20;
+    --bg-hover:     rgba(128, 174, 154, 0.08);
+    --bg-active:    rgba(128, 174, 154, 0.14);
+    --bg-selected:  rgba(128, 174, 154, 0.20);
+    --border:       rgba(181, 209, 174, 0.18);
+    --border-strong: rgba(181, 209, 174, 0.32);
 
-    /* --- Text (alphas over white, matches NSColor.labelColor dynamic) --- */
-    --text-primary:   rgba(255, 255, 255, 0.90);      /* labelColor */
-    --text-secondary: rgba(255, 255, 255, 0.55);      /* secondaryLabelColor */
-    --text-muted:     rgba(255, 255, 255, 0.40);      /* tertiaryLabelColor */
-    --text-inverse:   #FFFFFF;                        /* on accent buttons */
+    /* --- Text (mint over navy) --- */
+    --text-primary:   #b5d1ae;
+    --text-secondary: rgba(181, 209, 174, 0.65);
+    --text-muted:     rgba(181, 209, 174, 0.38);
+    --text-inverse:   #001429;
 
-    /* --- Apple system accent colors (dark variants) --- */
-    --accent:      #0A84FF;   /* systemBlue dark */
-    --blue:        #0A84FF;   /* alias */
-    --green:       #30D158;   /* systemGreen dark — connected state */
-    --yellow:      #FFD60A;   /* systemYellow dark — connecting state */
-    --red:         #FF453A;   /* systemRed dark — errors, disconnect */
-    --orange:      #FF9F0A;   /* systemOrange dark */
-    --purple:      #BF5AF2;   /* systemPurple dark */
+    /* --- Accent colors --- */
+    --accent:  #80ae9a;
+    --blue:    #80ae9a;
+    --green:   #80ae9a;
+    --yellow:  #e8c547;
+    --red:     #ef5b5b;
+    --orange:  #e0873a;
+    --purple:  #a78fd0;
 
-    /* --- Semantic state tints (accent + low alpha) --- */
-    --green-tint:  rgba(48, 209, 88, 0.18);
-    --yellow-tint: rgba(255, 214, 10, 0.18);
-    --blue-tint:   rgba(10, 132, 255, 0.22);
+    /* --- Tints --- */
+    --green-tint:   rgba(128, 174, 154, 0.18);
+    --yellow-tint:  rgba(232, 197, 71, 0.18);
+    --blue-tint:    rgba(128, 174, 154, 0.18);
+    --orange-tint:  rgba(224, 135, 58, 0.15);
 
-    --error-bg:    rgba(255, 69, 58, 0.18);
-    --error-text:  #FF6961;                           /* readable on error-bg */
+    --error-bg:   rgba(239, 91, 91, 0.15);
+    --error-text: #f08888;
 
     /* --- Modals, overlays, shadows --- */
-    --overlay-bg:       rgba(0, 0, 0, 0.55);
-    --drop-overlay-bg:  rgba(10, 132, 255, 0.24);
-    --shadow-xs:        0 0 0 0.5px rgba(255, 255, 255, 0.08),
-                        0 1px 1px rgba(0, 0, 0, 0.40);
-    --shadow-sm:        0 1px 2px rgba(0, 0, 0, 0.30),
-                        0 2px 6px rgba(0, 0, 0, 0.40);
-    --shadow-md:        0 4px 12px rgba(0, 0, 0, 0.40),
-                        0 16px 48px rgba(0, 0, 0, 0.30);
-    --shadow-lg:        0 20px 60px rgba(0, 0, 0, 0.55);
+    --overlay-bg:       rgba(0, 10, 25, 0.72);
+    --drop-overlay-bg:  rgba(128, 174, 154, 0.20);
+    --shadow-xs: 0 0 0 0.5px rgba(181, 209, 174, 0.06),
+                 0 1px 1px rgba(0, 0, 0, 0.50);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40),
+                 0 2px 6px rgba(0, 0, 0, 0.50);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.50),
+                 0 16px 48px rgba(0, 0, 0, 0.40);
+    --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.70);
 
-    /* --- Code editor palette --- */
-    --editor-bg:         #1E1E1E;
-    --editor-gutter-bg:  #252528;
-    --editor-border:     rgba(84, 84, 88, 0.65);
+    /* --- Code editor --- */
+    --editor-bg:        #000f20;
+    --editor-gutter-bg: #001429;
+    --editor-border:    rgba(181, 209, 174, 0.18);
 
     /* --- Stats / graph --- */
-    --graph-bg:      #252528;
-    --stats-rx:      #30D158;
-    --stats-tx:      #0A84FF;
-    --stats-rx-fill: rgba(48, 209, 88, 0.22);
-    --stats-tx-fill: rgba(10, 132, 255, 0.22);
+    --graph-bg:      #001d36;
+    --stats-rx:      #80ae9a;
+    --stats-tx:      #5ab4c9;
+    --stats-rx-fill: rgba(128, 174, 154, 0.20);
+    --stats-tx-fill: rgba(90, 180, 201, 0.20);
 
     /* --- Log viewer --- */
-    --log-bg:     #1C1C1E;
-    --log-border: rgba(84, 84, 88, 0.40);
+    --log-bg:     #000f20;
+    --log-border: rgba(181, 209, 174, 0.15);
 
-    /* --- Conflict / script warning item --- */
-    --warn-item-bg: rgba(255, 255, 255, 0.04);
+    /* --- Conflict warning item --- */
+    --warn-item-bg: rgba(128, 174, 154, 0.04);
 
     /* ============ Non-color tokens (shared across themes) ============ */
 
@@ -124,6 +125,8 @@
     --radius-sm: 6px;
     --radius-md: 8px;
     --radius-lg: 10px;   /* matches NSWindow corner radius */
+    --radius-btn:      9999px;   /* pill-shaped buttons */
+    --gradient-accent: linear-gradient(135deg, #80ae9a 0%, #568b87 100%);
 
     /* Motion timing + duration */
     --ease-out:    cubic-bezier(0.2, 0, 0.1, 1);
@@ -154,60 +157,63 @@
    Values match macOS light appearance
    ============================================================ */
 [data-theme="light"] {
-    --bg-primary:   #FFFFFF;
-    --bg-secondary: #F5F5F7;
-    --bg-card:      #FFFFFF;
-    --bg-input:     #FFFFFF;
-    --bg-hover:     rgba(0, 0, 0, 0.06);
-    --bg-active:    rgba(0, 0, 0, 0.10);
-    --bg-selected:  rgba(0, 122, 255, 0.12);
-    --border:       rgba(60, 60, 67, 0.29);           /* AppKit separator light */
-    --border-strong: rgba(60, 60, 67, 0.50);          /* input control border */
+    --bg-primary:   #f0f7f5;
+    --bg-secondary: #e2eeea;
+    --bg-card:      #ffffff;
+    --bg-input:     #ffffff;
+    --bg-hover:     rgba(45, 122, 104, 0.07);
+    --bg-active:    rgba(45, 122, 104, 0.12);
+    --bg-selected:  rgba(45, 122, 104, 0.13);
+    --border:       rgba(0, 60, 50, 0.18);
+    --border-strong: rgba(0, 60, 50, 0.32);
 
-    --text-primary:   rgba(0, 0, 0, 0.88);
-    --text-secondary: rgba(0, 0, 0, 0.56);
-    --text-muted:     rgba(0, 0, 0, 0.40);
-    --text-inverse:   #FFFFFF;
+    --text-primary:   rgba(0, 30, 40, 0.88);
+    --text-secondary: rgba(0, 30, 40, 0.56);
+    --text-muted:     rgba(0, 30, 40, 0.38);
+    --text-inverse:   #ffffff;
 
-    --accent:      #007AFF;   /* systemBlue light */
-    --blue:        #007AFF;
-    --green:       #34C759;   /* systemGreen light */
-    --yellow:      #E5A000;   /* amber — darker than systemYellow for light-bg visibility */
-    --red:         #FF3B30;   /* systemRed light */
-    --orange:      #FF9500;
-    --purple:      #AF52DE;
+    --accent:  #2d7a68;
+    --blue:    #2d7a68;
+    --green:   #2d7a68;
+    --yellow:  #a07000;
+    --red:     #d03025;
+    --orange:  #b85500;
+    --purple:  #6b3fa0;
 
-    --green-tint:  rgba(52, 199, 89, 0.14);
-    --yellow-tint: rgba(229, 160, 0, 0.18);
-    --blue-tint:   rgba(0, 122, 255, 0.14);
+    --green-tint:   rgba(45, 122, 104, 0.12);
+    --yellow-tint:  rgba(160, 112, 0, 0.14);
+    --blue-tint:    rgba(45, 122, 104, 0.12);
+    --orange-tint:  rgba(184, 85, 0, 0.12);
 
-    --error-bg:    rgba(255, 59, 48, 0.12);
-    --error-text:  #B3261E;   /* darker red for 4.5:1 on error-bg */
+    --error-bg:   rgba(208, 48, 37, 0.10);
+    --error-text: #9b1c1c;
 
-    --overlay-bg:       rgba(0, 0, 0, 0.35);
-    --drop-overlay-bg:  rgba(0, 122, 255, 0.18);
-    --shadow-xs:        0 0 0 0.5px rgba(0, 0, 0, 0.08),
-                        0 1px 1px rgba(0, 0, 0, 0.04);
-    --shadow-sm:        0 1px 2px rgba(0, 0, 0, 0.06),
-                        0 2px 6px rgba(0, 0, 0, 0.08);
-    --shadow-md:        0 4px 12px rgba(0, 0, 0, 0.12),
-                        0 16px 48px rgba(0, 0, 0, 0.08);
-    --shadow-lg:        0 20px 60px rgba(0, 0, 0, 0.15);
+    --overlay-bg:       rgba(0, 20, 30, 0.40);
+    --drop-overlay-bg:  rgba(45, 122, 104, 0.18);
+    --shadow-xs: 0 0 0 0.5px rgba(0, 0, 0, 0.06),
+                 0 1px 1px rgba(0, 0, 0, 0.04);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08),
+                 0 2px 6px rgba(0, 0, 0, 0.10);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12),
+                 0 16px 48px rgba(0, 0, 0, 0.08);
+    --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.18);
 
-    --editor-bg:        #FFFFFF;
-    --editor-gutter-bg: #F5F5F7;
-    --editor-border:    rgba(60, 60, 67, 0.29);
+    --editor-bg:        #ffffff;
+    --editor-gutter-bg: #f0f7f5;
+    --editor-border:    rgba(0, 60, 50, 0.18);
 
-    --graph-bg:      #F5F5F7;
-    --stats-rx:      #34C759;
-    --stats-tx:      #007AFF;
-    --stats-rx-fill: rgba(52, 199, 89, 0.18);
-    --stats-tx-fill: rgba(0, 122, 255, 0.18);
+    --graph-bg:      #e2eeea;
+    --stats-rx:      #2d7a68;
+    --stats-tx:      #1a6e8a;
+    --stats-rx-fill: rgba(45, 122, 104, 0.15);
+    --stats-tx-fill: rgba(26, 110, 138, 0.15);
 
-    --log-bg:     #FFFFFF;
-    --log-border: rgba(60, 60, 67, 0.18);
+    --log-bg:     #f0f7f5;
+    --log-border: rgba(0, 60, 50, 0.14);
 
     --warn-item-bg: rgba(0, 0, 0, 0.03);
+
+    --gradient-accent: linear-gradient(135deg, #2d7a68 0%, #1f5a50 100%);
 
     color-scheme: light;
 }
@@ -218,57 +224,59 @@
    ============================================================ */
 @media (prefers-color-scheme: light) {
     [data-theme="system"] {
-        --bg-primary:   #FFFFFF;
-        --bg-secondary: #F5F5F7;
-        --bg-card:      #FFFFFF;
-        --bg-input:     #FFFFFF;
-        --bg-hover:     rgba(0, 0, 0, 0.06);
-        --bg-active:    rgba(0, 0, 0, 0.10);
-        --bg-selected:  rgba(0, 122, 255, 0.12);
-        --border:       rgba(60, 60, 67, 0.29);
+        --bg-primary:   #f0f7f5;
+        --bg-secondary: #e2eeea;
+        --bg-card:      #ffffff;
+        --bg-input:     #ffffff;
+        --bg-hover:     rgba(45, 122, 104, 0.07);
+        --bg-active:    rgba(45, 122, 104, 0.12);
+        --bg-selected:  rgba(45, 122, 104, 0.13);
+        --border:       rgba(0, 60, 50, 0.18);
+        --border-strong: rgba(0, 60, 50, 0.32);
 
-        --text-primary:   rgba(0, 0, 0, 0.88);
-        --text-secondary: rgba(0, 0, 0, 0.56);
-        --text-muted:     rgba(0, 0, 0, 0.40);
-        --text-inverse:   #FFFFFF;
+        --text-primary:   rgba(0, 30, 40, 0.88);
+        --text-secondary: rgba(0, 30, 40, 0.56);
+        --text-muted:     rgba(0, 30, 40, 0.38);
+        --text-inverse:   #ffffff;
 
-        --accent: #007AFF;
-        --blue:   #007AFF;
-        --green:  #34C759;
-        --yellow: #E5A000;
-        --red:    #FF3B30;
-        --orange: #FF9500;
-        --purple: #AF52DE;
+        --accent:  #2d7a68;
+        --blue:    #2d7a68;
+        --green:   #2d7a68;
+        --yellow:  #a07000;
+        --red:     #d03025;
+        --orange:  #b85500;
+        --purple:  #6b3fa0;
 
-        --green-tint:  rgba(52, 199, 89, 0.14);
-        --yellow-tint: rgba(229, 160, 0, 0.18);
-        --blue-tint:   rgba(0, 122, 255, 0.14);
+        --green-tint:   rgba(45, 122, 104, 0.12);
+        --yellow-tint:  rgba(160, 112, 0, 0.14);
+        --blue-tint:    rgba(45, 122, 104, 0.12);
+        --orange-tint:  rgba(184, 85, 0, 0.12);
 
-        --error-bg:   rgba(255, 59, 48, 0.12);
-        --error-text: #B3261E;
+        --error-bg:   rgba(208, 48, 37, 0.10);
+        --error-text: #9b1c1c;
 
-        --overlay-bg:      rgba(0, 0, 0, 0.35);
-        --drop-overlay-bg: rgba(0, 122, 255, 0.18);
-        --shadow-xs: 0 0 0 0.5px rgba(0, 0, 0, 0.08),
+        --overlay-bg:       rgba(0, 20, 30, 0.40);
+        --drop-overlay-bg:  rgba(45, 122, 104, 0.18);
+        --shadow-xs: 0 0 0 0.5px rgba(0, 0, 0, 0.06),
                      0 1px 1px rgba(0, 0, 0, 0.04);
-        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06),
-                     0 2px 6px rgba(0, 0, 0, 0.08);
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08),
+                     0 2px 6px rgba(0, 0, 0, 0.10);
         --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12),
                      0 16px 48px rgba(0, 0, 0, 0.08);
-        --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.15);
+        --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.18);
 
-        --editor-bg:        #FFFFFF;
-        --editor-gutter-bg: #F5F5F7;
-        --editor-border:    rgba(60, 60, 67, 0.29);
+        --editor-bg:        #ffffff;
+        --editor-gutter-bg: #f0f7f5;
+        --editor-border:    rgba(0, 60, 50, 0.18);
 
-        --graph-bg:      #F5F5F7;
-        --stats-rx:      #34C759;
-        --stats-tx:      #007AFF;
-        --stats-rx-fill: rgba(52, 199, 89, 0.18);
-        --stats-tx-fill: rgba(0, 122, 255, 0.18);
+        --graph-bg:      #e2eeea;
+        --stats-rx:      #2d7a68;
+        --stats-tx:      #1a6e8a;
+        --stats-rx-fill: rgba(45, 122, 104, 0.15);
+        --stats-tx-fill: rgba(26, 110, 138, 0.15);
 
-        --log-bg:     #FFFFFF;
-        --log-border: rgba(60, 60, 67, 0.18);
+        --log-bg:     #f0f7f5;
+        --log-border: rgba(0, 60, 50, 0.14);
 
         --warn-item-bg: rgba(0, 0, 0, 0.03);
 

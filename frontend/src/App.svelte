@@ -611,7 +611,7 @@
   .rail-btn {
     width: 44px;
     height: 44px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-btn);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -644,21 +644,21 @@
   .btn-primary {
     height: 28px;
     padding: 0 var(--space-4);
-    background: var(--accent);
+    background: var(--gradient-accent);
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     color: var(--text-inverse);
     cursor: pointer;
     font: var(--text-headline);
   }
-  .btn-primary:hover { background: color-mix(in srgb, var(--accent) 84%, white); }
-  .btn-primary:active { background: color-mix(in srgb, var(--accent) 76%, black); }
+  .btn-primary:hover { filter: brightness(1.1); }
+  .btn-primary:active { filter: brightness(0.92); }
   .btn-secondary {
     height: 28px;
     padding: 0 var(--space-4);
     background: var(--bg-card);
     border: 0.5px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     color: var(--text-primary);
     cursor: pointer;
     font: var(--text-headline);
@@ -667,7 +667,8 @@
   .btn-secondary:active { background: var(--bg-active); }
   @media (prefers-reduced-motion: no-preference) {
     .btn-primary, .btn-secondary {
-      transition: background-color var(--dur-fast) var(--ease-out);
+      transition: background-color var(--dur-fast) var(--ease-out),
+                  filter var(--dur-fast) var(--ease-out);
     }
   }
 
@@ -843,7 +844,7 @@
     padding: var(--space-3);
     background: var(--bg-card);
     border: 1px dashed var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     color: var(--text-primary);
     font: var(--text-body);
     cursor: pointer;
@@ -893,7 +894,7 @@
     height: 28px;
     padding: 0 var(--space-3);
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     font: var(--text-headline);
     cursor: pointer;
     color: var(--text-primary);
@@ -903,14 +904,15 @@
   }
   .btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .btn-connect {
-    background: var(--accent);
+    background: var(--gradient-accent);
     color: var(--text-inverse);
   }
   @media (prefers-reduced-motion: no-preference) {
     .btn, .btn-connect {
-      transition: background-color var(--dur-fast) var(--ease-out);
+      transition: background-color var(--dur-fast) var(--ease-out),
+                  filter var(--dur-fast) var(--ease-out);
     }
   }
-  .btn-connect:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 84%, white); }
-  .btn-connect:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, black); }
+  .btn-connect:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn-connect:active:not(:disabled) { filter: brightness(0.92); }
 </style>

@@ -216,21 +216,22 @@
     height: 28px;
     padding: 0 var(--space-3);
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     font: var(--text-headline);
     cursor: pointer;
   }
   @media (prefers-reduced-motion: no-preference) {
     .btn {
-      transition: background-color var(--dur-fast) var(--ease-out);
+      transition: background-color var(--dur-fast) var(--ease-out),
+                  filter var(--dur-fast) var(--ease-out);
     }
   }
   .btn-primary {
-    background: var(--accent);
+    background: var(--gradient-accent);
     color: var(--text-inverse);
   }
-  .btn-primary:hover { background: color-mix(in srgb, var(--accent) 84%, white); }
-  .btn-primary:active { background: color-mix(in srgb, var(--accent) 76%, black); }
+  .btn-primary:hover { filter: brightness(1.1); }
+  .btn-primary:active { filter: brightness(0.92); }
   .btn-secondary {
     background: var(--bg-card);
     color: var(--text-primary);

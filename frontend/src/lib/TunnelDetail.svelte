@@ -366,7 +366,7 @@
     color: var(--text-secondary);
     cursor: pointer;
     padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-btn);
     font: var(--text-body);
     opacity: 0.65;
   }
@@ -567,7 +567,7 @@
     height: 28px;
     padding: 0 var(--space-3);
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     font: var(--text-headline);
     cursor: pointer;
     color: var(--text-primary);
@@ -578,12 +578,13 @@
   @media (prefers-reduced-motion: no-preference) {
     .btn {
       transition: background-color var(--dur-fast) var(--ease-out),
-                  border-color var(--dur-fast) var(--ease-out);
+                  border-color var(--dur-fast) var(--ease-out),
+                  filter var(--dur-fast) var(--ease-out);
     }
   }
   .btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .btn-connect {
-    background: var(--accent);
+    background: var(--gradient-accent);
     color: var(--text-inverse);
   }
   .actions .btn-connect,
@@ -592,8 +593,8 @@
     min-width: 120px;
     font: 600 13px/18px var(--font-sans);
   }
-  .btn-connect:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 84%, white); }
-  .btn-connect:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, black); }
+  .btn-connect:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn-connect:active:not(:disabled) { filter: brightness(0.92); }
   .btn-disconnect {
     background: var(--red);
     color: var(--text-inverse);

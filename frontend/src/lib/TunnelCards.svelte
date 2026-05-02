@@ -309,13 +309,13 @@
   .hdr-btn {
     height: 28px;
     padding: 0 var(--space-3);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     font: var(--text-headline);
     border: 0;
     cursor: pointer;
   }
-  .hdr-btn-primary { background: var(--accent); color: var(--text-inverse); }
-  .hdr-btn-primary:hover { background: color-mix(in srgb, var(--accent) 84%, white); }
+  .hdr-btn-primary { background: var(--gradient-accent); color: var(--text-inverse); }
+  .hdr-btn-primary:hover { filter: brightness(1.1); }
   .hdr-btn-secondary { background: var(--bg-card); color: var(--text-primary); border: 0.5px solid var(--border); }
   .hdr-btn-secondary:hover { background: var(--bg-hover); }
 
@@ -370,8 +370,9 @@
                 box-shadow var(--dur-fast) var(--ease-out);
   }
   .tunnel-card.connected {
-    border-color: color-mix(in srgb, var(--green) 45%, transparent);
-    box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--green) 20%, transparent), var(--shadow-sm);
+    border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--accent) 15%, transparent),
+                var(--shadow-sm);
   }
   .tunnel-card.expanded { box-shadow: var(--shadow-md); }
 
@@ -431,16 +432,17 @@
     height: 28px;
     padding: 0 var(--space-3);
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     font: var(--text-headline);
     cursor: pointer;
     flex-shrink: 0;
-    transition: background-color var(--dur-fast) var(--ease-out);
+    transition: background-color var(--dur-fast) var(--ease-out),
+                filter var(--dur-fast) var(--ease-out);
   }
   .card-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-  .card-btn-connect { background: var(--accent); color: var(--text-inverse); }
-  .card-btn-connect:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 84%, white); }
-  .card-btn-connect:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, black); }
+  .card-btn-connect { background: var(--gradient-accent); color: var(--text-inverse); }
+  .card-btn-connect:hover:not(:disabled) { filter: brightness(1.1); }
+  .card-btn-connect:active:not(:disabled) { filter: brightness(0.92); }
   .card-btn-disconnect { background: var(--red); color: var(--text-inverse); }
   .card-btn-disconnect:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 84%, white); }
   .card-btn-disconnect:active:not(:disabled) { background: color-mix(in srgb, var(--red) 76%, black); }
@@ -560,7 +562,7 @@
     padding: 0 var(--space-3);
     background: var(--bg-secondary);
     border: 0.5px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     font: var(--text-callout);
     color: var(--text-secondary);
     cursor: pointer;
