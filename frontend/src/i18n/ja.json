@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "WireGuide",
+    "name": "WireGuide+",
     "disconnected": "未接続",
     "connecting": "接続中…",
     "connected": "接続済み",
@@ -142,7 +142,7 @@
     "error": "VPN エラー: {message}"
   },
   "daemon": {
-    "not_running": "WireGuide デーモンが実行されていません",
+    "not_running": "WireGuide+ デーモンが実行されていません",
     "install_hint": "デーモン起動: sudo wireguided"
   },
   "tools": {
@@ -217,7 +217,7 @@
     "updating": "更新中...",
     "release_notes": "新機能",
     "skip": "このバージョンをスキップ",
-    "confirm_title": "WireGuide を更新しますか？",
+    "confirm_title": "WireGuide+ を更新しますか？",
     "vpn_warning": "更新中に VPN 接続が一時的に切断される場合があります。アプリは自動的に再起動します。",
     "proceed": "更新する",
     "cancel": "あとで"

@@ -284,9 +284,9 @@
         {:else if activeTab === 'about'}
           <div class="about-section">
             <div class="about-header">
-              <img src="/appicon.png" alt="WireGuide" class="about-icon" />
+              <img src="/appicon.png" alt="WireGuide+" class="about-icon" />
               <div>
-                <div class="about-name">WireGuide</div>
+                <div class="about-name">WireGuide+</div>
                 <div class="about-version-row">
                   <span class="about-version">{appVersion ? `v${appVersion}` : ''}</span>
                   {#if updateInfo?.available}
@@ -315,9 +315,9 @@
             {/if}
 
             <div class="about-links">
-              <button class="link-btn" on:click={() => TunnelService.OpenURL('https://github.com/korjwl1/wireguide')}>GitHub</button>
-              <button class="link-btn" on:click={() => TunnelService.OpenURL('https://github.com/korjwl1/wireguide/issues')}>{$t('settings.about_issues')}</button>
-              <button class="link-btn" on:click={() => TunnelService.OpenURL('https://github.com/korjwl1/wireguide/blob/main/LICENSE')}>{$t('settings.about_license')}</button>
+              <button class="link-btn" on:click={() => TunnelService.OpenURL('https://github.com/steiale/wireguide')}>GitHub</button>
+              <button class="link-btn" on:click={() => TunnelService.OpenURL('https://github.com/steiale/wireguide/issues')}>{$t('settings.about_issues')}</button>
+              <button class="link-btn" on:click={() => TunnelService.OpenURL('https://github.com/steiale/wireguide/blob/main/LICENSE')}>{$t('settings.about_license')}</button>
             </div>
           </div>
         {/if}

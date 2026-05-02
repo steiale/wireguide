@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "WireGuide",
+    "name": "WireGuide+",
     "disconnected": "Disconnected",
     "connecting": "Connecting...",
     "connected": "Connected",
@@ -101,7 +101,7 @@
     "pin_interface": "Pin Interface",
     "pin_interface_hint": "Pins VPN bypass routes to the active network interface. Prevents latency spikes when WiFi and Ethernet are both connected.",
     "about": "About",
-    "about_desc": "A cross-platform WireGuard VPN client with modern UI and quality-of-life features.",
+    "about_desc": "WireGuide+ — a WireGuard VPN client with modern UI and quality-of-life features.",
     "about_issues": "Report Issue",
     "about_license": "License (MIT)",
     "up_to_date": "You're on the latest version."
@@ -142,7 +142,7 @@
     "error": "VPN error: {message}"
   },
   "daemon": {
-    "not_running": "WireGuide daemon is not running",
+    "not_running": "WireGuide+ daemon is not running",
     "install_hint": "Start the daemon with: sudo wireguided"
   },
   "tools": {
@@ -217,7 +217,7 @@
     "updating": "Updating...",
     "release_notes": "What's New",
     "skip": "Skip This Version",
-    "confirm_title": "Update WireGuide?",
+    "confirm_title": "Update WireGuide+?",
     "vpn_warning": "The VPN connection will be briefly interrupted during the update. The app will restart automatically.",
     "proceed": "Update Now",
     "cancel": "Later"

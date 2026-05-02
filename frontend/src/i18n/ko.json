@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "WireGuide",
+    "name": "WireGuide+",
     "disconnected": "연결 안 됨",
     "connecting": "연결 중…",
     "connected": "연결됨",
@@ -142,7 +142,7 @@
     "error": "VPN 오류: {message}"
   },
   "daemon": {
-    "not_running": "WireGuide 데몬이 실행되지 않고 있습니다",
+    "not_running": "WireGuide+ 데몬이 실행되지 않고 있습니다",
     "install_hint": "데몬 시작: sudo wireguided"
   },
   "tools": {
@@ -217,7 +217,7 @@
     "updating": "업데이트 중...",
     "release_notes": "새로운 기능",
     "skip": "이 버전 건너뛰기",
-    "confirm_title": "WireGuide를 업데이트할까요?",
+    "confirm_title": "WireGuide+를 업데이트할까요?",
     "vpn_warning": "업데이트 중 VPN 연결이 잠시 끊길 수 있습니다. 앱이 자동으로 재시작됩니다.",
     "proceed": "업데이트",
     "cancel": "나중에"
