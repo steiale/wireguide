@@ -93,14 +93,18 @@
   }
   .btn-load {
     height: 28px;
-    padding: 0 var(--space-3);
+    padding: 0 var(--space-4);
     background: var(--accent);
-    border: none;
+    border: 0;
     border-radius: var(--radius-sm);
     color: var(--text-inverse);
     cursor: pointer;
     font: var(--text-headline);
+    align-self: flex-start;
   }
+  .btn-load:hover:not(:disabled) { filter: brightness(1.08); }
+  .btn-load:active:not(:disabled) { filter: brightness(0.94); }
+  .btn-load:disabled { opacity: 0.45; cursor: not-allowed; }
   .route-table {
     margin-top: var(--space-3);
     background: var(--bg-card);

@@ -22,6 +22,15 @@
   let currentView = 'tunnels'; // 'tunnels' | 'dnsleak' | 'routes' | 'logs'
 
   $: isToolsView = currentView === 'dnsleak' || currentView === 'routes';
+  $: isTunnelsView = currentView === 'tunnels';
+
+  // Live set of currently-active tunnel names — used by the sidebar dot.
+  $: activeTunnelSet = new Set($connectionStatus?.active_tunnels || []);
+
+  function selectTunnelFromSidebar(tun) {
+    currentView = 'tunnels';
+    selectedTunnel.set(tun);
+  }
 
   // Modal state
   let showEditor = false;
@@ -405,9 +414,19 @@
   <div class="layout">
     <nav class="sidebar">
       <div class="app-title">WireGuide</div>
-      <button class="nav-item" class:active={currentView === 'tunnels'} on:click={() => currentView = 'tunnels'}>
+      <button class="nav-item nav-section" class:section-active={isTunnelsView && !$selectedTunnel} on:click={() => { currentView = 'tunnels'; selectedTunnel.set(null); }}>
         <span class="nav-icon">◎</span> {$t('nav.tunnels')}
       </button>
+      {#each $tunnels || [] as tun (tun.name)}
+        <button
+          class="nav-sub-item nav-tunnel-item"
+          class:active={isTunnelsView && $selectedTunnel?.name === tun.name}
+          on:click={() => selectTunnelFromSidebar(tun)}
+        >
+          <span class="nav-status-dot" class:on={activeTunnelSet.has(tun.name)}></span>
+          <span class="nav-tunnel-name">{tun.name}</span>
+        </button>
+      {/each}
       <button class="nav-item nav-section" class:section-active={isToolsView} on:click={() => currentView = 'dnsleak'}>
         <span class="nav-icon">◈</span> {$t('nav.tools')}
       </button>
@@ -718,6 +737,27 @@
     font-weight: 500;
   }
 
+  /* Sidebar tunnel sub-item: dot + name. Reuses .nav-sub-item layout. */
+  .nav-tunnel-item {
+    gap: var(--space-2);
+  }
+  .nav-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .nav-status-dot.on {
+    background: var(--green);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 25%, transparent);
+  }
+  .nav-tunnel-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .nav-footer .nav-item:hover {
     background: var(--bg-hover);
   }
@@ -875,6 +915,7 @@
     max-height: calc(100vh - 40px);
   }
   .modal-zip-result {
+    width: 520px;
     max-width: 90vw;
     max-height: 70vh;
     overflow: hidden;

@@ -200,29 +200,44 @@
     {/if}
 
     <div class="detail-info">
-      {#if $selectedTunnel.endpoint}
+      {#if detail?.interface?.address?.length}
+        <div class="info-row">
+          <span class="label">{$t('tunnel.address')}</span>
+          <span class="value">{detail.interface.address.join(', ')}</span>
+        </div>
+      {/if}
+      {#if detail?.interface?.dns?.length}
+        <div class="info-row">
+          <span class="label">DNS</span>
+          <span class="value">{detail.interface.dns.join(', ')}</span>
+        </div>
+      {/if}
+      {#if detail}
+        {#each detail.peers || [] as peer, i}
+          {#if peer.endpoint}
+            <div class="info-row">
+              <span class="label">{$t('tunnel.endpoint')}{(detail.peers.length > 1) ? ` ${i + 1}` : ''}</span>
+              <span class="value">{peer.endpoint}</span>
+            </div>
+          {/if}
+          {#if (peer.allowed_ips || []).length}
+            <div class="info-row">
+              <span class="label">{$t('tunnel.allowed_ips')}</span>
+              <span class="value">{peer.allowed_ips.join(', ')}</span>
+            </div>
+          {/if}
+          {#if peer.public_key}
+            <div class="info-row">
+              <span class="label">{$t('tunnel.public_key')}</span>
+              <span class="value mono" title={peer.public_key}>{peer.public_key.substring(0, 20)}…</span>
+            </div>
+          {/if}
+        {/each}
+      {:else if $selectedTunnel.endpoint}
         <div class="info-row">
           <span class="label">{$t('tunnel.endpoint')}</span>
           <span class="value">{$selectedTunnel.endpoint}</span>
         </div>
-      {/if}
-      {#if detail}
-        {#each detail.Peers || [] as peer}
-          <div class="info-row">
-            <span class="label">{$t('tunnel.allowed_ips')}</span>
-            <span class="value">{(peer.AllowedIPs || []).join(', ')}</span>
-          </div>
-          <div class="info-row">
-            <span class="label">{$t('tunnel.public_key')}</span>
-            <span class="value mono">{peer.PublicKey?.substring(0, 20)}...</span>
-          </div>
-        {/each}
-        {#if detail.Interface?.DNS?.length}
-          <div class="info-row">
-            <span class="label">DNS</span>
-            <span class="value">{detail.Interface.DNS.join(', ')}</span>
-          </div>
-        {/if}
       {/if}
     </div>
 

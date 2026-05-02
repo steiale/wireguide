@@ -29,6 +29,7 @@
     "export": "Export",
     "status": "Status",
     "endpoint": "Endpoint",
+    "address": "Address",
     "allowed_ips": "Allowed IPs",
     "public_key": "Public Key",
     "handshake": "Handshake",
