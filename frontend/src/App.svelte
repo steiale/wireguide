@@ -1,15 +1,13 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { Events } from '@wailsio/runtime';
-  import TunnelList from './lib/TunnelList.svelte';
-  import TunnelDetail from './lib/TunnelDetail.svelte';
+  import TunnelCards from './lib/TunnelCards.svelte';
   import ConflictWarning from './lib/ConflictWarning.svelte';
   import ConfigEditor from './lib/ConfigEditor.svelte';
   import Settings from './lib/Settings.svelte';
   import LogViewer from './lib/LogViewer.svelte';
   import DNSLeakTest from './lib/DNSLeakTest.svelte';
   import RouteVisualization from './lib/RouteVisualization.svelte';
-  import StatsDashboard from './lib/StatsDashboard.svelte';
   import UpdateNotice from './lib/UpdateNotice.svelte';
   import Onboarding from './lib/Onboarding.svelte';
   import { tunnels, selectedTunnel, refreshTunnels, refreshStatus, subscribeToEvents, unsubscribe, initialLoad, connectionStatus } from './stores/tunnels.js';
@@ -24,14 +22,6 @@
 
   $: isToolsView = currentView === 'dnsleak' || currentView === 'routes';
   $: isTunnelsView = currentView === 'tunnels';
-
-  // Live set of currently-active tunnel names — used by the sidebar dot.
-  $: activeTunnelSet = new Set($connectionStatus?.active_tunnels || []);
-
-  function selectTunnelFromSidebar(tun) {
-    currentView = 'tunnels';
-    selectedTunnel.set(tun);
-  }
 
   // Modal state
   let showEditor = false;
@@ -418,41 +408,21 @@
   {/if}
 
   <div class="layout">
-    <nav class="sidebar">
-      <div class="app-title">WireGuide+</div>
-      <button class="nav-item nav-section" class:section-active={isTunnelsView && !$selectedTunnel} on:click={() => { currentView = 'tunnels'; selectedTunnel.set(null); }}>
-        <span class="nav-icon">◎</span> {$t('nav.tunnels')}
+    <nav class="icon-rail">
+      <div class="rail-logo">W+</div>
+      <button class="rail-btn" class:active={isTunnelsView} on:click={() => { currentView = 'tunnels'; }} title={$t('nav.tunnels')}>
+        <span>⊡</span>
       </button>
-      {#each $tunnels || [] as tun (tun.name)}
-        <button
-          class="nav-sub-item nav-tunnel-item"
-          class:active={isTunnelsView && $selectedTunnel?.name === tun.name}
-          on:click={() => selectTunnelFromSidebar(tun)}
-        >
-          <span class="nav-status-dot" class:on={activeTunnelSet.has(tun.name)}></span>
-          <span class="nav-tunnel-name">{tun.name}</span>
-        </button>
-      {/each}
-      <button class="nav-item nav-section" class:section-active={isToolsView} on:click={() => currentView = 'dnsleak'}>
-        <span class="nav-icon">◈</span> {$t('nav.tools')}
+      <button class="rail-btn" class:active={isToolsView} on:click={() => currentView = 'dnsleak'} title={$t('nav.tools')}>
+        <span>◈</span>
       </button>
-      <button class="nav-sub-item" class:active={currentView === 'dnsleak'} on:click={() => currentView = 'dnsleak'}>
-        {$t('tools.tab_dns_leak')}
+      <button class="rail-btn" class:active={currentView === 'logs'} on:click={() => currentView = 'logs'} title={$t('nav.logs')}>
+        <span>≡</span>
       </button>
-      <button class="nav-sub-item" class:active={currentView === 'routes'} on:click={() => currentView = 'routes'}>
-        {$t('tools.tab_routes')}
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" on:click={() => showSettings = true} title={$t('nav.settings')}>
+        <span>⚙</span>
       </button>
-      <button class="nav-item" class:active={currentView === 'logs'} on:click={() => currentView = 'logs'}>
-        <span class="nav-icon">≡</span> {$t('nav.logs')}
-      </button>
-
-      <div class="nav-spacer"></div>
-
-      <div class="nav-footer">
-        <button class="nav-item" on:click={() => showSettings = true}>
-          <span class="nav-icon">⚙</span> {$t('nav.settings')}
-        </button>
-      </div>
     </nav>
 
     <!-- Main content -->
@@ -461,31 +431,13 @@
 
       {#if currentView === 'tunnels'}
         <div class="tunnels-view">
-          <div class="tunnel-list-pane">
-            <TunnelList on:import={handleImportOpen} on:new={handleNewTunnelOpen} />
-          </div>
-          <div class="tunnel-detail-pane">
-            {#if $selectedTunnel}
-              <TunnelDetail {TunnelService}
-                on:edit={handleEdit}
-                on:export={handleExport}
-                on:connect={handleConnect}
-                on:refresh={handleRefresh} />
-              {#if $connectionStatus?.state === 'connected' && $connectionStatus?.tunnel_name === $selectedTunnel?.name}
-                <div class="stats-section">
-                  <StatsDashboard />
-                </div>
-              {/if}
-            {:else}
-              <div class="empty-detail">
-                <p>{$t('tunnel.no_selection')}</p>
-                <div class="empty-actions">
-                  <button class="btn-primary" on:click={handleNewTunnelOpen}>+ {$t('tunnel.new_tunnel')}</button>
-                  <button class="btn-secondary" on:click={handleImportOpen}>↓ {$t('tunnel.import')}</button>
-                </div>
-              </div>
-            {/if}
-          </div>
+          <TunnelCards {TunnelService}
+            on:new={handleNewTunnelOpen}
+            on:import={handleImportOpen}
+            on:connect={handleConnect}
+            on:edit={handleEdit}
+            on:export={handleExport}
+            on:refresh={handleRefresh} />
         </div>
       {:else if currentView === 'dnsleak'}
         <div class="tool-view">
@@ -636,145 +588,44 @@
     height: 100%;
   }
 
-  /* ---------- Sidebar (macOS source-list style) ---------- */
-  .sidebar {
-    width: 200px;
+  /* ---------- Icon rail (replaces old sidebar) ---------- */
+  .icon-rail {
+    width: 64px;
     background: var(--bg-secondary);
     border-right: 0.5px solid var(--border);
     display: flex;
     flex-direction: column;
-    padding-top: 52px; /* traffic-light clearance */
-  }
-  .app-title {
-    padding: var(--space-3) var(--space-4) var(--space-4);
-    font: 700 14px/18px var(--font-sans);
-    color: var(--text-primary);
-    letter-spacing: -0.02em;
-  }
-  .nav-item {
-    display: flex;
     align-items: center;
-    gap: var(--space-2);
-    height: var(--row-std);
-    padding: 0 var(--space-2) 0 var(--space-4);
-    margin: 0 var(--space-2);
-    background: transparent;
-    border: 0;
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
-    font: var(--text-body);
-    cursor: pointer;
-    text-align: left;
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    .nav-item {
-      transition: background-color var(--dur-fast) var(--ease-out),
-                  color var(--dur-fast) var(--ease-out);
-    }
-  }
-  .nav-item:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-  }
-  .nav-item.active {
-    background: var(--bg-selected);
-    color: var(--text-primary);
-    font-weight: 500;
-  }
-  .nav-icon {
-    font-size: 13px;
-    width: 18px;
-    text-align: center;
-    opacity: 0.9;
-  }
-  .nav-spacer {
-    flex: 1;
-  }
-
-  /* Sidebar footer — hairline divider defines a dedicated Settings region.
-   * The button inside fills the ENTIRE footer area (no horizontal margin,
-   * flush edges, taller height) so anywhere the user clicks below the
-   * separator line registers as a Settings tap. Drawing a separator and
-   * then making only a narrow pill clickable would be a broken affordance. */
-  .nav-footer {
-    border-top: 0.5px solid var(--border);
-    display: flex;
-    flex-direction: column;
-  }
-  .nav-footer .nav-item {
-    /* Override the default .nav-item pill treatment — in the footer the
-     * button IS the full-width bar, not a floating rounded item. */
-    margin: 0;
-    width: 100%;
-    height: 44px;
-    padding: 0 var(--space-4);
-    border-radius: 0;
-  }
-  /* Tools section header — no background highlight, just text colour change */
-  .nav-section.section-active {
-    color: var(--text-primary);
-    font-weight: 500;
-    background: transparent;
-  }
-
-  /* Sidebar sub-items (Tools children) */
-  .nav-sub-item {
-    display: flex;
-    align-items: center;
-    height: var(--row-compact);
-    padding: 0 var(--space-2) 0 var(--space-8);
-    margin: 0 var(--space-2);
-    background: transparent;
-    border: 0;
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
-    font: var(--text-callout);
-    text-align: left;
-    cursor: pointer;
-    width: calc(100% - var(--space-4));
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    .nav-sub-item {
-      transition: background-color var(--dur-fast) var(--ease-out),
-                  color var(--dur-fast) var(--ease-out);
-    }
-  }
-  .nav-sub-item:hover { background: var(--bg-hover); color: var(--text-primary); }
-  .nav-sub-item.active {
-    background: var(--bg-selected);
-    color: var(--text-primary);
-    font-weight: 500;
-    border-left: 2px solid var(--accent);
-    padding-left: calc(var(--space-8) - 2px);
-  }
-
-  /* Sidebar tunnel sub-item: dot + name. Reuses .nav-sub-item layout. */
-  .nav-tunnel-item {
-    gap: var(--space-2);
-  }
-  .nav-status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--text-muted);
+    padding-top: 52px;
+    padding-bottom: var(--space-2);
+    gap: var(--space-1);
     flex-shrink: 0;
   }
-  .nav-status-dot.on {
-    background: var(--green);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 25%, transparent);
+  .rail-logo {
+    font: 700 13px/18px var(--font-sans);
+    color: var(--accent);
+    letter-spacing: -0.03em;
+    padding: var(--space-2) 0 var(--space-3);
+    user-select: none;
   }
-  .nav-tunnel-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .rail-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease-out),
+                color var(--dur-fast) var(--ease-out);
   }
-
-  .nav-footer .nav-item:hover {
-    background: var(--bg-hover);
-  }
-  .nav-footer .nav-item:active {
-    background: var(--bg-active);
-  }
+  .rail-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .rail-btn.active { background: var(--bg-selected); color: var(--accent); }
+  .rail-spacer { flex: 1; }
 
   /* ---------- Main content ---------- */
   .main-content {
@@ -787,39 +638,9 @@
     display: flex;
     flex: 1;
     overflow: hidden;
-  }
-  .tunnel-list-pane {
-    width: 240px;
-    border-right: 0.5px solid var(--border);
-    overflow-y: auto;
-    background: var(--bg-secondary);
-  }
-  .tunnel-detail-pane {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow-y: auto;
-    background: var(--bg-primary);
-  }
-  .stats-section {
-    padding: 0 var(--space-6) var(--space-4);
+    min-height: 0;
   }
 
-  /* ---------- Empty state ---------- */
-  .empty-detail {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
-    color: var(--text-secondary);
-    gap: var(--space-4);
-    font: var(--text-body);
-  }
-  .empty-actions {
-    display: flex;
-    gap: var(--space-2);
-  }
   .btn-primary {
     height: 28px;
     padding: 0 var(--space-4);
