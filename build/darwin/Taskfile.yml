@@ -4,10 +4,9 @@ includes:
   common: ../Taskfile.yml
 
 vars:
-  # Signing configuration - edit these values for your project
-  # SIGN_IDENTITY: "Developer ID Application: Your Company (TEAMID)"
-  # KEYCHAIN_PROFILE: "my-notarize-profile"
-  # ENTITLEMENTS: "build/darwin/entitlements.plist"
+  SIGN_IDENTITY: "Developer ID Application: Alexander Steiner (M53GHX9FAY)"
+  KEYCHAIN_PROFILE: "wireguide-notarize"
+  ENTITLEMENTS: "build/darwin/entitlements.plist"
 
   # Docker image for cross-compilation (used when building on non-macOS)
   CROSS_IMAGE: wails-cross
@@ -183,12 +182,6 @@ tasks:
 
   sign:notarize:
     summary: Signs and notarizes the application bundle
-    desc: |
-      Signs the .app bundle and submits it for notarization.
-      Configure SIGN_IDENTITY and KEYCHAIN_PROFILE in the vars section at the top of this file.
-
-      Setup (one-time):
-        wails3 signing credentials --apple-id "you@email.com" --team-id "TEAMID" --password "app-specific-password" --profile "my-profile"
     deps:
       - task: package
     cmds:
@@ -198,3 +191,16 @@ tasks:
         msg: "SIGN_IDENTITY is required. Set it in the vars section at the top of build/darwin/Taskfile.yml"
       - sh: '[ -n "{{.KEYCHAIN_PROFILE}}" ]'
         msg: "KEYCHAIN_PROFILE is required. Set it in the vars section at the top of build/darwin/Taskfile.yml"
+
+  release:
+    summary: Full release build - sign, notarize, staple, zip, print sha256
+    cmds:
+      - task: sign:notarize
+      - |
+        VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' build/darwin/Info.plist)
+        ZIP="wireguide-plus-v${VERSION}-darwin-universal.zip"
+        cp -r "{{.BIN_DIR}}/{{.APP_NAME}}.app" "WireGuide+.app"
+        zip -r "${ZIP}" "WireGuide+.app"
+        rm -rf "WireGuide+.app"
+        shasum -a 256 "${ZIP}"
+        echo "Release zip ready: ${ZIP}"
