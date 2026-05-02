@@ -5,6 +5,7 @@
   import { tunnels, connectionStatus, selectedTunnel, refreshTunnels, refreshStatus } from '../stores/tunnels.js';
   import { t } from '../i18n/index.js';
   import { errText } from './errors.js';
+  import StatsDashboard from './StatsDashboard.svelte';
 
   export let TunnelService;
   const dispatch = createEventDispatcher();
@@ -162,6 +163,7 @@
             <span class="card-dot"
               class:dot-on={isConnected && hasHandshake}
               class:dot-warn={isConnected && !hasHandshake}></span>
+            <span class="card-chevron" class:open={isExpanded}>›</span>
             <span class="card-name">{tun.name}</span>
             <span class="card-flex"></span>
             {#if isConnected}
@@ -175,7 +177,6 @@
               on:click|stopPropagation={() => isConnected ? doDisconnect(tun.name) : dispatch('connect', { name: tun.name })}>
               {isLoading ? $t('app.connecting') : isConnected ? $t('tunnel.disconnect') : $t('tunnel.connect')}
             </button>
-            <span class="card-chevron" class:open={isExpanded}>›</span>
           </div>
 
           <!-- Expanded body -->
@@ -197,6 +198,9 @@
                   {#if status.last_handshake}
                     <span class="stat-pill">🤝 {status.last_handshake}</span>
                   {/if}
+                </div>
+                <div class="card-chart">
+                  <StatsDashboard />
                 </div>
               {/if}
 
@@ -436,11 +440,11 @@
     line-height: 1;
     color: var(--text-muted);
     display: inline-block;
-    transform: rotate(90deg);
+    transform: rotate(0deg);
     transition: transform var(--dur-fast) var(--ease-out);
     flex-shrink: 0;
   }
-  .card-chevron.open { transform: rotate(270deg); }
+  .card-chevron.open { transform: rotate(90deg); }
 
   /* ---------- Card body (expanded) ---------- */
   .card-body {
@@ -449,6 +453,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
+    background: var(--bg-primary);
+  }
+  .card-chart {
+    border-radius: var(--radius-md);
+    overflow: hidden;
   }
 
   .card-error {
