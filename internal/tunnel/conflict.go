@@ -83,7 +83,7 @@ func isWireGuardLike(name string) bool {
 // identifyOwner determines who created this interface by checking UAPI sockets.
 func identifyOwner(ifaceName string) string {
 	// Check WireGuide socket
-	if socketExists("/var/run/wireguide/" + ifaceName + ".sock") {
+	if socketExists("/var/run/wireguide-plus/" + ifaceName + ".sock") {
 		return "WireGuide"
 	}
 

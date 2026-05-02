@@ -413,7 +413,7 @@
 
   <div class="layout">
     <nav class="sidebar">
-      <div class="app-title">WireGuide</div>
+      <div class="app-title">WireGuide+</div>
       <button class="nav-item nav-section" class:section-active={isTunnelsView && !$selectedTunnel} on:click={() => { currentView = 'tunnels'; selectedTunnel.set(null); }}>
         <span class="nav-icon">◎</span> {$t('nav.tunnels')}
       </button>

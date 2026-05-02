@@ -8,7 +8,7 @@ import (
 	"runtime"
 )
 
-const appName = "wireguide"
+const appName = "wireguide-plus"
 
 // canWriteDir tests whether the current process can create files in dir by
 // writing and immediately removing a temp file. Used by EnsureDirs to

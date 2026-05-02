@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	daemonLabel  = "com.wireguide.helper"
+	daemonLabel  = "io.github.steiale.wireguide-plus.helper"
 	daemonPlist  = "/Library/LaunchDaemons/" + daemonLabel + ".plist"
 	daemonBinary = "/Library/PrivilegedHelperTools/" + daemonLabel
 )
@@ -76,9 +76,9 @@ func installAndLoadDaemon(args Args) error {
     <key>KeepAlive</key>
     <true/>
     <key>StandardErrorPath</key>
-    <string>/var/log/wireguide-helper.log</string>
+    <string>/var/log/wireguide-plus-helper.log</string>
     <key>StandardOutPath</key>
-    <string>/var/log/wireguide-helper.log</string>
+    <string>/var/log/wireguide-plus-helper.log</string>
 </dict>
 </plist>
 `, daemonLabel, daemonBinary, args.SocketPath, uid, args.DataDir)
@@ -124,7 +124,7 @@ func installAndLoadDaemon(args Args) error {
 	escaped := strings.ReplaceAll(shellScript, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	osascriptCmd := fmt.Sprintf(
-		`do shell script "%s" with administrator privileges with prompt "WireGuide needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration. This prompt appears on first launch or after an app update."`,
+		`do shell script "%s" with administrator privileges with prompt "WireGuide+ needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration. This prompt appears on first launch or after an app update."`,
 		escaped,
 	)
 
@@ -162,7 +162,7 @@ func spawnViaOsascript(args Args) error {
 		return err
 	}
 
-	logPath := "/var/log/wireguide-helper.log"
+	logPath := "/var/log/wireguide-plus-helper.log"
 	cmd := fmt.Sprintf(
 		`(echo '' ; echo '==== helper spawn ====' ; date ; %s --helper --socket=%s --uid=%d --data-dir=%s) >> %s 2>&1 & disown`,
 		shellQuote(exe), shellQuote(args.SocketPath), args.SocketUID, shellQuote(args.DataDir), shellQuote(logPath),
@@ -170,7 +170,7 @@ func spawnViaOsascript(args Args) error {
 	escaped := strings.ReplaceAll(cmd, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	script := fmt.Sprintf(
-		`do shell script "%s" with administrator privileges with prompt "WireGuide needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration."`,
+		`do shell script "%s" with administrator privileges with prompt "WireGuide+ needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration."`,
 		escaped,
 	)
 

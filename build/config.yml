@@ -5,12 +5,12 @@ version: '3'
 
 # This information is used to generate the build assets.
 info:
-  companyName: "WireGuide"
-  productName: "WireGuide"
-  productIdentifier: "com.wireguide.app"
+  companyName: "WireGuide+"
+  productName: "WireGuide+"
+  productIdentifier: "io.github.steiale.wireguide-plus"
   description: "Cross-platform WireGuard desktop client"
-  copyright: "(c) 2026, WireGuide"
-  comments: "WireGuard VPN Client"
+  copyright: "(c) 2026, Alexander Steiner"
+  comments: "WireGuard VPN Client (WireGuide+ fork)"
   version: "0.0.1" # The application version
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)
   #                               # Should match the name of your .icon file without the extension

@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.wireguide.helper</string>
+    <string>io.github.steiale.wireguide-plus.helper</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Library/PrivilegedHelperTools/com.wireguide.helper</string>
+        <string>/Library/PrivilegedHelperTools/io.github.steiale.wireguide-plus.helper</string>
         <string>--helper</string>
-        <string>--socket=/var/run/wireguide/wireguide.sock</string>
+        <string>--socket=/var/run/wireguide-plus/wireguide-plus.sock</string>
         <string>--uid=__UID__</string>
-        <string>--data-dir=/Library/Application Support/wireguide</string>
+        <string>--data-dir=/Library/Application Support/wireguide-plus</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -21,8 +21,8 @@
     <true/>
 
     <key>StandardErrorPath</key>
-    <string>/var/log/wireguide-helper.log</string>
+    <string>/var/log/wireguide-plus-helper.log</string>
     <key>StandardOutPath</key>
-    <string>/var/log/wireguide-helper.log</string>
+    <string>/var/log/wireguide-plus-helper.log</string>
 </dict>
 </plist>
