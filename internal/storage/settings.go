@@ -19,6 +19,7 @@ type Settings struct {
 	HealthCheck   bool   `json:"health_check"`   // periodic handshake age monitoring
 	PinInterface  bool   `json:"pin_interface"`  // pin bypass routes to upstream interface (-ifscope)
 	LogLevel      string `json:"log_level"`      // "debug", "info", "warn", "error"
+	OnboardingComplete bool `json:"onboarding_complete"`
 }
 
 // DefaultSettings returns settings with sensible defaults.

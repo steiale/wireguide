@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -188,4 +189,45 @@ func (s *TunnelService) RunUpdate(info *update.UpdateInfo) error {
 		return s.app.Browser.OpenURL("https://github.com/korjwl1/wireguide/releases/latest")
 	}
 	return exec.Command("open", "https://github.com/korjwl1/wireguide/releases/latest").Run()
+}
+
+// ScanForWireGuardConfigs returns existing WireGuard configs found on the
+// filesystem that haven't been imported into WireGuide+ yet.
+func (t *TunnelService) ScanForWireGuardConfigs() []FoundConfig {
+	list, _ := t.tunnelStore.List()
+	existing := make(map[string]bool, len(list))
+	for _, n := range list {
+		existing[n] = true
+	}
+	return scanSystemWireGuardConfigs(existing)
+}
+
+// ImportFoundConfigs reads and imports the .conf files at the given absolute
+// paths. Returns per-file results reusing the ZipImportResult shape.
+func (t *TunnelService) ImportFoundConfigs(paths []string) []ZipImportResult {
+	var results []ZipImportResult
+	for _, p := range paths {
+		name := strings.TrimSuffix(filepath.Base(p), ".conf")
+		data, err := os.ReadFile(p)
+		if err != nil {
+			results = append(results, ZipImportResult{Name: name, Error: err.Error()})
+			continue
+		}
+		if _, err := t.tunnelStore.ImportFromContent(name, string(data)); err != nil {
+			results = append(results, ZipImportResult{Name: name, Error: err.Error()})
+		} else {
+			results = append(results, ZipImportResult{Name: name})
+		}
+	}
+	return results
+}
+
+// CompleteOnboarding marks onboarding as done in settings.
+func (t *TunnelService) CompleteOnboarding() error {
+	s, err := t.settingsStore.Load()
+	if err != nil {
+		return err
+	}
+	s.OnboardingComplete = true
+	return t.settingsStore.Save(s)
 }

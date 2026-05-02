@@ -11,6 +11,7 @@
   import RouteVisualization from './lib/RouteVisualization.svelte';
   import StatsDashboard from './lib/StatsDashboard.svelte';
   import UpdateNotice from './lib/UpdateNotice.svelte';
+  import Onboarding from './lib/Onboarding.svelte';
   import { tunnels, selectedTunnel, refreshTunnels, refreshStatus, subscribeToEvents, unsubscribe, initialLoad, connectionStatus } from './stores/tunnels.js';
   import { applyTheme, initThemeWatcher } from './stores/theme.js';
   import { startLogListener, stopLogListener } from './stores/logs.js';
@@ -37,6 +38,7 @@
   let showSettings = false;
   let showConflictWarning = false;
   let showZipResult = false;
+  let showOnboarding = false;
   let zipResults = [];
   let conflictList = [];
   let pendingConnectName = '';
@@ -55,8 +57,9 @@
     // Load and apply saved theme before loading other data.
     // applyTheme sets the data-theme attribute AND the resolvedTheme store
     // that CodeMirror subscribes to for its own light/dark swap.
+    let s = null;
     try {
-      const s = await TunnelService.GetSettings();
+      s = await TunnelService.GetSettings();
       applyTheme(s?.theme || 'system');
       // Apply persisted language. 'auto' means "follow OS locale" — we
       // resolve that via detectLanguage(). Without this, launching the
@@ -66,6 +69,9 @@
       setLanguage(lang === 'auto' ? detectLanguage() : lang);
     } catch (e) {
       applyTheme('system');
+    }
+    if (!s?.onboarding_complete) {
+      showOnboarding = true;
     }
     initThemeWatcher();
 
@@ -522,6 +528,10 @@
       conflicts={conflictList}
       on:proceed={handleConflictProceed}
       on:cancel={handleConflictCancel} />
+  {/if}
+
+  {#if showOnboarding}
+    <Onboarding on:complete={async () => { showOnboarding = false; await refreshTunnels(TunnelService); }} />
   {/if}
 
   {#if showZipResult}

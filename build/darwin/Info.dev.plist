@@ -5,6 +5,8 @@
             <string>APPL</string>
         <key>CFBundleName</key>
             <string>WireGuide+</string>
+        <key>CFBundleDisplayName</key>
+            <string>WireGuide+</string>
         <key>CFBundleExecutable</key>
             <string>wireguide-plus</string>
         <key>CFBundleIdentifier</key>
