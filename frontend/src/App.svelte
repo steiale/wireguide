@@ -611,7 +611,7 @@
   .rail-btn {
     width: 44px;
     height: 44px;
-    border-radius: var(--radius-btn);
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;

@@ -136,7 +136,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 			Backdrop:                application.MacBackdropTranslucent,
 			TitleBar:                application.MacTitleBarHiddenInset,
 		},
-		BackgroundColour: application.NewRGB(30, 30, 30), // matches --bg-primary dark (#1E1E1E)
+		BackgroundColour: application.NewRGB(0, 20, 41), // matches --bg-primary dark (#001429)
 		URL:              "/",
 	})
 

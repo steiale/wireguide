@@ -204,7 +204,7 @@
                     <span class="stat-pill">⏱ {status.duration}</span>
                   {/if}
                   {#if status.last_handshake}
-                    <span class="stat-pill">🤝 {status.last_handshake}</span>
+                    <span class="stat-pill">⇄ {status.last_handshake}</span>
                   {/if}
                 </div>
                 {#if chartReadyNames.has(tun.name)}
