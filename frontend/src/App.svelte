@@ -410,18 +410,22 @@
   <div class="layout">
     <nav class="icon-rail">
       <div class="rail-logo">W+</div>
-      <button class="rail-btn" class:active={isTunnelsView} on:click={() => { currentView = 'tunnels'; }} title={$t('nav.tunnels')}>
-        <span>⊡</span>
+      <button class="rail-btn" class:active={isTunnelsView} on:click={() => { currentView = 'tunnels'; }}>
+        <span class="rail-icon">⊡</span>
+        <span class="rail-label">{$t('nav.tunnels')}</span>
       </button>
-      <button class="rail-btn" class:active={isToolsView} on:click={() => currentView = 'dnsleak'} title={$t('nav.tools')}>
-        <span>◈</span>
+      <button class="rail-btn" class:active={isToolsView} on:click={() => currentView = 'dnsleak'}>
+        <span class="rail-icon">◈</span>
+        <span class="rail-label">{$t('nav.tools')}</span>
       </button>
-      <button class="rail-btn" class:active={currentView === 'logs'} on:click={() => currentView = 'logs'} title={$t('nav.logs')}>
-        <span>≡</span>
+      <button class="rail-btn" class:active={currentView === 'logs'} on:click={() => currentView = 'logs'}>
+        <span class="rail-icon">≡</span>
+        <span class="rail-label">{$t('nav.logs')}</span>
       </button>
       <div class="rail-spacer"></div>
-      <button class="rail-btn" on:click={() => showSettings = true} title={$t('nav.settings')}>
-        <span>⚙</span>
+      <button class="rail-btn" on:click={() => showSettings = true}>
+        <span class="rail-icon">⚙</span>
+        <span class="rail-label">{$t('nav.settings')}</span>
       </button>
     </nav>
 
@@ -590,7 +594,7 @@
 
   /* ---------- Icon rail (replaces old sidebar) ---------- */
   .icon-rail {
-    width: 64px;
+    width: 88px;
     background: var(--bg-secondary);
     border-right: 0.5px solid var(--border);
     display: flex;
@@ -598,24 +602,25 @@
     align-items: center;
     padding-top: 52px;
     padding-bottom: var(--space-2);
-    gap: var(--space-1);
+    gap: 2px;
     flex-shrink: 0;
   }
   .rail-logo {
-    font: 700 13px/18px var(--font-sans);
+    font: 700 15px/20px var(--font-sans);
     color: var(--accent);
     letter-spacing: -0.03em;
-    padding: var(--space-2) 0 var(--space-3);
+    padding: var(--space-2) 0 var(--space-4);
     user-select: none;
   }
   .rail-btn {
-    width: 44px;
-    height: 44px;
+    width: 72px;
+    height: 56px;
     border-radius: var(--radius-md);
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    gap: 4px;
     color: var(--text-secondary);
     background: transparent;
     border: 0;
@@ -625,6 +630,12 @@
   }
   .rail-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
   .rail-btn.active { background: var(--bg-selected); color: var(--accent); }
+  .rail-icon { font-size: 20px; line-height: 1; }
+  .rail-label {
+    font: 400 9px/11px var(--font-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
   .rail-spacer { flex: 1; }
 
   /* ---------- Main content ---------- */
