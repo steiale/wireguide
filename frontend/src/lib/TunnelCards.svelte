@@ -507,10 +507,8 @@
     align-items: baseline;
     gap: var(--space-4);
     padding: var(--space-2) 0;
-    border-bottom: 0.5px solid var(--border);
     font: var(--text-body);
   }
-  .info-row:last-child { border-bottom: 0; }
   .info-label { color: var(--text-secondary); flex-shrink: 0; }
   .info-value { color: var(--text-primary); text-align: right; overflow: hidden; text-overflow: ellipsis; }
 
@@ -520,7 +518,6 @@
     align-items: center;
     gap: var(--space-4);
     padding-top: var(--space-3);
-    border-top: 0.5px solid var(--border);
     flex-wrap: wrap;
   }
 
