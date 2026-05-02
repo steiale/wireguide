@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -97,7 +98,11 @@ func (s *TunnelStore) Delete(name string) error {
 	defer s.mu.Unlock()
 
 	path := s.path(name)
-	return os.Remove(path)
+	err := os.Remove(path)
+	// Best-effort meta cleanup — never block tunnel deletion on a missing or
+	// unwritable sidecar file.
+	os.Remove(s.metaPath(name))
+	return err
 }
 
 // Rename renames a tunnel from oldName to newName.
@@ -218,4 +223,48 @@ func (s *TunnelStore) ImportFromContent(name, content string) (*config.WireGuard
 
 func (s *TunnelStore) path(name string) string {
 	return filepath.Join(s.dir, name+".conf")
+}
+
+// TunnelMeta holds per-tunnel settings that live alongside the .conf file.
+type TunnelMeta struct {
+	AutoReconnect bool `json:"auto_reconnect"`
+}
+
+// metaPath returns the path for the tunnel's sidecar metadata file.
+func (s *TunnelStore) metaPath(name string) string {
+	return filepath.Join(s.dir, name+".meta.json")
+}
+
+// LoadMeta reads per-tunnel metadata. Returns empty defaults if not found.
+func (s *TunnelStore) LoadMeta(name string) (*TunnelMeta, error) {
+	data, err := os.ReadFile(s.metaPath(name))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &TunnelMeta{}, nil
+		}
+		return nil, err
+	}
+	var m TunnelMeta
+	if err := json.Unmarshal(data, &m); err != nil {
+		return &TunnelMeta{}, nil
+	}
+	return &m, nil
+}
+
+// SaveMeta writes per-tunnel metadata atomically.
+func (s *TunnelStore) SaveMeta(name string, meta *TunnelMeta) error {
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.metaPath(name) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.metaPath(name))
+}
+
+// DeleteMeta removes the metadata sidecar file (called when tunnel is deleted).
+func (s *TunnelStore) DeleteMeta(name string) {
+	os.Remove(s.metaPath(name))
 }

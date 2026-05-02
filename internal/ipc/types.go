@@ -14,7 +14,8 @@ type PingResponse struct {
 
 // ConnectRequest is the parameter for Tunnel.Connect.
 type ConnectRequest struct {
-	Config *domain.WireGuardConfig `json:"config"`
+	Config        *domain.WireGuardConfig `json:"config"`
+	AutoReconnect bool                    `json:"auto_reconnect"`
 }
 
 // ConnectionStatus is the wire representation of the tunnel connection state.

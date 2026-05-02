@@ -93,6 +93,11 @@ type Monitor struct {
 	// check runs in monitorLoop. Can be toggled at runtime via
 	// SetHealthCheck. Default: true.
 	healthCheckEnabled bool
+
+	// shouldReconnectFn is a per-tunnel callback that gates auto-reconnect
+	// on wake / network change / stale handshake. If nil, no tunnel is
+	// auto-reconnected (opt-in behaviour).
+	shouldReconnectFn func(name string) bool
 }
 
 // NewMonitor creates a reconnection monitor.
@@ -116,6 +121,15 @@ func (m *Monitor) SetFirewallCallbacks(suspend FirewallSuspendFunc, resume Firew
 	defer m.mu.Unlock()
 	m.fwSuspendFn = suspend
 	m.fwResumeFn = resume
+}
+
+// SetShouldReconnect sets a per-tunnel callback that controls whether a tunnel
+// should be auto-reconnected on wake/network change. If nil, no tunnel is
+// automatically reconnected (opt-in behaviour).
+func (m *Monitor) SetShouldReconnect(fn func(name string) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shouldReconnectFn = fn
 }
 
 // SetHealthCheck enables or disables the periodic handshake age check.
@@ -256,6 +270,13 @@ func (m *Monitor) monitorLoop() {
 				age := time.Since(status.LastHandshakeTime)
 				if age > handshakeStaleThreshold {
 					tunnelName := status.TunnelName
+					m.mu.Lock()
+					shouldFn := m.shouldReconnectFn
+					m.mu.Unlock()
+					if shouldFn != nil && !shouldFn(tunnelName) {
+						slog.Debug("skipping stale handshake reconnect (auto-reconnect disabled)", "tunnel", tunnelName)
+						continue
+					}
 					slog.Warn("handshake stale, triggering per-tunnel reconnect",
 						"tunnel", tunnelName,
 						"last_handshake_age", age.Round(time.Second),
@@ -461,9 +482,20 @@ func (m *Monitor) sleepWakeLoop() {
 		case <-m.stopCh:
 			return
 		case <-wakeCh:
-			slog.Info("system wake detected, triggering reconnect")
-			if m.manager.IsConnected() || m.manager.ActiveTunnel() != "" {
-				m.triggerReconnect()
+			slog.Info("system wake detected, checking per-tunnel auto-reconnect")
+			m.mu.Lock()
+			shouldFn := m.shouldReconnectFn
+			m.mu.Unlock()
+			statuses := m.manager.AllStatuses()
+			for _, status := range statuses {
+				if status == nil {
+					continue
+				}
+				name := status.TunnelName
+				if shouldFn != nil && shouldFn(name) {
+					slog.Info("auto-reconnecting tunnel on wake", "tunnel", name)
+					m.triggerReconnectTunnel(name)
+				}
 			}
 		}
 	}

@@ -10,8 +10,28 @@
   let detail = null;
   let loading = false;
   let error = '';
+  let autoReconnect = false;
 
   $: if ($selectedTunnel) loadDetail($selectedTunnel.name);
+
+  // Load per-tunnel metadata (auto-reconnect flag) whenever the selection changes.
+  $: if ($selectedTunnel?.name) {
+    TunnelService.GetTunnelMeta($selectedTunnel.name)
+      .then(m => { autoReconnect = m?.auto_reconnect ?? false; })
+      .catch(() => { autoReconnect = false; });
+  }
+
+  async function toggleAutoReconnect() {
+    if (!$selectedTunnel?.name) return;
+    autoReconnect = !autoReconnect;
+    try {
+      await TunnelService.SaveTunnelMeta($selectedTunnel.name, { auto_reconnect: autoReconnect });
+    } catch (e) {
+      // Roll back the optimistic toggle so the UI reflects what's on disk.
+      autoReconnect = !autoReconnect;
+      error = errText(e);
+    }
+  }
 
   // Single source of truth for "is this tunnel currently active?" —
   // combine the selected-tunnel flag with the live connection status so the
@@ -239,6 +259,21 @@
           <span class="value">{$selectedTunnel.endpoint}</span>
         </div>
       {/if}
+      <div class="info-row">
+        <span class="label">Auto-reconnect</span>
+        <label class="toggle-wrap">
+          <input
+            type="checkbox"
+            class="toggle-input"
+            checked={autoReconnect}
+            on:change={toggleAutoReconnect}
+          />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+          <span class="toggle-hint">{autoReconnect ? 'On wake & network change' : 'Off'}</span>
+        </label>
+      </div>
     </div>
 
     {#if error}
@@ -433,6 +468,62 @@
   .value.mono {
     font-family: var(--font-mono);
     font-size: 11px;
+  }
+
+  /* ---------- Auto-reconnect toggle ---------- */
+  .toggle-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle-input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    width: 0;
+    height: 0;
+  }
+  .toggle-track {
+    width: 36px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--border);
+    position: relative;
+    flex-shrink: 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .toggle-track {
+      transition: background-color var(--dur-fast) var(--ease-out);
+    }
+    .toggle-thumb {
+      transition: transform var(--dur-fast) var(--ease-out);
+    }
+  }
+  .toggle-input:checked + .toggle-track {
+    background: var(--accent);
+  }
+  .toggle-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+  .toggle-input:checked + .toggle-track .toggle-thumb {
+    transform: translateX(16px);
+  }
+  .toggle-input:focus-visible + .toggle-track {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .toggle-hint {
+    font: var(--text-footnote);
+    color: var(--text-secondary);
   }
 
   /* ---------- Error message ---------- */

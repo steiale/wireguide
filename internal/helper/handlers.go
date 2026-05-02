@@ -100,11 +100,13 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	h.mu.Lock()
 	prevCfgs := h.copyActiveCfgs()
 	h.activeCfgs[req.Config.Name] = req.Config
+	h.autoReconnect[req.Config.Name] = req.AutoReconnect
 	h.mu.Unlock()
 
 	if err := h.manager.Connect(req.Config); err != nil {
 		h.mu.Lock()
 		delete(h.activeCfgs, req.Config.Name)
+		delete(h.autoReconnect, req.Config.Name)
 		// Restore previous if there was one
 		if prev, ok := prevCfgs[req.Config.Name]; ok {
 			h.activeCfgs[req.Config.Name] = prev
@@ -142,6 +144,7 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 		}
 		h.mu.Lock()
 		delete(h.activeCfgs, tunnelName)
+		delete(h.autoReconnect, tunnelName)
 		h.mu.Unlock()
 	} else {
 		// No name specified — disconnect first tunnel (backward compat).
@@ -153,6 +156,7 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 		h.mu.Lock()
 		if activeName != "" {
 			delete(h.activeCfgs, activeName)
+			delete(h.autoReconnect, activeName)
 		}
 		h.mu.Unlock()
 	}

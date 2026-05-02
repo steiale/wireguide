@@ -112,6 +112,11 @@ func (s *TunnelService) Connect(name string) error {
 		return fmt.Errorf("loading tunnel %s: %w", name, err)
 	}
 
+	// Read per-tunnel auto-reconnect preference so the helper can decide
+	// whether to bring this tunnel back up on wake / network change.
+	meta, _ := s.tunnelStore.LoadMeta(name)
+	autoReconnect := meta != nil && meta.AutoReconnect
+
 	// Mark the RPC as in-flight so the health monitor doesn't falsely
 	// detect helper death while the server is busy processing Connect
 	// (which blocks the per-connection request loop, preventing pings).
@@ -119,7 +124,8 @@ func (s *TunnelService) Connect(name string) error {
 	defer s.clients.UnmarkInflight()
 
 	return s.callLong(ipc.MethodConnect, ipc.ConnectRequest{
-		Config: cfg,
+		Config:        cfg,
+		AutoReconnect: autoReconnect,
 	}, nil)
 }
 

@@ -231,3 +231,13 @@ func (t *TunnelService) CompleteOnboarding() error {
 	s.OnboardingComplete = true
 	return t.settingsStore.Save(s)
 }
+
+// GetTunnelMeta returns per-tunnel metadata (auto-reconnect flag etc.).
+func (t *TunnelService) GetTunnelMeta(name string) (*storage.TunnelMeta, error) {
+	return t.tunnelStore.LoadMeta(name)
+}
+
+// SaveTunnelMeta persists per-tunnel metadata.
+func (t *TunnelService) SaveTunnelMeta(name string, meta storage.TunnelMeta) error {
+	return t.tunnelStore.SaveMeta(name, &meta)
+}

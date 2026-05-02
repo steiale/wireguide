@@ -83,8 +83,9 @@ type Helper struct {
 	// every record. Info by default.
 	logLevel *slog.LevelVar
 
-	mu         sync.Mutex
-	activeCfgs map[string]*domain.WireGuardConfig // cached for reconnect, keyed by tunnel name
+	mu            sync.Mutex
+	activeCfgs    map[string]*domain.WireGuardConfig // cached for reconnect, keyed by tunnel name
+	autoReconnect map[string]bool                    // whether each connected tunnel should auto-reconnect
 
 	// Firewall state saved during reconnect suspend/resume cycle.
 	// These track what was active before suspend so resume can restore it.
@@ -115,12 +116,13 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	fw := firewall.NewPlatformFirewall()
 
 	h := &Helper{
-		server:     ipc.NewServer(listener, ownerUID),
-		manager:    manager,
-		firewall:   fw,
-		activeCfgs: make(map[string]*domain.WireGuardConfig),
-		logLevel:   new(slog.LevelVar), // defaults to Info
-		done:       make(chan struct{}),
+		server:        ipc.NewServer(listener, ownerUID),
+		manager:       manager,
+		firewall:      fw,
+		activeCfgs:    make(map[string]*domain.WireGuardConfig),
+		autoReconnect: make(map[string]bool),
+		logLevel:      new(slog.LevelVar), // defaults to Info
+		done:          make(chan struct{}),
 	}
 
 	// Install the broadcast slog handler BEFORE the first log call so
@@ -141,6 +143,11 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	// Reconnect monitor — uses cached config
 	h.monitor = reconnect.NewMonitor(manager, h.reconnectFn, h.onReconnectState, reconnect.DefaultConfig())
 	h.monitor.SetFirewallCallbacks(h.suspendFirewall, h.resumeFirewall)
+	h.monitor.SetShouldReconnect(func(name string) bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.autoReconnect[name]
+	})
 	h.monitor.Start()
 
 	// Register RPC handlers
