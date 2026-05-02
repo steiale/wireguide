@@ -34,8 +34,14 @@ type ConnectionStatus struct {
 	TxBytes           int64     `json:"tx_bytes"`
 	LastHandshakeTime time.Time `json:"-"`
 	LastHandshake     string    `json:"last_handshake,omitempty"`
-	Endpoint          string    `json:"endpoint,omitempty"`
-	ErrorMessage      string    `json:"error_message,omitempty"`
+	// HasHandshake is true iff the tunnel has at least one peer that has
+	// completed a handshake (LastHandshakeTime != zero). The frontend used
+	// to derive this from the truthiness of the formatted LastHandshake
+	// string, which broke whenever the formatter returned "0s" for a fresh
+	// tunnel. Carrying an explicit boolean removes that ambiguity.
+	HasHandshake bool   `json:"has_handshake"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 
 	// ActiveTunnels lists the names of all currently connected (or connecting)
 	// tunnels. Populated by the multi-tunnel manager so the frontend can show

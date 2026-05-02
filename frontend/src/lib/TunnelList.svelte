@@ -12,16 +12,19 @@
 
   // Connected indicators from active_tunnels array (multi-tunnel aware).
   $: activeSet = new Set($connectionStatus?.active_tunnels || []);
-  // Build a map of tunnel name → has handshake for dot color.
+  // Build a map of tunnel name → has handshake for dot color. Prefer the
+  // explicit `has_handshake` boolean from the backend; fall back to
+  // truthiness of `last_handshake` for older helper versions.
   $: tunnelHandshakes = (() => {
     const map = {};
     const tunnelStatuses = $connectionStatus?.tunnels || [];
     for (const ts of tunnelStatuses) {
-      map[ts.tunnel_name] = !!ts.last_handshake;
+      map[ts.tunnel_name] = ts.has_handshake ?? !!ts.last_handshake;
     }
     // Primary tunnel status
     if ($connectionStatus?.tunnel_name) {
-      map[$connectionStatus.tunnel_name] = !!$connectionStatus.last_handshake;
+      map[$connectionStatus.tunnel_name] =
+        $connectionStatus.has_handshake ?? !!$connectionStatus.last_handshake;
     }
     return map;
   })();

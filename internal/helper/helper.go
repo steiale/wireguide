@@ -317,13 +317,25 @@ func (h *Helper) suspendFirewall() error {
 	h.mu.Lock()
 	h.fwSavedKillSwitch = ksEnabled
 	h.fwSavedDNSProtection = dnsEnabled
-	// DNS servers are stored from any active config's Interface.DNS
+	// H2: Union DNS lists from ALL active configs (not just the first one
+	// with a non-empty DNS list). With multi-tunnel setups, breaking on the
+	// first match silently dropped DNS servers belonging to other tunnels
+	// when the firewall was resumed.
+	seen := make(map[string]struct{})
+	var combined []string
 	for _, cfg := range h.activeCfgs {
-		if len(cfg.Interface.DNS) > 0 {
-			h.fwSavedDNSServers = cfg.Interface.DNS
-			break
+		for _, dns := range cfg.Interface.DNS {
+			if dns == "" {
+				continue
+			}
+			if _, ok := seen[dns]; ok {
+				continue
+			}
+			seen[dns] = struct{}{}
+			combined = append(combined, dns)
 		}
 	}
+	h.fwSavedDNSServers = combined
 	h.mu.Unlock()
 
 	if !ksEnabled && !dnsEnabled {

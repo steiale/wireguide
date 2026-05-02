@@ -27,14 +27,17 @@
     t.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Build handshake map for dot state
+  // Build handshake map for dot state. Prefer the explicit `has_handshake`
+  // boolean from the backend; fall back to truthiness of the formatted
+  // `last_handshake` string for older helper versions.
   $: handshakeMap = (() => {
     const map = {};
     for (const ts of ($connectionStatus?.tunnels || [])) {
-      map[ts.tunnel_name] = !!ts.last_handshake;
+      map[ts.tunnel_name] = ts.has_handshake ?? !!ts.last_handshake;
     }
     if ($connectionStatus?.tunnel_name) {
-      map[$connectionStatus.tunnel_name] = !!$connectionStatus.last_handshake;
+      map[$connectionStatus.tunnel_name] =
+        $connectionStatus.has_handshake ?? !!$connectionStatus.last_handshake;
     }
     return map;
   })();

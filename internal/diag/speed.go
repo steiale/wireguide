@@ -20,9 +20,13 @@ type SpeedTestResult struct {
 func RunSpeedTest() *SpeedTestResult {
 	result := &SpeedTestResult{}
 
-	// Measure latency first
+	// Measure latency first. Use an explicit client with a 10s timeout —
+	// the package-level http.Head uses the default client, which has no
+	// deadline and will hang forever if the network drops mid-handshake.
+	latencyClient := &http.Client{Timeout: 10 * time.Second}
 	start := time.Now()
-	resp, err := http.Head("https://www.google.com")
+	req, _ := http.NewRequest("HEAD", "https://www.google.com", nil)
+	resp, err := latencyClient.Do(req)
 	if err != nil {
 		result.Error = fmt.Sprintf("connectivity check failed: %v", err)
 		return result

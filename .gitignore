@@ -40,3 +40,7 @@ build/darwin/Assets.car
 .claude/plans/
 .claude/settings.local.json
 .spec-mix/
+
+# Release artifacts
+*.zip
+dist/

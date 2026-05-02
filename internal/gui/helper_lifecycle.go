@@ -17,7 +17,10 @@ import (
 // ensureHelper connects to an existing helper (via socket) or spawns a new
 // one with privilege elevation. Polls for readiness until the context expires.
 func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
-	addr := ipc.DefaultSocketPath()
+	addr, err := ipc.DefaultSocketPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve socket path: %w", err)
+	}
 	forceReinstall := false
 
 	// Try an existing helper first (survives GUI restarts).

@@ -37,7 +37,11 @@ const (
 	ErrCodeMethodNotFound = -32601
 	ErrCodeInvalidParams  = -32602
 	ErrCodeInternalError  = -32603
-	ErrCodeAppError = -32000
+	ErrCodeAppError       = -32000
+	// ErrCodeAlreadyConnected: the requested tunnel is already active. The
+	// GUI should treat this as a no-op (no error toast) rather than a real
+	// failure, since the user's intent (the tunnel being up) is satisfied.
+	ErrCodeAlreadyConnected = -32001
 )
 
 // RPC method names

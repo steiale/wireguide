@@ -2,7 +2,7 @@
   import { selectedTunnel, connectionStatus, refreshTunnels, refreshStatus } from '../stores/tunnels.js';
   import { t } from '../i18n/index.js';
   import { errText } from './errors.js';
-  import { createEventDispatcher, tick, onDestroy } from 'svelte';
+  import { createEventDispatcher, tick, onMount, onDestroy } from 'svelte';
 
   export let TunnelService;
   const dispatch = createEventDispatcher();
@@ -41,7 +41,10 @@
   $: isConnecting = !isConnected
     && $connectionStatus?.state === 'connecting'
     && $connectionStatus?.tunnel_name === $selectedTunnel?.name;
-  $: noHandshake = isConnected && !status?.last_handshake;
+  // Prefer the explicit boolean from the backend (`has_handshake`); fall
+  // back to truthiness of the `last_handshake` string for older helper
+  // versions that don't yet emit the field.
+  $: noHandshake = isConnected && !(status?.has_handshake ?? !!status?.last_handshake);
   // Use the primary status if it matches the selected tunnel (has full stats).
   // Otherwise fall back to the lightweight per-tunnel info from the tunnels array
   // (name + state + handshake only, no rx/tx/duration).
@@ -113,15 +116,21 @@
   }
 
   // Global ESC handler — closes whichever modal is open.
+  // Attached inside onMount so the listener lifetime is bound to the
+  // component instance. The previous module-scope attachment leaked
+  // across hot reloads in dev and registered duplicates when the
+  // component remounted.
   function handleKeydown(e) {
     if (e.key !== 'Escape') return;
     if (showDeleteConfirm) cancelDelete();
     else if (renaming) cancelRename();
   }
-  if (typeof window !== 'undefined') {
+  onMount(() => {
     window.addEventListener('keydown', handleKeydown);
-    onDestroy(() => window.removeEventListener('keydown', handleKeydown));
-  }
+  });
+  onDestroy(() => {
+    window.removeEventListener('keydown', handleKeydown);
+  });
 
   function formatBytes(bytes) {
     if (bytes === 0) return '0 B';

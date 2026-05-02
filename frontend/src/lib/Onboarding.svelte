@@ -1,6 +1,8 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
   import { TunnelService } from '../../bindings/github.com/korjwl1/wireguide/internal/app';
+  import { uint8ArrayToBase64 } from './encoding.js';
+  import { errText } from './errors.js';
 
   const dispatch = createEventDispatcher();
 
@@ -49,7 +51,9 @@
     try {
       if (file.name.toLowerCase().endsWith('.zip')) {
         const buf = await file.arrayBuffer();
-        const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        // Chunked encoding — see lib/encoding.js. The naïve spread version
+        // here used to blow the call stack on zips larger than ~120 KB.
+        const b64 = uint8ArrayToBase64(new Uint8Array(buf));
         const res = await TunnelService.ImportZipData(b64);
         results = res ?? [];
       } else {
@@ -62,7 +66,7 @@
       await new Promise(r => setTimeout(r, 1200));
       dispatch('complete');
     } catch (err) {
-      results = [{ name: file.name, error: String(err) }];
+      results = [{ name: file.name, error: errText(err) }];
       importing = false;
     }
   }

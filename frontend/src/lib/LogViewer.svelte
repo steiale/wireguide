@@ -70,16 +70,22 @@
   // Intercept native copy to format grid cells as tab-separated text
   // instead of the browser's default (which often collapses grid columns
   // into a single line or adds weird spacing).
+  //
+  // The previous implementation called sel.containsNode(row, true) for
+  // every .log-entry in the container — each call walks the row's subtree,
+  // making the whole pass O(n²) for large log buffers. We now ask the
+  // selection's Range whether it intersects each row, which is O(1) per
+  // row, keeping the total cost O(n).
   function handleCopy(e) {
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return;
-
-    // Walk all .log-entry elements that intersect the selection range
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
     if (!logContainer) return;
+
+    const range = sel.getRangeAt(0);
     const entries = logContainer.querySelectorAll('.log-entry');
     const lines = [];
     for (const row of entries) {
-      if (sel.containsNode(row, true)) {
+      if (range.intersectsNode(row)) {
         const time = row.querySelector('.log-time')?.textContent || '';
         const source = row.querySelector('.log-source')?.textContent || '';
         const level = row.querySelector('.log-level')?.textContent || '';
@@ -116,7 +122,7 @@
   </div>
 
   <div class="log-entries" bind:this={logContainer} on:copy={handleCopy}>
-    {#each filtered as entry, i (i)}
+    {#each filtered as entry (entry.time + '|' + entry.source + '|' + entry.message)}
       <div class="log-entry level-{entry.level}">
         <span class="log-time">{formatTime(entry.time)}</span>
         <span class="log-source">{entry.source}</span>

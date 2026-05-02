@@ -288,8 +288,9 @@ export function ListTunnelsLocal() {
 }
 
 /**
- * OpenURL opens a URL in the default browser. Only HTTPS URLs on
- * github.com are allowed to prevent misuse from a compromised frontend.
+ * OpenURL opens a URL in the default browser. Only an explicit allowlist of
+ * known-safe URLs is accepted to prevent a compromised frontend from
+ * redirecting the user to an attacker-controlled GitHub page.
  * @param {string} url
  * @returns {$CancellablePromise<void>}
  */

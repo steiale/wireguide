@@ -14,6 +14,7 @@
   import { applyTheme, initThemeWatcher } from './stores/theme.js';
   import { startLogListener, stopLogListener } from './stores/logs.js';
   import { errText } from './lib/errors.js';
+  import { uint8ArrayToBase64 } from './lib/encoding.js';
   import { t, setLanguage, detectLanguage } from './i18n/index.js';
   import { TunnelService } from '../bindings/github.com/korjwl1/wireguide/internal/app';
 
@@ -161,19 +162,13 @@
 
   // Import a .zip from a browser File object (used by file picker).
   // Wails serialises []byte as a base64 JSON string, so we must encode manually.
-  // btoa(String.fromCharCode(...bytes)) blows the call stack on large files, so
-  // we process in 8 KB chunks.
+  // See lib/encoding.js for the chunked-encoder rationale.
   async function importZipFromFile(file) {
     if (!file) return;
     try {
       const buf = await file.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let binary = '';
-      const CHUNK = 8192;
-      for (let i = 0; i < bytes.length; i += CHUNK) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-      }
-      const results = await TunnelService.ImportZipData(btoa(binary));
+      const b64 = uint8ArrayToBase64(new Uint8Array(buf));
+      const results = await TunnelService.ImportZipData(b64);
       showZipResults(results);
     } catch (e) {
       showToast('Import failed: ' + errText(e));
@@ -377,7 +372,7 @@
     try {
       await TunnelService.RunUpdate(updateInfo);
     } catch (e) {
-      showToast('Update failed: ' + (e?.message || e));
+      showToast('Update failed: ' + errText(e));
     }
   }
 </script>

@@ -252,16 +252,54 @@ func (s *TunnelStore) LoadMeta(name string) (*TunnelMeta, error) {
 }
 
 // SaveMeta writes per-tunnel metadata atomically.
+//
+// Uses os.CreateTemp + Sync + Rename — the same pattern as Save() — instead of
+// a predictable "<name>.tmp" suffix. The predictable suffix race-clobbered
+// concurrent saves of the same tunnel and skipped fsync, so a crash during
+// the rename window could leave a half-written meta file.
 func (s *TunnelStore) SaveMeta(name string, meta *TunnelMeta) error {
+	if err := ValidateTunnelName(name); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.metaPath(name) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+
+	dst := s.metaPath(name)
+	dir := filepath.Dir(dst)
+
+	// CreateTemp gives us a unique randomized name so concurrent SaveMeta
+	// calls for the same tunnel can't clobber each other's temp file.
+	f, err := os.CreateTemp(dir, "."+name+".meta.*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.metaPath(name))
+	tmpPath := f.Name()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	// Tighten perms after rename — CreateTemp uses 0600 already on most
+	// platforms but we set it explicitly to match Save()'s contract.
+	if err := os.Chmod(dst, 0600); err != nil {
+		return err
+	}
+	return nil
 }
 
 // DeleteMeta removes the metadata sidecar file (called when tunnel is deleted).

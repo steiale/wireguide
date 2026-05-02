@@ -3,6 +3,8 @@
 package elevate
 
 import (
+	"bytes"
+	"encoding/xml"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,6 +14,16 @@ import (
 	"strings"
 	"time"
 )
+
+// xmlEscape returns s with XML-special characters escaped. Used when
+// interpolating paths or labels into the LaunchDaemon plist so that an
+// unexpected character (e.g. an ampersand in a future user-controlled path)
+// cannot break the plist or inject elements.
+func xmlEscape(s string) string {
+	var buf bytes.Buffer
+	_ = xml.EscapeText(&buf, []byte(s))
+	return buf.String()
+}
 
 const (
 	daemonLabel  = "io.github.steiale.wireguide-plus.helper"
@@ -57,6 +69,11 @@ func installAndLoadDaemon(args Args) error {
 	// the AppleScript string. Go writes it as the current user to /tmp,
 	// then the root shell script copies it to /Library/LaunchDaemons/.
 	uid := os.Getuid()
+	// L2: XML-escape every interpolated value before embedding it in the
+	// plist. The current values come from constants and our own argv so
+	// this is defence-in-depth — but the moment a user-controlled path
+	// (e.g. a custom data dir) flows in here, an unescaped `&` or `<`
+	// would break the plist or open an injection vector.
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -81,7 +98,7 @@ func installAndLoadDaemon(args Args) error {
     <string>/var/log/wireguide-plus-helper.log</string>
 </dict>
 </plist>
-`, daemonLabel, daemonBinary, args.SocketPath, uid, args.DataDir)
+`, xmlEscape(daemonLabel), xmlEscape(daemonBinary), xmlEscape(args.SocketPath), uid, xmlEscape(args.DataDir))
 
 	tmpPlist := filepath.Join(os.TempDir(), daemonLabel+".plist")
 	if err := os.WriteFile(tmpPlist, []byte(plist), 0644); err != nil {
@@ -152,29 +169,6 @@ func isSocketLive(socketPath string) bool {
 	}
 	conn.Close()
 	return true
-}
-
-// spawnViaOsascript launches the helper directly with root privileges via
-// osascript. Used during development when the LaunchDaemon is not installed.
-func spawnViaOsascript(args Args) error {
-	exe, err := SelfPath()
-	if err != nil {
-		return err
-	}
-
-	logPath := "/var/log/wireguide-plus-helper.log"
-	cmd := fmt.Sprintf(
-		`(echo '' ; echo '==== helper spawn ====' ; date ; %s --helper --socket=%s --uid=%d --data-dir=%s) >> %s 2>&1 & disown`,
-		shellQuote(exe), shellQuote(args.SocketPath), args.SocketUID, shellQuote(args.DataDir), shellQuote(logPath),
-	)
-	escaped := strings.ReplaceAll(cmd, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-	script := fmt.Sprintf(
-		`do shell script "%s" with administrator privileges with prompt "WireGuide+ needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration."`,
-		escaped,
-	)
-
-	return exec.Command("osascript", "-e", script).Run()
 }
 
 // shellQuote wraps a value in single quotes, escaping embedded single quotes.

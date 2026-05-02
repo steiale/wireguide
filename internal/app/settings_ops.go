@@ -134,10 +134,32 @@ func (s *TunnelService) SetHealthCheck(enabled bool) error {
 	return s.call(ipc.MethodSetHealthCheck, ipc.SetHealthCheckRequest{Enabled: enabled}, nil)
 }
 
-// OpenURL opens a URL in the default browser. Only HTTPS URLs on
-// github.com are allowed to prevent misuse from a compromised frontend.
+// allowedOpenURLs is the exact-match list of URLs OpenURL will open. We
+// hardcode the specific URLs the app actually links to (release notes, issue
+// tracker, license, repo home) instead of allowing anything under
+// https://github.com/, which would let a compromised frontend redirect users
+// to attacker-controlled repos hosted on the same domain.
+var allowedOpenURLs = map[string]struct{}{
+	// Releases page — used by the auto-update fallback.
+	"https://github.com/korjwl1/wireguide/releases/latest": {},
+	// Repo home / issues / license — linked from the Settings "About" panel.
+	// The frontend currently points at the steiale/wireguide org; both
+	// owners' canonical pages are listed so the existing UI keeps working
+	// without silently breaking.
+	"https://github.com/steiale/wireguide":                       {},
+	"https://github.com/steiale/wireguide/issues":                {},
+	"https://github.com/steiale/wireguide/blob/main/LICENSE":     {},
+	"https://github.com/steiale/wireguide/releases/latest":       {},
+	"https://github.com/korjwl1/wireguide":                       {},
+	"https://github.com/korjwl1/wireguide/issues":                {},
+	"https://github.com/korjwl1/wireguide/blob/main/LICENSE":     {},
+}
+
+// OpenURL opens a URL in the default browser. Only an explicit allowlist of
+// known-safe URLs is accepted to prevent a compromised frontend from
+// redirecting the user to an attacker-controlled GitHub page.
 func (s *TunnelService) OpenURL(url string) error {
-	if !strings.HasPrefix(url, "https://github.com/") {
+	if _, ok := allowedOpenURLs[url]; !ok {
 		return fmt.Errorf("URL not allowed: %s", url)
 	}
 	if s.app != nil {
@@ -180,15 +202,32 @@ func (s *TunnelService) RunUpdate(info *update.UpdateInfo) error {
 		return nil
 	}
 
-	// Non-brew installs: open GitHub Releases page in browser.
-	// Auto-replacing the app bundle needs sudo and has many failure modes,
-	// so we let the user download and replace manually — same UX as most
-	// indie macOS apps.
-	slog.Info("update: opening GitHub Releases page (non-brew install)")
-	if s.app != nil {
-		return s.app.Browser.OpenURL("https://github.com/korjwl1/wireguide/releases/latest")
+	// Non-brew installs: download the asset, verify its SHA-256, then reveal
+	// the verified file in Finder so the user can drag-replace the app
+	// bundle manually. Auto-replacing the running .app needs elevated
+	// privileges and has many failure modes — same UX as most indie macOS
+	// apps. If anything in the download/verify pipeline fails (no checksum,
+	// network down, hash mismatch), we surface the error to the GUI; the
+	// user can fall back to the Releases page from the dialog.
+	slog.Info("update: downloading + verifying asset (non-brew install)")
+	dlPath, err := update.DownloadUpdate(info)
+	if err != nil {
+		// If verification failed or download failed, fall back to opening
+		// the releases page rather than blocking the user entirely. The
+		// download error is logged so curious users can find it in the
+		// log viewer.
+		slog.Warn("update: download/verify failed, opening Releases page as fallback", "error", err)
+		if s.app != nil {
+			_ = s.app.Browser.OpenURL("https://github.com/korjwl1/wireguide/releases/latest")
+		} else {
+			_ = exec.Command("open", "https://github.com/korjwl1/wireguide/releases/latest").Run()
+		}
+		return fmt.Errorf("download/verify failed: %w", err)
 	}
-	return exec.Command("open", "https://github.com/korjwl1/wireguide/releases/latest").Run()
+	if err := update.Install(dlPath, info); err != nil {
+		return fmt.Errorf("install (reveal): %w", err)
+	}
+	return nil
 }
 
 // ScanForWireGuardConfigs returns existing WireGuard configs found on the

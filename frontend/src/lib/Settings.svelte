@@ -11,6 +11,7 @@
 
   let aboutUpdating = false;
   let aboutShowVpnWarn = false;
+  let saveError = '';
 
   function aboutRequestUpdate() {
     if ($connectionStatus?.state === 'connected') {
@@ -79,8 +80,12 @@
         pin_interface: settings.pin_interface,
         log_level: settings.log_level,
       });
+      saveError = '';
+      return true;
     } catch (e) {
       console.error('save settings:', e);
+      saveError = e?.message ?? String(e);
+      return false;
     }
   }
 
@@ -172,11 +177,17 @@
     if (e.target === e.currentTarget) close();
   }
 
-  function close() {
+  async function close() {
+    // If a debounced save is still pending, flush it synchronously
+    // before closing so the user's last edit isn't silently dropped.
+    // If the save fails we surface the error and keep the modal open
+    // — closing on top of a swallowed failure would leave settings
+    // out-of-sync with the on-disk JSON.
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
-      save();
+      const ok = await save();
+      if (!ok) return;
     }
     onClose();
   }
@@ -325,6 +336,9 @@
     </div>
 
     <div class="modal-footer">
+      {#if saveError}
+        <span class="save-error" role="alert">{saveError}</span>
+      {/if}
       <button type="button" class="btn-close" on:mousedown|stopPropagation={close}>{$t('settings.close')}</button>
     </div>
   </div>
@@ -560,9 +574,16 @@
     display: flex;
     justify-content: flex-end;
     align-items: center;
+    gap: 12px;
     margin-top: 16px;
     padding-top: 12px;
     border-top: 0.5px solid var(--border);
+  }
+  .save-error {
+    flex: 1;
+    color: var(--error-text, #d03025);
+    font: 400 12px/16px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    text-align: left;
   }
   .btn-close {
     min-width: 72px;

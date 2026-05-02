@@ -72,6 +72,18 @@ export class ConnectionStatus {
              */
             this["last_handshake"] = undefined;
         }
+        if (!("has_handshake" in $$source)) {
+            /**
+             * HasHandshake is true iff the tunnel has at least one peer that has
+             * completed a handshake (LastHandshakeTime != zero). The frontend used
+             * to derive this from the truthiness of the formatted LastHandshake
+             * string, which broke whenever the formatter returned "0s" for a fresh
+             * tunnel. Carrying an explicit boolean removes that ambiguity.
+             * @member
+             * @type {boolean}
+             */
+            this["has_handshake"] = false;
+        }
         if (/** @type {any} */(false)) {
             /**
              * @member
@@ -115,14 +127,14 @@ export class ConnectionStatus {
      * @returns {ConnectionStatus}
      */
     static createFrom($$source = {}) {
-        const $$createField9_0 = $$createType0;
-        const $$createField10_0 = $$createType2;
+        const $$createField10_0 = $$createType0;
+        const $$createField11_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("active_tunnels" in $$parsedSource) {
-            $$parsedSource["active_tunnels"] = $$createField9_0($$parsedSource["active_tunnels"]);
+            $$parsedSource["active_tunnels"] = $$createField10_0($$parsedSource["active_tunnels"]);
         }
         if ("tunnels" in $$parsedSource) {
-            $$parsedSource["tunnels"] = $$createField10_0($$parsedSource["tunnels"]);
+            $$parsedSource["tunnels"] = $$createField11_0($$parsedSource["tunnels"]);
         }
         return new ConnectionStatus(/** @type {Partial<ConnectionStatus>} */($$parsedSource));
     }

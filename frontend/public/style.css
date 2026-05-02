@@ -339,6 +339,29 @@ button::-moz-focus-inner {
     border-radius: var(--radius-sm);
 }
 
+/* Re-enable text selection for content users actually need to copy.
+ * The default `user-select: none` on :root prevents accidental drag-
+ * selection of UI chrome, but it also blocks copying error messages,
+ * modal contents, popup text, log entries, and config values — which
+ * are exactly the things users want to paste into bug reports. We
+ * scope the override to a small set of containers so the global
+ * "no selection" default still applies to buttons, navigation rails,
+ * etc. Use `:global` selectors so these rules survive Svelte scoping. */
+.modal,
+.modal *,
+.popup,
+.popup *,
+.error-msg,
+.confirm-dialog,
+.confirm-dialog *,
+.about-section,
+.about-section *,
+.popup-notes,
+code, pre {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
 /* Reduced motion — disable all non-essential transitions */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {

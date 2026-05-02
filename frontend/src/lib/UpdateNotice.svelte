@@ -7,9 +7,20 @@
 
   let installing = false;
   let showConfirm = false;
+  // Local reactive copy of the dismissed-version marker so clicking Skip
+  // closes the popup immediately. localStorage reads are NOT reactive in
+  // Svelte, so we shadow them with this variable and seed it from storage
+  // on init. dismiss() updates both.
+  let skippedVersion = (() => {
+    try { return localStorage.getItem('wireguide_skip_version') || ''; } catch { return ''; }
+  })();
 
   // Check if this version was previously dismissed
-  $: dismissed = (() => { try { return updateInfo?.version && localStorage.getItem('wireguide_skip_version') === updateInfo.version; } catch { return false; } })();
+  $: dismissed = (() => {
+    if (!updateInfo?.version) return false;
+    if (skippedVersion === updateInfo.version) return true;
+    try { return localStorage.getItem('wireguide_skip_version') === updateInfo.version; } catch { return false; }
+  })();
   $: showPopup = updateInfo?.available && !dismissed;
 
   function requestInstall() {
@@ -29,7 +40,11 @@
   }
 
   function dismiss() {
-    // Save dismissed version so popup doesn't show again for this version
+    // Update the reactive marker first so the popup closes immediately —
+    // the localStorage write is fire-and-forget. Without this, $: dismissed
+    // wouldn't re-run because the localStorage read inside it isn't a
+    // reactive dependency, and the popup stayed visible until app restart.
+    if (updateInfo?.version) skippedVersion = updateInfo.version;
     try {
       if (updateInfo?.version) {
         localStorage.setItem('wireguide_skip_version', updateInfo.version);

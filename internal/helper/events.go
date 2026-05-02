@@ -29,6 +29,7 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 					State:         ts.State,
 					TunnelName:    ts.TunnelName,
 					LastHandshake: ts.LastHandshake,
+					HasHandshake:  ts.HasHandshake,
 				})
 			}
 		}

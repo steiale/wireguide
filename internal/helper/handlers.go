@@ -94,11 +94,34 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 		}
 	}
 
+	// M6: Early-return if this exact tunnel is already active. The manager
+	// would also catch this and return ErrAlreadyConnected, but checking up
+	// front avoids the unnecessary mutate-then-rollback dance on activeCfgs
+	// and lets the GUI treat it as a no-op via a typed error code.
+	h.mu.Lock()
+	_, alreadyCached := h.activeCfgs[req.Config.Name]
+	h.mu.Unlock()
+	if alreadyCached {
+		for _, n := range h.manager.ActiveTunnels() {
+			if n == req.Config.Name {
+				return nil, &ipc.CodedError{
+					Code:    ipc.ErrCodeAlreadyConnected,
+					Message: fmt.Sprintf("tunnel %q is already connected", req.Config.Name),
+				}
+			}
+		}
+	}
+
 	// Cache the active config BEFORE dispatching to the manager, so that if
 	// the reconnect monitor fires during Connect() it sees the new config
 	// (not nil or the previous one). Roll back on failure.
+	//
+	// H1: snapshot autoReconnect alongside activeCfgs so that a failed
+	// reconnect rollback restores the user's auto-reconnect preference,
+	// not the default zero value.
 	h.mu.Lock()
 	prevCfgs := h.copyActiveCfgs()
+	prevAutoReconnect, prevHadAutoReconnect := h.autoReconnect[req.Config.Name]
 	h.activeCfgs[req.Config.Name] = req.Config
 	h.autoReconnect[req.Config.Name] = req.AutoReconnect
 	h.mu.Unlock()
@@ -107,9 +130,12 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 		h.mu.Lock()
 		delete(h.activeCfgs, req.Config.Name)
 		delete(h.autoReconnect, req.Config.Name)
-		// Restore previous if there was one
+		// Restore previous config + autoReconnect if there was one.
 		if prev, ok := prevCfgs[req.Config.Name]; ok {
 			h.activeCfgs[req.Config.Name] = prev
+		}
+		if prevHadAutoReconnect {
+			h.autoReconnect[req.Config.Name] = prevAutoReconnect
 		}
 		h.mu.Unlock()
 		return nil, err
@@ -123,7 +149,7 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 
 	// Parse optional tunnel name from request.
 	var tunnelName string
-	if params != nil && len(params) > 0 {
+	if len(params) > 0 {
 		var req ipc.DisconnectRequest
 		if err := json.Unmarshal(params, &req); err == nil {
 			tunnelName = req.TunnelName

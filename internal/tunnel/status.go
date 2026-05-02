@@ -68,6 +68,7 @@ func GetStatus(ifaceName string, tunnelName string, connectedAt time.Time) (*Con
 
 	if !status.LastHandshakeTime.IsZero() {
 		status.LastHandshake = domain.FormatDuration(time.Since(status.LastHandshakeTime))
+		status.HasHandshake = true
 	}
 
 	return status, nil
