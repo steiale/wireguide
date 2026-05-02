@@ -11,6 +11,7 @@
   const dispatch = createEventDispatcher();
 
   let expandedName = null;
+  let chartReadyNames = new Set(); // names where slide animation has finished
   let details = {};   // name → TunnelDetail object
   let metas = {};     // name → TunnelMeta object
   let loading = {};   // name → bool (disconnect in progress)
@@ -46,10 +47,17 @@
   async function toggleExpand(name) {
     if (expandedName === name) {
       expandedName = null;
+      chartReadyNames.delete(name);
+      chartReadyNames = chartReadyNames;
       selectedTunnel.set(null);
       return;
     }
     expandedName = name;
+    // Delay chart mount until after the 180ms slide animation so the canvas
+    // can read non-zero offsetWidth/offsetHeight on its first draw tick.
+    setTimeout(() => {
+      chartReadyNames = new Set([...chartReadyNames, name]);
+    }, 220);
     const tun = ($tunnels || []).find(t => t.name === name);
     if (tun) selectedTunnel.set(tun);
 
@@ -199,9 +207,11 @@
                     <span class="stat-pill">🤝 {status.last_handshake}</span>
                   {/if}
                 </div>
-                <div class="card-chart">
-                  <StatsDashboard />
-                </div>
+                {#if chartReadyNames.has(tun.name)}
+                  <div class="card-chart">
+                    <StatsDashboard />
+                  </div>
+                {/if}
               {/if}
 
               <!-- Config info rows -->
