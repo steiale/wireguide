@@ -126,6 +126,44 @@ export class DNSServer {
 }
 
 /**
+ * FoundConfig is a WireGuard .conf found on the filesystem.
+ */
+export class FoundConfig {
+    /**
+     * Creates a new FoundConfig instance.
+     * @param {Partial<FoundConfig>} [$$source = {}] - The source object to create the FoundConfig.
+     */
+    constructor($$source = {}) {
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("path" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["path"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FoundConfig instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {FoundConfig}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FoundConfig(/** @type {Partial<FoundConfig>} */($$parsedSource));
+    }
+}
+
+/**
  * RouteEntry mirrors diag.RouteEntry for Wails JSON serialisation.
  */
 export class RouteEntry {

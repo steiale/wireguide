@@ -42,6 +42,31 @@
     }
   }
 
+  async function handleFileImport(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    importing = true;
+    try {
+      if (file.name.toLowerCase().endsWith('.zip')) {
+        const buf = await file.arrayBuffer();
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        const res = await TunnelService.ImportZipData(b64);
+        results = res ?? [];
+      } else {
+        const text = await file.text();
+        const name = file.name.replace(/\.conf$/i, '');
+        await TunnelService.ImportConfig(name, text);
+        results = [{ name }];
+      }
+      await TunnelService.CompleteOnboarding();
+      await new Promise(r => setTimeout(r, 1200));
+      dispatch('complete');
+    } catch (err) {
+      results = [{ name: file.name, error: String(err) }];
+      importing = false;
+    }
+  }
+
   async function skip() {
     await TunnelService.CompleteOnboarding().catch(() => {});
     dispatch('complete');
@@ -72,8 +97,15 @@
         {/each}
       </div>
     {:else if configs.length === 0}
-      <p class="no-configs">No existing WireGuard configs found on this machine.</p>
-      <p class="no-configs-hint">You can import .conf files or add tunnels manually.</p>
+      <div class="no-configs-block">
+        <p class="no-configs">No WireGuard config files found automatically.</p>
+        <div class="no-configs-tip">
+          <strong>Using the WireGuard app (Mac App Store)?</strong><br>
+          Its configs aren't stored as files. Export them first:<br>
+          Open WireGuard → <em>File → Export Tunnel(s) as Zip</em><br>
+          then import the zip below.
+        </div>
+      </div>
     {:else}
       <p class="found-label">Found {configs.length} existing config{configs.length !== 1 ? 's' : ''}. Select which to import:</p>
       <div class="config-list">
@@ -93,6 +125,11 @@
           <button class="btn-primary" on:click={importSelected} disabled={importing || selected.size === 0}>
             {importing ? 'Importing…' : `Import ${selected.size} config${selected.size !== 1 ? 's' : ''}`}
           </button>
+        {:else}
+          <label class="btn-primary btn-import-file" class:disabled={importing}>
+            <input type="file" accept=".conf,.zip" style="display:none" on:change={handleFileImport} />
+            Import .conf / .zip
+          </label>
         {/if}
         <button class="btn-secondary" on:click={skip} disabled={importing}>
           {configs.length === 0 ? 'Get started' : 'Skip'}
@@ -319,5 +356,48 @@
   .btn-secondary:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .no-configs-block {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .no-configs {
+    font-size: 14px;
+    color: var(--text-primary);
+    margin: 0;
+  }
+
+  .no-configs-tip {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border-left: 3px solid var(--accent);
+  }
+
+  .no-configs-tip strong {
+    color: var(--text-primary);
+  }
+
+  .no-configs-tip em {
+    font-style: normal;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .btn-import-file {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .btn-import-file.disabled {
+    opacity: 0.5;
+    pointer-events: none;
   }
 </style>

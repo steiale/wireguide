@@ -85,6 +85,13 @@ export class Settings {
              */
             this["log_level"] = "";
         }
+        if (!("onboarding_complete" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["onboarding_complete"] = false;
+        }
 
         Object.assign(this, $$source);
     }

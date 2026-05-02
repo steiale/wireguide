@@ -69,6 +69,14 @@ export function CheckForUpdate() {
 }
 
 /**
+ * CompleteOnboarding marks onboarding as done in settings.
+ * @returns {$CancellablePromise<void>}
+ */
+export function CompleteOnboarding() {
+    return $Call.ByID(4101637083);
+}
+
+/**
  * Connect loads a tunnel config from local storage and asks the helper to
  * bring it up. The helper re-validates server-side.
  * @param {string} name
@@ -200,6 +208,18 @@ export function ImportConfig(name, content) {
 }
 
 /**
+ * ImportFoundConfigs reads and imports the .conf files at the given absolute
+ * paths. Returns per-file results reusing the ZipImportResult shape.
+ * @param {string[]} paths
+ * @returns {$CancellablePromise<$models.ZipImportResult[]>}
+ */
+export function ImportFoundConfigs(paths) {
+    return $Call.ByID(3040882779, paths).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType15($result);
+    }));
+}
+
+/**
  * ImportZip extracts all .conf files from a zip archive and imports each one.
  * Returns per-file results; an error is only returned for zip-level failures.
  * @param {string} path
@@ -323,6 +343,17 @@ export function SaveSettings(settings) {
 }
 
 /**
+ * ScanForWireGuardConfigs returns existing WireGuard configs found on the
+ * filesystem that haven't been imported into WireGuide+ yet.
+ * @returns {$CancellablePromise<$models.FoundConfig[]>}
+ */
+export function ScanForWireGuardConfigs() {
+    return $Call.ByID(1549830634).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType20($result);
+    }));
+}
+
+/**
  * SetApp injects the Wails app for dialog access.
  * @param {application$0.App | null} app
  * @returns {$CancellablePromise<void>}
@@ -408,7 +439,7 @@ export function UpdateConfig(name, content) {
  */
 export function ValidateConfig(content) {
     return $Call.ByID(592398029, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType19($result);
+        return $$createType21($result);
     }));
 }
 
@@ -432,4 +463,6 @@ const $$createType15 = $Create.Array($$createType14);
 const $$createType16 = $Create.Array($$createType12);
 const $$createType17 = $models.DNSLeakResult.createFrom;
 const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = $Create.Array($Create.Any);
+const $$createType19 = $models.FoundConfig.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = $Create.Array($Create.Any);
