@@ -646,11 +646,10 @@
     padding-top: 52px; /* traffic-light clearance */
   }
   .app-title {
-    padding: var(--space-2) var(--space-4) var(--space-4);
-    font: 500 10px/13px var(--font-sans);
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    padding: var(--space-3) var(--space-4) var(--space-4);
+    font: 700 14px/18px var(--font-sans);
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
   }
   .nav-item {
     display: flex;
@@ -745,6 +744,8 @@
     background: var(--bg-selected);
     color: var(--text-primary);
     font-weight: 500;
+    border-left: 2px solid var(--accent);
+    padding-left: calc(var(--space-8) - 2px);
   }
 
   /* Sidebar tunnel sub-item: dot + name. Reuses .nav-sub-item layout. */
@@ -829,8 +830,8 @@
     cursor: pointer;
     font: var(--text-headline);
   }
-  .btn-primary:hover { filter: brightness(1.08); }
-  .btn-primary:active { filter: brightness(0.94); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--accent) 84%, white); }
+  .btn-primary:active { background: color-mix(in srgb, var(--accent) 76%, black); }
   .btn-secondary {
     height: 28px;
     padding: 0 var(--space-4);
@@ -845,8 +846,7 @@
   .btn-secondary:active { background: var(--bg-active); }
   @media (prefers-reduced-motion: no-preference) {
     .btn-primary, .btn-secondary {
-      transition: background-color var(--dur-fast) var(--ease-out),
-                  filter var(--dur-fast) var(--ease-out);
+      transition: background-color var(--dur-fast) var(--ease-out);
     }
   }
 
@@ -1087,10 +1087,9 @@
   }
   @media (prefers-reduced-motion: no-preference) {
     .btn, .btn-connect {
-      transition: background-color var(--dur-fast) var(--ease-out),
-                  filter var(--dur-fast) var(--ease-out);
+      transition: background-color var(--dur-fast) var(--ease-out);
     }
   }
-  .btn-connect:hover:not(:disabled) { filter: brightness(1.08); }
-  .btn-connect:active:not(:disabled) { filter: brightness(0.94); }
+  .btn-connect:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 84%, white); }
+  .btn-connect:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, black); }
 </style>

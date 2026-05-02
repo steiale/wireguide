@@ -187,6 +187,17 @@ export function GetTunnelDetail(name) {
 }
 
 /**
+ * GetTunnelMeta returns per-tunnel metadata (auto-reconnect flag etc.).
+ * @param {string} name
+ * @returns {$CancellablePromise<storage$0.TunnelMeta | null>}
+ */
+export function GetTunnelMeta(name) {
+    return $Call.ByID(4088997336, name).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType13($result);
+    }));
+}
+
+/**
  * GetVersion returns the current app version string.
  * @returns {$CancellablePromise<string>}
  */
@@ -203,7 +214,7 @@ export function GetVersion() {
  */
 export function ImportConfig(name, content) {
     return $Call.ByID(2459134310, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType13($result);
+        return $$createType15($result);
     }));
 }
 
@@ -215,7 +226,7 @@ export function ImportConfig(name, content) {
  */
 export function ImportFoundConfigs(paths) {
     return $Call.ByID(3040882779, paths).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType17($result);
     }));
 }
 
@@ -227,7 +238,7 @@ export function ImportFoundConfigs(paths) {
  */
 export function ImportZip(path) {
     return $Call.ByID(976469479, path).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType17($result);
     }));
 }
 
@@ -239,7 +250,7 @@ export function ImportZip(path) {
  */
 export function ImportZipData(data) {
     return $Call.ByID(2432663343, data).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType17($result);
     }));
 }
 
@@ -257,7 +268,7 @@ export function ImportZipData(data) {
  */
 export function ListTunnels() {
     return $Call.ByID(3587038916).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType16($result);
+        return $$createType18($result);
     }));
 }
 
@@ -272,7 +283,7 @@ export function ListTunnels() {
  */
 export function ListTunnelsLocal() {
     return $Call.ByID(3031176175).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType16($result);
+        return $$createType18($result);
     }));
 }
 
@@ -315,7 +326,7 @@ export function RenameTunnel(oldName, newName) {
  */
 export function RunDNSLeakTest() {
     return $Call.ByID(2469114850).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType20($result);
     }));
 }
 
@@ -343,13 +354,23 @@ export function SaveSettings(settings) {
 }
 
 /**
+ * SaveTunnelMeta persists per-tunnel metadata.
+ * @param {string} name
+ * @param {storage$0.TunnelMeta} meta
+ * @returns {$CancellablePromise<void>}
+ */
+export function SaveTunnelMeta(name, meta) {
+    return $Call.ByID(185268851, name, meta);
+}
+
+/**
  * ScanForWireGuardConfigs returns existing WireGuard configs found on the
  * filesystem that haven't been imported into WireGuide+ yet.
  * @returns {$CancellablePromise<$models.FoundConfig[]>}
  */
 export function ScanForWireGuardConfigs() {
     return $Call.ByID(1549830634).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType20($result);
+        return $$createType22($result);
     }));
 }
 
@@ -439,7 +460,7 @@ export function UpdateConfig(name, content) {
  */
 export function ValidateConfig(content) {
     return $Call.ByID(592398029, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
+        return $$createType23($result);
     }));
 }
 
@@ -456,13 +477,15 @@ const $$createType8 = domain$0.ConnectionStatus.createFrom;
 const $$createType9 = $Create.Nullable($$createType8);
 const $$createType10 = domain$0.WireGuardConfig.createFrom;
 const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = $models.TunnelInfo.createFrom;
+const $$createType12 = storage$0.TunnelMeta.createFrom;
 const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = $models.ZipImportResult.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = $Create.Array($$createType12);
-const $$createType17 = $models.DNSLeakResult.createFrom;
-const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = $models.FoundConfig.createFrom;
-const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = $Create.Array($Create.Any);
+const $$createType14 = $models.TunnelInfo.createFrom;
+const $$createType15 = $Create.Nullable($$createType14);
+const $$createType16 = $models.ZipImportResult.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = $Create.Array($$createType14);
+const $$createType19 = $models.DNSLeakResult.createFrom;
+const $$createType20 = $Create.Nullable($$createType19);
+const $$createType21 = $models.FoundConfig.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = $Create.Array($Create.Any);

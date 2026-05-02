@@ -106,3 +106,34 @@ export class Settings {
         return new Settings(/** @type {Partial<Settings>} */($$parsedSource));
     }
 }
+
+/**
+ * TunnelMeta holds per-tunnel settings that live alongside the .conf file.
+ */
+export class TunnelMeta {
+    /**
+     * Creates a new TunnelMeta instance.
+     * @param {Partial<TunnelMeta>} [$$source = {}] - The source object to create the TunnelMeta.
+     */
+    constructor($$source = {}) {
+        if (!("auto_reconnect" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["auto_reconnect"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TunnelMeta instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {TunnelMeta}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TunnelMeta(/** @type {Partial<TunnelMeta>} */($$parsedSource));
+    }
+}

@@ -153,6 +153,12 @@
   }
   .tunnel-item.active {
     background: var(--bg-selected);
+    border-left: 2px solid var(--accent);
+    padding-left: calc(var(--space-2) - 2px);
+  }
+  .tunnel-item.active.connected {
+    background: linear-gradient(90deg, var(--green-tint) 0%, var(--bg-selected) 60%);
+    border-left: 2px solid var(--green);
   }
   .tunnel-item.active .tunnel-name {
     font-weight: 600;
@@ -216,16 +222,15 @@
   }
   @media (prefers-reduced-motion: no-preference) {
     .btn {
-      transition: background-color var(--dur-fast) var(--ease-out),
-                  filter var(--dur-fast) var(--ease-out);
+      transition: background-color var(--dur-fast) var(--ease-out);
     }
   }
   .btn-primary {
     background: var(--accent);
     color: var(--text-inverse);
   }
-  .btn-primary:hover { filter: brightness(1.08); }
-  .btn-primary:active { filter: brightness(0.94); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--accent) 84%, white); }
+  .btn-primary:active { background: color-mix(in srgb, var(--accent) 76%, black); }
   .btn-secondary {
     background: var(--bg-card);
     color: var(--text-primary);

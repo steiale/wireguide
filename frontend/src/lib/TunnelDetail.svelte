@@ -200,12 +200,12 @@
 
     {#if isConnected && status.state === 'connected'}
       <div class="stats-grid">
-        <div class="stat">
-          <span class="stat-label">{$t('tunnel.rx')}</span>
+        <div class="stat stat-rx">
+          <span class="stat-label">↓ {$t('tunnel.rx')}</span>
           <span class="stat-value down">{formatBytes(status.rx_bytes || 0)}</span>
         </div>
-        <div class="stat">
-          <span class="stat-label">{$t('tunnel.tx')}</span>
+        <div class="stat stat-tx">
+          <span class="stat-label">↑ {$t('tunnel.tx')}</span>
           <span class="stat-value up">{formatBytes(status.tx_bytes || 0)}</span>
         </div>
         <div class="stat">
@@ -342,11 +342,23 @@
     padding-bottom: var(--space-4);
     border-bottom: 0.5px solid var(--border);
   }
+  .detail-header.connected {
+    background: linear-gradient(135deg, var(--green-tint) 0%, transparent 70%);
+    border: 0.5px solid color-mix(in srgb, var(--green) 25%, transparent);
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
   .detail-header h2 {
     margin: 0;
     font: var(--text-title-1);
     color: var(--text-primary);
     cursor: text;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .btn-rename {
     background: transparent;
@@ -377,10 +389,9 @@
 
   /* ---------- State badge (connected / connecting / disconnected) ---------- */
   .state-badge {
-    padding: 2px var(--space-2);
+    padding: 4px var(--space-3);
     border-radius: var(--radius-xs);
-    font: var(--text-footnote);
-    font-weight: 600;
+    font: 600 11px/14px var(--font-sans);
     letter-spacing: 0.02em;
     text-transform: uppercase;
     background: var(--bg-card);
@@ -426,6 +437,15 @@
     border: 0.5px solid var(--border);
     border-radius: var(--radius-md);
     padding: var(--space-3);
+    box-shadow: var(--shadow-xs);
+  }
+  .stat-rx {
+    background: var(--stats-rx-fill);
+    border-color: color-mix(in srgb, var(--stats-rx) 30%, transparent);
+  }
+  .stat-tx {
+    background: var(--stats-tx-fill);
+    border-color: color-mix(in srgb, var(--stats-tx) 30%, transparent);
   }
   .stat-label {
     display: block;
@@ -437,7 +457,7 @@
     margin-bottom: var(--space-1);
   }
   .stat-value {
-    font: 600 17px/22px var(--font-sans);
+    font: 600 18px/22px var(--font-sans);
     font-feature-settings: "tnum";   /* tabular numerals for stable alignment */
     color: var(--text-primary);
   }
@@ -558,7 +578,6 @@
   @media (prefers-reduced-motion: no-preference) {
     .btn {
       transition: background-color var(--dur-fast) var(--ease-out),
-                  filter var(--dur-fast) var(--ease-out),
                   border-color var(--dur-fast) var(--ease-out);
     }
   }
@@ -567,14 +586,20 @@
     background: var(--accent);
     color: var(--text-inverse);
   }
-  .btn-connect:hover:not(:disabled) { filter: brightness(1.08); }
-  .btn-connect:active:not(:disabled) { filter: brightness(0.94); }
+  .actions .btn-connect,
+  .actions .btn-disconnect {
+    height: 34px;
+    min-width: 120px;
+    font: 600 13px/18px var(--font-sans);
+  }
+  .btn-connect:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 84%, white); }
+  .btn-connect:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, black); }
   .btn-disconnect {
     background: var(--red);
     color: var(--text-inverse);
   }
-  .btn-disconnect:hover:not(:disabled) { filter: brightness(1.08); }
-  .btn-disconnect:active:not(:disabled) { filter: brightness(0.94); }
+  .btn-disconnect:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 84%, white); }
+  .btn-disconnect:active:not(:disabled) { background: color-mix(in srgb, var(--red) 76%, black); }
   .btn-secondary {
     background: var(--bg-card);
     border: 0.5px solid var(--border);
