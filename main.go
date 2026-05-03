@@ -1,22 +1,20 @@
-// WireGuide — single-binary WireGuard client.
+// WireGuide — GUI binary entrypoint.
 //
-// The same binary runs in two modes:
-//   - default:  GUI mode, runs as the current user (Wails window + tray).
-//   - --helper: privileged helper mode, runs as root/admin via IPC socket.
+// This binary runs as the current user and hosts the Wails window + tray.
+// The privileged helper is a separate binary (cmd/helper) installed as a
+// LaunchDaemon — see cmd/helper/main.go.
 //
-// main.go is intentionally tiny: flag dispatch only. GUI bootstrap lives in
-// internal/gui, helper bootstrap lives in internal/helper.
+// main.go is intentionally tiny: bootstrap GUI mode only. GUI runtime lives
+// in internal/gui.
 package main
 
 import (
 	"embed"
-	"flag"
 	"log"
 	"os"
 	"runtime"
 
 	"github.com/korjwl1/wireguide/internal/gui"
-	"github.com/korjwl1/wireguide/internal/helper"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -24,34 +22,14 @@ import (
 var assets embed.FS
 
 func main() {
-	helperMode := flag.Bool("helper", false, "run as privileged helper")
-	socketPath := flag.String("socket", "", "socket path for IPC")
-	socketUID := flag.Int("uid", -1, "socket owner UID (Unix only)")
-	dataDir := flag.String("data-dir", "", "data directory for crash recovery")
-	flag.Parse()
-
-	if *helperMode {
-		if *socketPath == "" {
-			log.Fatal("--socket required in helper mode")
-		}
-		if *dataDir == "" {
-			*dataDir = systemDataDir()
-		}
-		log.Println("WireGuide helper starting...")
-		if err := helper.Run(*socketPath, *socketUID, *dataDir); err != nil {
-			log.Fatal("helper error:", err)
-		}
-		return
-	}
-
-	// GUI mode
 	if err := gui.Run(application.AssetFileServerFS(assets), systemDataDir()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-// systemDataDir returns the system-level data directory for helper state.
-// Duplicated in cmd/gui / cmd/helper as needed if we ever split binaries.
+// systemDataDir returns the system-level data directory used by the GUI to
+// locate helper-managed state (e.g. crash recovery files written by the
+// privileged helper at /Library/Application Support/wireguide on macOS).
 func systemDataDir() string {
 	switch runtime.GOOS {
 	case "darwin":
