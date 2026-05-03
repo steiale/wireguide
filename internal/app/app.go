@@ -12,9 +12,11 @@ package app
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/korjwl1/wireguide/internal/domain"
+	"github.com/korjwl1/wireguide/internal/history"
 	"github.com/korjwl1/wireguide/internal/ipc"
 	"github.com/korjwl1/wireguide/internal/storage"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -29,18 +31,25 @@ type TunnelService struct {
 	tunnelStore    *storage.TunnelStore
 	settingsStore  *storage.SettingsStore
 	wifiRulesStore *storage.WifiRulesStore
+	history        *history.Store
 	clients        *ipc.ClientHolder
 	app            *application.App
 	win            *application.WebviewWindow
+
+	// activeSessions maps tunnel name → open history session ID so Disconnect
+	// can find the right row to close. sync.Map keeps the path lock-free for
+	// the (rare) concurrent connect/disconnect of different tunnels.
+	activeSessions sync.Map
 }
 
 // NewTunnelService creates a service. Set the app reference via SetApp()
 // after application.New() for dialog support.
-func NewTunnelService(ts *storage.TunnelStore, ss *storage.SettingsStore, wrs *storage.WifiRulesStore, clients *ipc.ClientHolder) *TunnelService {
+func NewTunnelService(ts *storage.TunnelStore, ss *storage.SettingsStore, wrs *storage.WifiRulesStore, hs *history.Store, clients *ipc.ClientHolder) *TunnelService {
 	return &TunnelService{
 		tunnelStore:    ts,
 		settingsStore:  ss,
 		wifiRulesStore: wrs,
+		history:        hs,
 		clients:        clients,
 	}
 }

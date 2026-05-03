@@ -7,6 +7,7 @@
   import ConfigEditor from './lib/ConfigEditor.svelte';
   import Settings from './lib/Settings.svelte';
   import LogViewer from './lib/LogViewer.svelte';
+  import History from './lib/History.svelte';
   import DNSLeakTest from './lib/DNSLeakTest.svelte';
   import RouteVisualization from './lib/RouteVisualization.svelte';
   import UpdateNotice from './lib/UpdateNotice.svelte';
@@ -20,7 +21,7 @@
   import { TunnelService } from '../bindings/github.com/korjwl1/wireguide/internal/app';
 
   // View state
-  let currentView = 'tunnels'; // 'tunnels' | 'dnsleak' | 'routes' | 'logs'
+  let currentView = 'tunnels'; // 'tunnels' | 'dnsleak' | 'routes' | 'logs' | 'history'
 
   $: isToolsView = currentView === 'dnsleak' || currentView === 'routes';
   $: isTunnelsView = currentView === 'tunnels';
@@ -467,6 +468,16 @@
         <span class="rail-icon">≡</span>
         <span class="rail-label">{$t('nav.logs')}</span>
       </button>
+      <button class="rail-btn" class:active={currentView === 'history'} on:click={() => currentView = 'history'}>
+        <span class="rail-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="10" cy="10" r="8"/>
+            <polyline points="10,5 10,10 13,13"/>
+            <path d="M3.5 3.5 A8 8 0 0 0 2 10" stroke-dasharray="2 2"/>
+          </svg>
+        </span>
+        <span class="rail-label">{$t('nav.history')}</span>
+      </button>
       <div class="rail-spacer"></div>
       <button class="rail-btn" on:click={() => showSettings = true}>
         <span class="rail-icon">⚙</span>
@@ -502,6 +513,8 @@
         <div class="logs-view">
           <LogViewer />
         </div>
+      {:else if currentView === 'history'}
+        <History />
       {/if}
     </div>
   </div>
@@ -746,6 +759,18 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .history-view-host {
+    flex: 1;
+    min-height: 0;
+    padding-top: 52px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .rail-icon svg {
+    display: block;
   }
 
   /* ---------- Toast (bottom-centre) ---------- */

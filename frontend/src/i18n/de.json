@@ -11,6 +11,7 @@
     "tunnels": "Tunnel",
     "tools": "Werkzeuge",
     "logs": "Protokoll",
+    "history": "Verlauf",
     "settings": "Einstellungen"
   },
   "tunnel": {
@@ -230,6 +231,22 @@
     "banner_text": "WireGuide+ gefällt dir? Es ist kostenlos — aber ein Kaffee hält es am Laufen.",
     "buy_coffee": "Kauf mir einen Kaffee",
     "dismiss": "Schließen"
+  },
+  "history": {
+    "title": "Verlauf",
+    "no_history": "Noch kein Verbindungsverlauf",
+    "clear": "Löschen",
+    "confirm_clear": "Gesamten Verlauf löschen?",
+    "active": "Aktiv",
+    "reason_user": "Getrennt",
+    "reason_error": "Fehler",
+    "reason_health_check": "Health-Check",
+    "reason_reconnect": "Reconnect",
+    "reason_app_quit": "App beendet",
+    "today": "Heute",
+    "yesterday": "Gestern",
+    "started": "Gestartet",
+    "ended": "Beendet"
   },
   "wifi_rules": {
     "title": "WLAN-Regeln",

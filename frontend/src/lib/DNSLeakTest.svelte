@@ -62,11 +62,10 @@
   .page-header {
     margin-bottom: var(--space-5);
     padding-bottom: var(--space-4);
-    border-bottom: 0.5px solid var(--border);
   }
   h3 {
     margin: 0 0 var(--space-1);
-    font: var(--text-title-2);
+    font: var(--text-title-1);
     color: var(--text-primary);
   }
   .description {

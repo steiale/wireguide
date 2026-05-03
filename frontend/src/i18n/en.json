@@ -11,6 +11,7 @@
     "tunnels": "Tunnels",
     "tools": "Tools",
     "logs": "Logs",
+    "history": "History",
     "settings": "Settings"
   },
   "tunnel": {
@@ -230,6 +231,22 @@
     "banner_text": "Enjoying WireGuide+? It's free — but a coffee keeps it going.",
     "buy_coffee": "Buy me a coffee",
     "dismiss": "Dismiss"
+  },
+  "history": {
+    "title": "History",
+    "no_history": "No connection history yet",
+    "clear": "Clear",
+    "confirm_clear": "Clear all history?",
+    "active": "Active",
+    "reason_user": "Disconnected",
+    "reason_error": "Error",
+    "reason_health_check": "Health check",
+    "reason_reconnect": "Reconnect",
+    "reason_app_quit": "App quit",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "started": "Started",
+    "ended": "Ended"
   },
   "wifi_rules": {
     "title": "Wi-Fi Rules",

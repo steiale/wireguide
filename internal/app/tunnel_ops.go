@@ -146,16 +146,29 @@ func (s *TunnelService) Connect(name string) error {
 	s.clients.MarkInflight()
 	defer s.clients.UnmarkInflight()
 
-	return s.callLong(ipc.MethodConnect, ipc.ConnectRequest{
+	if err := s.callLong(ipc.MethodConnect, ipc.ConnectRequest{
 		Config:        cfg,
 		AutoReconnect: autoReconnect,
-	}, nil)
+	}, nil); err != nil {
+		return err
+	}
+
+	// Record the session AFTER the helper accepted the connect. If the user
+	// quickly reconnects the same tunnel (rare), close the old open session
+	// with reason "reconnect" before opening a new one — leaving an
+	// indefinitely open row would lie to the user.
+	s.recordConnectStart(name)
+	return nil
 }
 
 // Disconnect tears down whatever tunnel the helper currently has active.
 // If the call fails with a "client closed" error (the health monitor may have
 // swapped the client during a recovery), retry once with the fresh client.
 func (s *TunnelService) Disconnect() error {
+	// Snapshot rx/tx + name BEFORE the IPC tear-down — once disconnected the
+	// helper drops the per-tunnel counters and we lose the totals forever.
+	name, rx, tx := s.snapshotActiveStats("")
+
 	s.clients.MarkInflight()
 	defer s.clients.UnmarkInflight()
 	err := s.callLong(ipc.MethodDisconnect, nil, nil)
@@ -163,14 +176,185 @@ func (s *TunnelService) Disconnect() error {
 		slog.Info("disconnect got client-closed, retrying with fresh client")
 		err = s.callLong(ipc.MethodDisconnect, nil, nil)
 	}
+	if err == nil {
+		s.recordDisconnectEnd(name, rx, tx, "user")
+	}
 	return err
 }
 
 // DisconnectTunnel disconnects a specific tunnel by name.
 func (s *TunnelService) DisconnectTunnel(name string) error {
+	_, rx, tx := s.snapshotActiveStats(name)
+
 	s.clients.MarkInflight()
 	defer s.clients.UnmarkInflight()
-	return s.callLong(ipc.MethodDisconnect, ipc.DisconnectRequest{TunnelName: name}, nil)
+	err := s.callLong(ipc.MethodDisconnect, ipc.DisconnectRequest{TunnelName: name}, nil)
+	if err == nil {
+		s.recordDisconnectEnd(name, rx, tx, "user")
+	}
+	return err
+}
+
+// recordConnectStart opens a new history session for name. If the same tunnel
+// already has an open session (e.g. helper-side reconnect), close it as a
+// "reconnect" first so the timeline stays honest.
+func (s *TunnelService) recordConnectStart(name string) {
+	if s.history == nil || name == "" {
+		return
+	}
+	if prev, loaded := s.activeSessions.LoadAndDelete(name); loaded {
+		if id, ok := prev.(string); ok && id != "" {
+			s.history.RecordDisconnect(id, 0, 0, "reconnect")
+		}
+	}
+	id := s.history.RecordConnect(name)
+	s.activeSessions.Store(name, id)
+}
+
+// recordDisconnectEnd closes the open session for name. Pulls the session ID
+// from the activeSessions map; no-op if there isn't one (e.g. the helper was
+// already disconnected when the GUI started).
+func (s *TunnelService) recordDisconnectEnd(name string, rx, tx int64, reason string) {
+	if s.history == nil {
+		return
+	}
+	if name == "" {
+		// Disconnect() with no tunnel name. Best-effort: close every open
+		// session — there's almost always exactly one.
+		s.activeSessions.Range(func(k, v interface{}) bool {
+			if id, ok := v.(string); ok && id != "" {
+				s.history.RecordDisconnect(id, rx, tx, reason)
+			}
+			s.activeSessions.Delete(k)
+			return true
+		})
+		return
+	}
+	v, ok := s.activeSessions.LoadAndDelete(name)
+	if !ok {
+		return
+	}
+	id, ok := v.(string)
+	if !ok || id == "" {
+		return
+	}
+	s.history.RecordDisconnect(id, rx, tx, reason)
+}
+
+// snapshotActiveStats returns (tunnelName, rx, tx) for the tunnel about to
+// disconnect. If wantName is "" the primary active tunnel is used. Returns
+// zero values on any error — capturing stats is best-effort and never blocks
+// disconnect.
+func (s *TunnelService) snapshotActiveStats(wantName string) (string, int64, int64) {
+	status, err := s.GetStatus()
+	if err != nil || status == nil {
+		return wantName, 0, 0
+	}
+	if wantName == "" {
+		// Find primary: first prefer status.TunnelName, then status.Tunnels.
+		if status.TunnelName != "" {
+			return status.TunnelName, status.RxBytes, status.TxBytes
+		}
+		if len(status.Tunnels) > 0 {
+			t := status.Tunnels[0]
+			return t.TunnelName, t.RxBytes, t.TxBytes
+		}
+		return "", 0, 0
+	}
+	if status.TunnelName == wantName {
+		return wantName, status.RxBytes, status.TxBytes
+	}
+	for _, t := range status.Tunnels {
+		if t.TunnelName == wantName {
+			return wantName, t.RxBytes, t.TxBytes
+		}
+	}
+	return wantName, 0, 0
+}
+
+// ReconcileHistoryFromStatus syncs the history's open-session map against the
+// list of active tunnels reported by the helper. Used by the event bridge so
+// helper-driven Connect / Disconnect (auto-reconnect on wake, health-check
+// recovery, etc.) is recorded too — not just the buttons in the GUI.
+//
+// reason classifies sessions that disappeared since the last call:
+//   - "" : default — store as "reconnect"
+//   - "health_check" : helper detected a stale handshake and is re-bringing it up
+//
+// rxByTunnel/txByTunnel let the caller forward last-known counters from the
+// status event itself; missing keys default to 0.
+func (s *TunnelService) ReconcileHistoryFromStatus(activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string) {
+	if s.history == nil {
+		return
+	}
+	if disappearReason == "" {
+		disappearReason = "reconnect"
+	}
+	active := make(map[string]struct{}, len(activeNames))
+	for _, n := range activeNames {
+		if n != "" {
+			active[n] = struct{}{}
+		}
+	}
+
+	// Close sessions for tunnels that are no longer active.
+	s.activeSessions.Range(func(k, v interface{}) bool {
+		name, _ := k.(string)
+		id, _ := v.(string)
+		if _, stillActive := active[name]; stillActive {
+			return true
+		}
+		if id != "" {
+			rx := int64(0)
+			tx := int64(0)
+			if rxByTunnel != nil {
+				rx = rxByTunnel[name]
+			}
+			if txByTunnel != nil {
+				tx = txByTunnel[name]
+			}
+			s.history.RecordDisconnect(id, rx, tx, disappearReason)
+		}
+		s.activeSessions.Delete(k)
+		return true
+	})
+
+	// Open sessions for active tunnels we don't have yet (helper-side
+	// connect that didn't go through TunnelService.Connect).
+	for _, name := range activeNames {
+		if name == "" {
+			continue
+		}
+		if _, exists := s.activeSessions.Load(name); exists {
+			continue
+		}
+		id := s.history.RecordConnect(name)
+		s.activeSessions.Store(name, id)
+	}
+}
+
+// CloseHistorySessions closes any open history sessions with reason. Called
+// from gui.Run during shutdown so the UI doesn't show phantom "Active" rows
+// after a quit.
+func (s *TunnelService) CloseHistorySessions(reason string) {
+	if s.history == nil {
+		return
+	}
+	// Try to attach last-known rx/tx for each open session before closing.
+	s.activeSessions.Range(func(k, v interface{}) bool {
+		name, _ := k.(string)
+		id, _ := v.(string)
+		if id == "" {
+			return true
+		}
+		_, rx, tx := s.snapshotActiveStats(name)
+		s.history.RecordDisconnect(id, rx, tx, reason)
+		s.activeSessions.Delete(k)
+		return true
+	})
+	// Anything still open in the file (e.g. from a previous crash) gets
+	// closed too.
+	s.history.CloseOpenSessions(reason)
 }
 
 // isClientClosed returns true for errors caused by the IPC client being closed

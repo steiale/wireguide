@@ -20,16 +20,25 @@ type eventBridge struct {
 	// updates the tray icon's label/tooltip without any IPC or disk work so
 	// the event loop goroutine never blocks on it.
 	onStatusChange func(activeNames []string, handshakeMap map[string]bool)
+	// onStatusReconcile lets the bridge feed status snapshots to the history
+	// store so helper-driven (re)connects get recorded the same way the
+	// GUI's own Connect/Disconnect calls do.
+	onStatusReconcile func(activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string)
 
 	mu           sync.Mutex
 	subscribedTo *ipc.Client // tracks which client we're currently subscribed on
+	// reconnecting is true between a Reconnecting=true and Reconnecting=false
+	// reconnect event. While true, any tunnel that goes inactive is classified
+	// as a health-check reconnect rather than a normal user disconnect.
+	reconnecting bool
 }
 
-func newEventBridge(app *application.App, clients *ipc.ClientHolder, onStatusChange func(activeNames []string, handshakeMap map[string]bool)) *eventBridge {
+func newEventBridge(app *application.App, clients *ipc.ClientHolder, onStatusChange func(activeNames []string, handshakeMap map[string]bool), onStatusReconcile func(activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string)) *eventBridge {
 	return &eventBridge{
-		app:            app,
-		clients:        clients,
-		onStatusChange: onStatusChange,
+		app:               app,
+		clients:           clients,
+		onStatusChange:    onStatusChange,
+		onStatusReconcile: onStatusReconcile,
 	}
 }
 
@@ -96,12 +105,34 @@ func (b *eventBridge) handleEvent(method string, params json.RawMessage) {
 				}
 				b.onStatusChange(status.ActiveTunnels, hsMap)
 			}
+			if b.onStatusReconcile != nil {
+				rxMap := make(map[string]int64)
+				txMap := make(map[string]int64)
+				for _, ts := range status.Tunnels {
+					rxMap[ts.TunnelName] = ts.RxBytes
+					txMap[ts.TunnelName] = ts.TxBytes
+				}
+				if status.TunnelName != "" {
+					rxMap[status.TunnelName] = status.RxBytes
+					txMap[status.TunnelName] = status.TxBytes
+				}
+				b.mu.Lock()
+				reason := "reconnect"
+				if b.reconnecting {
+					reason = "health_check"
+				}
+				b.mu.Unlock()
+				b.onStatusReconcile(status.ActiveTunnels, rxMap, txMap, reason)
+			}
 		}
 	case ipc.EventReconnect:
 		var dto ipc.ReconnectStateDTO
 		if err := json.Unmarshal(params, &dto); err != nil {
 			slog.Debug("event bridge: unmarshal reconnect failed", "error", err)
 		} else {
+			b.mu.Lock()
+			b.reconnecting = dto.Reconnecting
+			b.mu.Unlock()
 			b.app.Event.Emit("reconnect", ReconnectEvent{
 				Reconnecting: dto.Reconnecting,
 				Attempt:      dto.Attempt,

@@ -20,6 +20,7 @@ import (
 
 	wgapp "github.com/korjwl1/wireguide/internal/app"
 	"github.com/korjwl1/wireguide/internal/domain"
+	"github.com/korjwl1/wireguide/internal/history"
 	"github.com/korjwl1/wireguide/internal/ipc"
 	"github.com/korjwl1/wireguide/internal/storage"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -70,6 +71,11 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	tunnelStore := storage.NewTunnelStore(paths.TunnelsDir)
 	settingsStore := storage.NewSettingsStore(paths.ConfigDir)
 	wifiRulesStore := storage.NewWifiRulesStore(paths.ConfigDir)
+	historyStore := history.NewStore(paths.ConfigDir)
+	// Close any sessions left open from a previous crash (the GUI didn't get
+	// a chance to write EndTime). Marks them as "app_quit" so they aren't
+	// shown as still-active in the history view.
+	historyStore.CloseOpenSessions("app_quit")
 
 	// Apply persisted log level to the GUI side immediately (helper-side
 	// gets it after ensureHelper + the SaveSettings path).
@@ -104,7 +110,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	clients := ipc.NewClientHolder(initialClient)
 
 	// 3. Wails service
-	tunnelService := wgapp.NewTunnelService(tunnelStore, settingsStore, wifiRulesStore, clients)
+	tunnelService := wgapp.NewTunnelService(tunnelStore, settingsStore, wifiRulesStore, historyStore, clients)
 
 	// 4. Wails app
 	app := application.New(application.Options{
@@ -185,6 +191,9 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	doShutdown = func() {
 		shutdownOnce.Do(func() {
 			slog.Info("shutting down GUI + helper")
+			// Close any open history sessions BEFORE the helper shuts down
+			// so we can still query GetStatus for last-known rx/tx.
+			tunnelService.CloseHistorySessions("app_quit")
 			c := clients.Get()
 			if c != nil {
 				// M1: Disconnect can take 15+ s on macOS (DNS restore,
@@ -226,7 +235,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	// process restarts. The health monitor swaps the client in the holder.
 	// Pass the tray's cheap icon-update hook — NOT the full menu rebuild —
 	// so the 1 Hz status stream doesn't trigger IPC round-trips on every event.
-	bridge := newEventBridge(app, clients, trayMgr.setIconState)
+	bridge := newEventBridge(app, clients, trayMgr.setIconState, tunnelService.ReconcileHistoryFromStatus)
 	bridge.start()
 
 	// Push the persisted log level to the helper now that the event

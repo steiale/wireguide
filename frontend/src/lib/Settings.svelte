@@ -272,6 +272,7 @@
       </nav>
 
       <div class="settings-content" role="tabpanel">
+        <div class="settings-content-inner">
         {#if activeTab === 'general'}
           <div class="setting-row">
             <label for="theme-select">{$t('settings.theme')}</label>
@@ -400,6 +401,7 @@
             </button>
           </div>
         {/if}
+        </div>
       </div>
     </div>
 
@@ -430,7 +432,7 @@
     border: 0.5px solid var(--border);
     border-radius: 10px;
     padding: 20px 24px 12px;
-    width: 520px;
+    width: 560px;
     box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.12), 0 16px 48px rgba(0,0,0,0.08));
   }
   h3 {
@@ -483,11 +485,30 @@
     outline: none;
   }
 
-  /* Content */
+  /* Content
+   *
+   * Scrollbar overlap fix: in Wails / macOS WebKit the system uses
+   * overlay-style scrollbars that paint ON TOP of the scroll
+   * container's right edge. `scrollbar-gutter: stable` is unsupported
+   * here, and right-padding on the scroll container itself doesn't
+   * help — the overlay scrollbar still hovers over that padding zone
+   * because it is part of the scrollable area.
+   *
+   * The trick that works is a two-layer container: the outer element
+   * scrolls, the inner wrapper sets its own right padding so all
+   * child layout boxes (Add buttons, dropdowns, checkboxes) end
+   * before the scrollbar's paint zone. This keeps right-aligned
+   * elements clear of the scrollbar without relying on CSS the
+   * WebView doesn't support.
+   */
   .settings-content {
     flex: 1;
     min-width: 0;
     overflow-y: auto;
+    box-sizing: border-box;
+  }
+  .settings-content-inner {
+    padding-right: 14px;
   }
 
   .setting-row {

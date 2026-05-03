@@ -20,6 +20,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as domain$0 from "../domain/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as history$0 from "../history/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as storage$0 from "../storage/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -69,6 +72,25 @@ export function CheckForUpdate() {
     return $Call.ByID(3781738431).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType3($result);
     }));
+}
+
+/**
+ * ClearConnectionHistory wipes the history file.
+ * @returns {$CancellablePromise<void>}
+ */
+export function ClearConnectionHistory() {
+    return $Call.ByID(1952295618);
+}
+
+/**
+ * CloseHistorySessions closes any open history sessions with reason. Called
+ * from gui.Run during shutdown so the UI doesn't show phantom "Active" rows
+ * after a quit.
+ * @param {string} reason
+ * @returns {$CancellablePromise<void>}
+ */
+export function CloseHistorySessions(reason) {
+    return $Call.ByID(2047156944, reason);
 }
 
 /**
@@ -147,6 +169,18 @@ export function GetConfigText(name) {
 }
 
 /**
+ * GetConnectionHistory returns the recorded VPN sessions, newest first.
+ * Returns an empty slice (never nil) so the frontend doesn't have to special-case
+ * "no history yet" vs. "load failed".
+ * @returns {$CancellablePromise<history$0.Session[]>}
+ */
+export function GetConnectionHistory() {
+    return $Call.ByID(3062937901).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
+    }));
+}
+
+/**
  * GetCurrentSSID returns the SSID the user is currently connected to,
  * or "" if not connected to a Wi-Fi network. Read on demand — no IPC, no
  * state. The Wi-Fi Rules UI uses this for a live "Currently on:" badge.
@@ -172,7 +206,7 @@ export function GetEndpointLatency(endpoint) {
  */
 export function GetRoutingTable() {
     return $Call.ByID(3049102509).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType5($result);
+        return $$createType7($result);
     }));
 }
 
@@ -181,7 +215,7 @@ export function GetRoutingTable() {
  */
 export function GetSettings() {
     return $Call.ByID(2393200110).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType9($result);
     }));
 }
 
@@ -193,7 +227,7 @@ export function GetSettings() {
  */
 export function GetStatus() {
     return $Call.ByID(3544552149).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
+        return $$createType11($result);
     }));
 }
 
@@ -205,7 +239,7 @@ export function GetStatus() {
  */
 export function GetTunnelDetail(name) {
     return $Call.ByID(3171898132, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType11($result);
+        return $$createType13($result);
     }));
 }
 
@@ -216,7 +250,7 @@ export function GetTunnelDetail(name) {
  */
 export function GetTunnelMeta(name) {
     return $Call.ByID(4088997336, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType13($result);
+        return $$createType15($result);
     }));
 }
 
@@ -235,7 +269,7 @@ export function GetVersion() {
  */
 export function GetWifiRules() {
     return $Call.ByID(45284585).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType17($result);
     }));
 }
 
@@ -248,7 +282,7 @@ export function GetWifiRules() {
  */
 export function ImportConfig(name, content) {
     return $Call.ByID(2459134310, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType19($result);
     }));
 }
 
@@ -260,7 +294,7 @@ export function ImportConfig(name, content) {
  */
 export function ImportFoundConfigs(paths) {
     return $Call.ByID(3040882779, paths).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType19($result);
+        return $$createType21($result);
     }));
 }
 
@@ -295,7 +329,7 @@ export function ImportQRFromPath(path, name) {
  */
 export function ImportZip(path) {
     return $Call.ByID(976469479, path).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType19($result);
+        return $$createType21($result);
     }));
 }
 
@@ -307,7 +341,7 @@ export function ImportZip(path) {
  */
 export function ImportZipData(data) {
     return $Call.ByID(2432663343, data).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType19($result);
+        return $$createType21($result);
     }));
 }
 
@@ -325,7 +359,7 @@ export function ImportZipData(data) {
  */
 export function ListTunnels() {
     return $Call.ByID(3587038916).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType20($result);
+        return $$createType22($result);
     }));
 }
 
@@ -340,7 +374,7 @@ export function ListTunnels() {
  */
 export function ListTunnelsLocal() {
     return $Call.ByID(3031176175).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType20($result);
+        return $$createType22($result);
     }));
 }
 
@@ -363,6 +397,28 @@ export function OpenURL(url) {
  */
 export function ReadFile(path) {
     return $Call.ByID(1950850135, path);
+}
+
+/**
+ * ReconcileHistoryFromStatus syncs the history's open-session map against the
+ * list of active tunnels reported by the helper. Used by the event bridge so
+ * helper-driven Connect / Disconnect (auto-reconnect on wake, health-check
+ * recovery, etc.) is recorded too — not just the buttons in the GUI.
+ * 
+ * reason classifies sessions that disappeared since the last call:
+ *   - "" : default — store as "reconnect"
+ *   - "health_check" : helper detected a stale handshake and is re-bringing it up
+ * 
+ * rxByTunnel/txByTunnel let the caller forward last-known counters from the
+ * status event itself; missing keys default to 0.
+ * @param {string[]} activeNames
+ * @param {{ [_ in string]?: number }} rxByTunnel
+ * @param {{ [_ in string]?: number }} txByTunnel
+ * @param {string} disappearReason
+ * @returns {$CancellablePromise<void>}
+ */
+export function ReconcileHistoryFromStatus(activeNames, rxByTunnel, txByTunnel, disappearReason) {
+    return $Call.ByID(1482043575, activeNames, rxByTunnel, txByTunnel, disappearReason);
 }
 
 /**
@@ -402,7 +458,7 @@ export function ResizeToFit(tunnelCount) {
  */
 export function RunDNSLeakTest() {
     return $Call.ByID(2469114850).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType24($result);
     }));
 }
 
@@ -456,7 +512,7 @@ export function SaveWifiRules(rules) {
  */
 export function ScanForWireGuardConfigs() {
     return $Call.ByID(1549830634).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType24($result);
+        return $$createType26($result);
     }));
 }
 
@@ -555,7 +611,7 @@ export function UpdateConfig(name, content) {
  */
 export function ValidateConfig(content) {
     return $Call.ByID(592398029, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType25($result);
+        return $$createType27($result);
     }));
 }
 
@@ -564,25 +620,27 @@ const $$createType0 = tunnel$0.ConflictInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = update$0.UpdateInfo.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = $models.RouteEntry.createFrom;
+const $$createType4 = history$0.Session.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = storage$0.Settings.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = domain$0.ConnectionStatus.createFrom;
+const $$createType6 = $models.RouteEntry.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = storage$0.Settings.createFrom;
 const $$createType9 = $Create.Nullable($$createType8);
-const $$createType10 = domain$0.WireGuardConfig.createFrom;
+const $$createType10 = domain$0.ConnectionStatus.createFrom;
 const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = storage$0.TunnelMeta.createFrom;
+const $$createType12 = domain$0.WireGuardConfig.createFrom;
 const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = wifi$0.Rules.createFrom;
+const $$createType14 = storage$0.TunnelMeta.createFrom;
 const $$createType15 = $Create.Nullable($$createType14);
-const $$createType16 = $models.TunnelInfo.createFrom;
+const $$createType16 = wifi$0.Rules.createFrom;
 const $$createType17 = $Create.Nullable($$createType16);
-const $$createType18 = $models.ZipImportResult.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = $Create.Array($$createType16);
-const $$createType21 = $models.DNSLeakResult.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = $models.FoundConfig.createFrom;
-const $$createType24 = $Create.Array($$createType23);
-const $$createType25 = $Create.Array($Create.Any);
+const $$createType18 = $models.TunnelInfo.createFrom;
+const $$createType19 = $Create.Nullable($$createType18);
+const $$createType20 = $models.ZipImportResult.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = $Create.Array($$createType18);
+const $$createType23 = $models.DNSLeakResult.createFrom;
+const $$createType24 = $Create.Nullable($$createType23);
+const $$createType25 = $models.FoundConfig.createFrom;
+const $$createType26 = $Create.Array($$createType25);
+const $$createType27 = $Create.Array($Create.Any);

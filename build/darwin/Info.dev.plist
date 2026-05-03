@@ -12,11 +12,11 @@
         <key>CFBundleIdentifier</key>
             <string>io.github.steiale.wireguide-plus</string>
         <key>CFBundleVersion</key>
-            <string>0.1.9</string>
+            <string>1.0.17</string>
         <key>CFBundleGetInfoString</key>
             <string>WireGuide+ - WireGuard VPN Client</string>
         <key>CFBundleShortVersionString</key>
-            <string>0.1.9</string>
+            <string>1.0.17</string>
         <key>CFBundleIconFile</key>
             <string>icons</string>
         <key>LSMinimumSystemVersion</key>

@@ -102,22 +102,25 @@
 
 <div class="log-viewer">
   <div class="log-toolbar">
-    <div class="log-filters">
-      <button class:active={filter === 'all'} on:click={() => filter = 'all'}>{$t('log.filter_all')}</button>
-      {#each levels as lvl}
-        <button class:active={filter === lvl} class="level-{lvl}" on:click={() => filter = lvl}>
-          {lvl.toUpperCase()}
+    <h2 class="log-title">{$t('log.title')}</h2>
+    <div class="log-controls">
+      <div class="log-filters">
+        <button class:active={filter === 'all'} on:click={() => filter = 'all'}>{$t('log.filter_all')}</button>
+        {#each levels as lvl}
+          <button class:active={filter === lvl} class="level-{lvl}" on:click={() => filter = lvl}>
+            {lvl.toUpperCase()}
+          </button>
+        {/each}
+      </div>
+      <div class="log-actions">
+        <label>
+          <input type="checkbox" bind:checked={autoScroll} /> {$t('log.auto_scroll')}
+        </label>
+        <button class="btn-action" on:click={copyAll}>
+          {copyFeedback ? '✓' : $t('log.copy')}
         </button>
-      {/each}
-    </div>
-    <div class="log-actions">
-      <label>
-        <input type="checkbox" bind:checked={autoScroll} /> {$t('log.auto_scroll')}
-      </label>
-      <button class="btn-action" on:click={copyAll}>
-        {copyFeedback ? '✓' : $t('log.copy')}
-      </button>
-      <button class="btn-action" on:click={clear}>{$t('log.clear')}</button>
+        <button class="btn-action" on:click={clear}>{$t('log.clear')}</button>
+      </div>
     </div>
   </div>
 
@@ -145,10 +148,20 @@
   }
   .log-toolbar {
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-5) var(--space-2);
+    flex-shrink: 0;
+  }
+  .log-title {
+    margin: 0;
+    font: var(--text-title-1);
+    color: var(--text-primary);
+  }
+  .log-controls {
+    display: flex;
     align-items: center;
-    padding: var(--space-2) var(--space-4);
-    border-bottom: 0.5px solid var(--border);
+    justify-content: space-between;
     gap: var(--space-2);
   }
   .log-filters {
