@@ -5,7 +5,17 @@ export const tunnels = writable([]);
 export const selectedTunnel = writable(null);
 export const connectionStatus = writable({ state: 'disconnected' });
 
+const _stored = parseInt(localStorage.getItem('wg_connect_count') || '0');
+export const connectCount = writable(_stored);
+export const kofiDismissed = writable(localStorage.getItem('wg_kofi_dismissed') === '1');
+
+export function dismissKofi() {
+  localStorage.setItem('wg_kofi_dismissed', '1');
+  kofiDismissed.set(true);
+}
+
 let statusUnsub = null;
+let _prevActiveCount = 0;
 
 // Subscribe to backend status events. The tunnel list is not event-driven
 // on the backend side — it's refreshed manually via `refreshTunnels()` after
@@ -22,6 +32,14 @@ export function subscribeToEvents() {
     statusUnsub = Events.On('status', (event) => {
       const status = event.data;
       connectionStatus.set(status);
+
+      const activeCount = (status?.active_tunnels || []).length;
+      if (activeCount > _prevActiveCount) {
+        const next = parseInt(localStorage.getItem('wg_connect_count') || '0') + (activeCount - _prevActiveCount);
+        localStorage.setItem('wg_connect_count', String(next));
+        connectCount.set(next);
+      }
+      _prevActiveCount = activeCount;
 
       // Sync is_connected flag on tunnel objects. The backend now sends
       // active_tunnels (array of connected tunnel names) to support

@@ -104,7 +104,8 @@
     "about_desc": "WireGuide+ — ein WireGuard-VPN-Client mit moderner Benutzeroberfläche und praktischen Zusatzfunktionen.",
     "about_issues": "Problem melden",
     "about_license": "Lizenz (MIT)",
-    "up_to_date": "Du verwendest die neueste Version."
+    "up_to_date": "Du verwendest die neueste Version.",
+    "kofi_support": "WireGuide+ unterstützen"
   },
   "confirm": {
     "delete_title": "Tunnel löschen",
@@ -221,6 +222,11 @@
     "vpn_warning": "Die VPN-Verbindung wird während des Updates kurz unterbrochen. Die App startet danach automatisch neu.",
     "proceed": "Jetzt aktualisieren",
     "cancel": "Später"
+  },
+  "kofi": {
+    "banner_text": "WireGuide+ gefällt dir? Es ist kostenlos — aber ein Kaffee hält es am Laufen.",
+    "buy_coffee": "Kauf mir einen Kaffee",
+    "dismiss": "Schließen"
   },
   "wifi_rules": {
     "title": "WLAN-Regeln",

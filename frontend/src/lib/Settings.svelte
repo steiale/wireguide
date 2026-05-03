@@ -331,6 +331,9 @@
               <button class="link-btn" on:click={() => TunnelService.OpenURL('https://github.com/steiale/wireguide/issues')}>{$t('settings.about_issues')}</button>
               <button class="link-btn" on:click={() => TunnelService.OpenURL('https://github.com/steiale/wireguide/blob/main/LICENSE')}>{$t('settings.about_license')}</button>
             </div>
+            <button class="kofi-btn" on:click={() => TunnelService.OpenURL('https://ko-fi.com/steiale')}>
+              ☕ {$t('settings.kofi_support')}
+            </button>
           </div>
         {/if}
       </div>
@@ -525,6 +528,21 @@
     display: flex;
     gap: 16px;
   }
+  .kofi-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1px solid #FF5E5B44;
+    background: #FF5E5B18;
+    color: #FF5E5B;
+    font: 500 12px/16px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .kofi-btn:hover { background: #FF5E5B28; }
   .update-dot {
     width: 6px;
     height: 6px;

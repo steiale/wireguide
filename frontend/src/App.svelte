@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { Events } from '@wailsio/runtime';
   import TunnelCards from './lib/TunnelCards.svelte';
+  import KofiBanner from './lib/KofiBanner.svelte';
   import ConflictWarning from './lib/ConflictWarning.svelte';
   import ConfigEditor from './lib/ConfigEditor.svelte';
   import Settings from './lib/Settings.svelte';
@@ -430,6 +431,7 @@
 
       {#if currentView === 'tunnels'}
         <div class="tunnels-view">
+          <KofiBanner />
           <TunnelCards {TunnelService}
             on:new={handleNewTunnelOpen}
             on:import={handleImportOpen}
