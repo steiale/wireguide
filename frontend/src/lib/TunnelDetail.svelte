@@ -44,7 +44,7 @@
   // Prefer the explicit boolean from the backend (`has_handshake`); fall
   // back to truthiness of the `last_handshake` string for older helper
   // versions that don't yet emit the field.
-  $: noHandshake = isConnected && !(status?.has_handshake ?? !!status?.last_handshake);
+  $: noHandshake = isConnected && (!(status?.has_handshake || status?.last_handshake));
   // Use the primary status if it matches the selected tunnel (has full stats).
   // Otherwise fall back to the lightweight per-tunnel info from the tunnels array
   // (name + state + handshake only, no rx/tx/duration).

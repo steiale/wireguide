@@ -19,12 +19,12 @@
     const map = {};
     const tunnelStatuses = $connectionStatus?.tunnels || [];
     for (const ts of tunnelStatuses) {
-      map[ts.tunnel_name] = ts.has_handshake ?? !!ts.last_handshake;
+      map[ts.tunnel_name] = !!(ts.has_handshake || ts.last_handshake);
     }
     // Primary tunnel status
     if ($connectionStatus?.tunnel_name) {
       map[$connectionStatus.tunnel_name] =
-        $connectionStatus.has_handshake ?? !!$connectionStatus.last_handshake;
+        !!($connectionStatus.has_handshake || $connectionStatus.last_handshake);
     }
     return map;
   })();

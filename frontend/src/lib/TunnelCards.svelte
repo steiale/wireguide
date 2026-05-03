@@ -33,11 +33,11 @@
   $: handshakeMap = (() => {
     const map = {};
     for (const ts of ($connectionStatus?.tunnels || [])) {
-      map[ts.tunnel_name] = ts.has_handshake ?? !!ts.last_handshake;
+      map[ts.tunnel_name] = !!(ts.has_handshake || ts.last_handshake);
     }
     if ($connectionStatus?.tunnel_name) {
       map[$connectionStatus.tunnel_name] =
-        $connectionStatus.has_handshake ?? !!$connectionStatus.last_handshake;
+        !!($connectionStatus.has_handshake || $connectionStatus.last_handshake);
     }
     return map;
   })();
