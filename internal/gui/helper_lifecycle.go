@@ -69,18 +69,10 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 		return nil, fmt.Errorf("spawn helper: %w", err)
 	}
 
-	// After a successful install, reset the poll budget to 60 s regardless of
-	// how long SpawnHelper took. Merge with the parent context so a shutdown
-	// request (app quit) still cancels the loop promptly.
+	// After a successful install give the poll a fresh 60s budget, independent
+	// of how long SpawnHelper took (osascript + launchctl can be slow).
 	pollCtx, pollCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer pollCancel()
-	go func() {
-		select {
-		case <-ctx.Done():
-			pollCancel()
-		case <-pollCtx.Done():
-		}
-	}()
 	ctx = pollCtx
 
 	// Poll for readiness until the context is cancelled.

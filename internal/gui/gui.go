@@ -287,10 +287,12 @@ func bootstrapHelper(app *application.App, clients *ipc.ClientHolder, bridge *ev
 
 	var newClient *ipc.Client
 	for attempt := 0; attempt < 3; attempt++ {
-		helperCtx, helperCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// Pass background context — ensureHelper manages its own internal
+		// timeouts (500ms for the initial ping, 60s fresh poll after SpawnHelper).
+		// A deadline on the outer context races with SpawnHelper and cancels
+		// the poll immediately when both expire at the same time.
 		var err error
-		newClient, err = ensureHelper(helperCtx, dataDir)
-		helperCancel()
+		newClient, err = ensureHelper(context.Background(), dataDir)
 		if err == nil {
 			break
 		}
