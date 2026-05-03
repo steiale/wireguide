@@ -28,7 +28,7 @@ const (
 	// bundle's Info.plist cannot be read (e.g. unit tests, non-darwin
 	// builds, or running the bare binary without an enclosing .app).
 	// Keep this in sync with build/darwin/Info.plist on each release.
-	fallbackVersion = "1.0.17"
+	fallbackVersion = "1.0.18"
 
 	// minAssetSize is the minimum acceptable size for a release asset.
 	// A macOS .dmg/.zip containing WireGuide.app is always well over 1 MB;
@@ -470,11 +470,15 @@ func matchAsset(assets []Asset) string {
 		osNames = append(osNames, "win", "win64")
 	}
 
+	archNames := []string{arch, "universal"}
+
 	for _, a := range assets {
 		name := strings.ToLower(a.Name)
 		for _, osn := range osNames {
-			if strings.Contains(name, osn) && strings.Contains(name, arch) {
-				return a.Name
+			for _, an := range archNames {
+				if strings.Contains(name, osn) && strings.Contains(name, an) {
+					return a.Name
+				}
 			}
 		}
 	}
