@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/korjwl1/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/config"
 )
 
 func testConfig() *config.WireGuardConfig {

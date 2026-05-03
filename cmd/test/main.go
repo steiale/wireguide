@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/config"
-	"github.com/korjwl1/wireguide/internal/tunnel"
+	"github.com/steiale/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/tunnel"
 )
 
 func main() {

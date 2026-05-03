@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/domain"
-	"github.com/korjwl1/wireguide/internal/network"
+	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/network"
 )
 
 // tunnelEntry holds the state for a single tunnel within the multi-tunnel

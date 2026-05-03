@@ -43,7 +43,7 @@ func installDarwin(path string) error {
 	if path == "" {
 		// Defensive: fall back to opening the releases page rather than
 		// silently succeeding with nothing to install.
-		return exec.Command("open", "https://github.com/korjwl1/wireguide/releases/latest").Run()
+		return exec.Command("open", "https://github.com/steiale/wireguide/releases/latest").Run()
 	}
 	return exec.Command("open", "-R", path).Run()
 }

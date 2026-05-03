@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/domain"
-	"github.com/korjwl1/wireguide/internal/firewall"
-	"github.com/korjwl1/wireguide/internal/ipc"
-	"github.com/korjwl1/wireguide/internal/reconnect"
-	"github.com/korjwl1/wireguide/internal/tunnel"
+	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/firewall"
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/reconnect"
+	"github.com/steiale/wireguide/internal/tunnel"
 )
 
 // goSafe runs fn in a goroutine with panic recovery. Without this, a panic

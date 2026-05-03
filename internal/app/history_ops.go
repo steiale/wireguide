@@ -1,7 +1,7 @@
 package app
 
 import (
-	"github.com/korjwl1/wireguide/internal/history"
+	"github.com/steiale/wireguide/internal/history"
 )
 
 // GetConnectionHistory returns the recorded VPN sessions, newest first.

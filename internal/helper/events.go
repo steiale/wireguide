@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/domain"
-	"github.com/korjwl1/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/ipc"
 )
 
 // statusDTO returns the current connection status for broadcast. Since the

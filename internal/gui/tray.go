@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	wgapp "github.com/korjwl1/wireguide/internal/app"
+	wgapp "github.com/steiale/wireguide/internal/app"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/icons"
 )

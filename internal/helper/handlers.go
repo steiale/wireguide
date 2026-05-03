@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/config"
-	"github.com/korjwl1/wireguide/internal/ipc"
-	"github.com/korjwl1/wireguide/internal/tunnel"
-	"github.com/korjwl1/wireguide/internal/update"
+	"github.com/steiale/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/tunnel"
+	"github.com/steiale/wireguide/internal/update"
 )
 
 // registerHandlers binds every RPC method to a Helper method. Splitting the

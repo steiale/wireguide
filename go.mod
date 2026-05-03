@@ -1,4 +1,4 @@
-module github.com/korjwl1/wireguide
+module github.com/steiale/wireguide
 
 go 1.25.0
 

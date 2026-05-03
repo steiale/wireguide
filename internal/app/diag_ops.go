@@ -1,7 +1,7 @@
 package app
 
 import (
-	"github.com/korjwl1/wireguide/internal/diag"
+	"github.com/steiale/wireguide/internal/diag"
 )
 
 // DNSLeakResult mirrors diag.DNSLeakResult for Wails JSON serialisation.

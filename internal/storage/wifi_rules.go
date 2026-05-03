@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/wifi"
+	"github.com/steiale/wireguide/internal/wifi"
 )
 
 // WifiRulesStore manages the wifi_rules.json file.

@@ -18,11 +18,11 @@ import (
 	"sync"
 	"time"
 
-	wgapp "github.com/korjwl1/wireguide/internal/app"
-	"github.com/korjwl1/wireguide/internal/domain"
-	"github.com/korjwl1/wireguide/internal/history"
-	"github.com/korjwl1/wireguide/internal/ipc"
-	"github.com/korjwl1/wireguide/internal/storage"
+	wgapp "github.com/steiale/wireguide/internal/app"
+	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/history"
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/storage"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )

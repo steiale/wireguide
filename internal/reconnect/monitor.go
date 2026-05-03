@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/tunnel"
+	"github.com/steiale/wireguide/internal/tunnel"
 )
 
 // TunnelManager is the subset of tunnel.Manager that the reconnect monitor

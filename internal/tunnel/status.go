@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/domain"
 	"golang.zx2c4.com/wireguard/wgctrl"
 )
 

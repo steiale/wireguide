@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/tunnel"
+	"github.com/steiale/wireguide/internal/tunnel"
 )
 
 // ---------------------------------------------------------------------------

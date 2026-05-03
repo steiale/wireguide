@@ -3,7 +3,7 @@ package app
 import (
 	"sync/atomic"
 
-	"github.com/korjwl1/wireguide/internal/wifi"
+	"github.com/steiale/wireguide/internal/wifi"
 )
 
 // wifiRulesNotifier is set by internal/gui at startup so the app package

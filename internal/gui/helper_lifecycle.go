@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/elevate"
-	"github.com/korjwl1/wireguide/internal/ipc"
-	"github.com/korjwl1/wireguide/internal/update"
+	"github.com/steiale/wireguide/internal/elevate"
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/update"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 

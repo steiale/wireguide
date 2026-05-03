@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/korjwl1/wireguide/internal/domain"
-	"github.com/korjwl1/wireguide/internal/ipc"
-	"github.com/korjwl1/wireguide/internal/storage"
-	"github.com/korjwl1/wireguide/internal/tunnel"
+	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/storage"
+	"github.com/steiale/wireguide/internal/tunnel"
 )
 
 // ListTunnelsLocal returns stored tunnels WITHOUT asking the helper which one

@@ -1,6 +1,6 @@
 package ipc
 
-import "github.com/korjwl1/wireguide/internal/domain"
+import "github.com/steiale/wireguide/internal/domain"
 
 // Empty is used for requests/responses with no payload.
 type Empty struct{}

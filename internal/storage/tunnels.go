@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/korjwl1/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/config"
 )
 
 // TunnelStore manages .conf files on disk.

@@ -1,6 +1,6 @@
 package config
 
-import "github.com/korjwl1/wireguide/internal/domain"
+import "github.com/steiale/wireguide/internal/domain"
 
 // The domain types live in internal/domain — this package re-exports them as
 // type aliases so existing callers (parser, validator, serializer, and legacy

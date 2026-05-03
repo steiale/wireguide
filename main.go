@@ -14,7 +14,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/korjwl1/wireguide/internal/gui"
+	"github.com/steiale/wireguide/internal/gui"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 

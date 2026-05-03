@@ -10,10 +10,10 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/korjwl1/wireguide/internal/autostart"
-	"github.com/korjwl1/wireguide/internal/ipc"
-	"github.com/korjwl1/wireguide/internal/storage"
-	"github.com/korjwl1/wireguide/internal/update"
+	"github.com/steiale/wireguide/internal/autostart"
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/storage"
+	"github.com/steiale/wireguide/internal/update"
 )
 
 // guiLogLevelSetter is set by internal/gui at startup so the app package
@@ -147,7 +147,7 @@ func (s *TunnelService) SetHealthCheck(enabled bool) error {
 // to attacker-controlled repos hosted on the same domain.
 var allowedOpenURLs = map[string]struct{}{
 	// Releases page — used by the auto-update fallback.
-	"https://github.com/korjwl1/wireguide/releases/latest": {},
+	"https://github.com/steiale/wireguide/releases/latest": {},
 	// Repo home / issues / license — linked from the Settings "About" panel.
 	// The frontend currently points at the steiale/wireguide org; both
 	// owners' canonical pages are listed so the existing UI keeps working
@@ -155,10 +155,6 @@ var allowedOpenURLs = map[string]struct{}{
 	"https://github.com/steiale/wireguide":                       {},
 	"https://github.com/steiale/wireguide/issues":                {},
 	"https://github.com/steiale/wireguide/blob/main/LICENSE":     {},
-	"https://github.com/steiale/wireguide/releases/latest":       {},
-	"https://github.com/korjwl1/wireguide":                       {},
-	"https://github.com/korjwl1/wireguide/issues":                {},
-	"https://github.com/korjwl1/wireguide/blob/main/LICENSE":     {},
 	// Ko-fi donation page — linked from Settings About and the one-time banner.
 	"https://ko-fi.com/steiale": {},
 }
@@ -226,9 +222,9 @@ func (s *TunnelService) RunUpdate(info *update.UpdateInfo) error {
 		// log viewer.
 		slog.Warn("update: download/verify failed, opening Releases page as fallback", "error", err)
 		if s.app != nil {
-			_ = s.app.Browser.OpenURL("https://github.com/korjwl1/wireguide/releases/latest")
+			_ = s.app.Browser.OpenURL("https://github.com/steiale/wireguide/releases/latest")
 		} else {
-			_ = exec.Command("open", "https://github.com/korjwl1/wireguide/releases/latest").Run()
+			_ = exec.Command("open", "https://github.com/steiale/wireguide/releases/latest").Run()
 		}
 		return fmt.Errorf("download/verify failed: %w", err)
 	}

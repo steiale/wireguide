@@ -16,7 +16,7 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 
-	"github.com/korjwl1/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/config"
 )
 
 // Engine wraps wireguard-go device and TUN.

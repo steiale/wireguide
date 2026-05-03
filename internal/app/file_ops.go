@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/config"
-	"github.com/korjwl1/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
 )

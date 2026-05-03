@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/ipc"
 )
 
 // broadcastHandler is an slog.Handler that chains to a stderr handler AND

@@ -10,7 +10,7 @@ import (
 // after passing the URL allowlist check — which is the expected path.
 func TestOpenURL_AllowedURL(t *testing.T) {
 	svc := &TunnelService{} // nil app, nil stores — only URL validation runs
-	err := svc.OpenURL("https://github.com/korjwl1/wireguide")
+	err := svc.OpenURL("https://github.com/steiale/wireguide")
 	if err == nil {
 		t.Fatal("expected error (app not initialized) but got nil")
 	}

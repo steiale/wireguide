@@ -12,7 +12,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/korjwl1/wireguide/internal/helper"
+	"github.com/steiale/wireguide/internal/helper"
 )
 
 func main() {

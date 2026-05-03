@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/domain"
-	"github.com/korjwl1/wireguide/internal/network"
+	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/network"
 )
 
 // ---------------------------------------------------------------------------

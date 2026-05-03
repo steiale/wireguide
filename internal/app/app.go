@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/domain"
-	"github.com/korjwl1/wireguide/internal/history"
-	"github.com/korjwl1/wireguide/internal/ipc"
-	"github.com/korjwl1/wireguide/internal/storage"
+	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/history"
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/storage"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 

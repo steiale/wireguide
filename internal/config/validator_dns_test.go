@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/korjwl1/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/domain"
 )
 
 // TestValidatorAcceptsMixedDNS verifies that the validator no longer

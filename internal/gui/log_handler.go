@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/korjwl1/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 

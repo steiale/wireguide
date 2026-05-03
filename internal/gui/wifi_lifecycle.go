@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	wgapp "github.com/korjwl1/wireguide/internal/app"
-	"github.com/korjwl1/wireguide/internal/ipc"
-	"github.com/korjwl1/wireguide/internal/storage"
-	"github.com/korjwl1/wireguide/internal/wifi"
+	wgapp "github.com/steiale/wireguide/internal/app"
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/storage"
+	"github.com/steiale/wireguide/internal/wifi"
 )
 
 // wifiLifecycle owns the live wifi.Monitor and applies rule changes.

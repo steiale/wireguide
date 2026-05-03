@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/korjwl1/wireguide/internal/firewall"
-	"github.com/korjwl1/wireguide/internal/network"
+	"github.com/steiale/wireguide/internal/firewall"
+	"github.com/steiale/wireguide/internal/network"
 )
 
 // ActiveTunnelState is persisted to disk while a tunnel is active.

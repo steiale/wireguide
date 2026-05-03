@@ -3,8 +3,8 @@ package tunnel
 import (
 	"log/slog"
 
-	"github.com/korjwl1/wireguide/internal/domain"
-	"github.com/korjwl1/wireguide/internal/network"
+	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/network"
 )
 
 // connectPhases executes the steps that bring a tunnel up. Called from
