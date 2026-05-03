@@ -3,32 +3,83 @@
 package reconnect
 
 /*
-#cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework Cocoa
+#cgo LDFLAGS: -framework IOKit -framework CoreFoundation
 
-#import <Cocoa/Cocoa.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/IOMessage.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <pthread.h>
+#include <stdlib.h>
 
-// C callback type — invoked from the Objective-C notification observer.
 extern void goWakeCallback(void *ctx);
 
-// Registers an NSWorkspace didWakeNotification observer. Returns an opaque
-// handle (the observer object pointer) so we can unregister later.
-static void* registerWakeNotification(void *ctx) {
-	id observer = [[[NSWorkspace sharedWorkspace] notificationCenter]
-		addObserverForName:NSWorkspaceDidWakeNotification
-		object:nil
-		queue:nil
-		usingBlock:^(NSNotification *note) {
-			goWakeCallback(ctx);
-		}];
-	return (void *)observer;
+typedef struct {
+	void               *ctx;
+	io_connect_t        rootPort;
+	IONotificationPortRef notifyPort;
+	io_object_t         notifier;
+	CFRunLoopRef        runLoop;
+} PowerWatcher;
+
+// powerCallback is the IOKit power-event handler. It MUST call
+// IOAllowPowerChange for sleep/can-sleep messages or the system will stall
+// for 30 seconds before forcibly sleeping.
+static void powerCallback(void *refcon, io_service_t service,
+                          natural_t messageType, void *messageArgument) {
+	PowerWatcher *w = (PowerWatcher *)refcon;
+	switch (messageType) {
+	case kIOMessageSystemWillSleep:
+	case kIOMessageCanSystemSleep:
+		IOAllowPowerChange(w->rootPort, (long)messageArgument);
+		break;
+	case kIOMessageSystemHasPoweredOn:
+		goWakeCallback(w->ctx);
+		break;
+	}
 }
 
-// Unregisters a previously registered observer.
-static void unregisterWakeNotification(void *observer) {
-	if (observer == NULL) return;
-	id obs = (id)observer;
-	[[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:obs];
+static void *runLoopThread(void *arg) {
+	PowerWatcher *w = (PowerWatcher *)arg;
+	w->runLoop = CFRunLoopGetCurrent();
+	CFRunLoopAddSource(w->runLoop,
+		IONotificationPortGetRunLoopSource(w->notifyPort),
+		kCFRunLoopDefaultMode);
+	CFRunLoopRun();
+	return NULL;
+}
+
+// startPowerWatcher registers for system power events and starts a dedicated
+// pthread to run the CFRunLoop. Works in any bootstrap namespace (including
+// root LaunchDaemons) — communicates via Mach IPC to powerd, no window server
+// required. Returns NULL on failure.
+static PowerWatcher *startPowerWatcher(void *ctx) {
+	PowerWatcher *w = (PowerWatcher *)calloc(1, sizeof(PowerWatcher));
+	if (!w) return NULL;
+	w->ctx = ctx;
+	w->rootPort = IORegisterForSystemPower(w, &w->notifyPort, powerCallback, &w->notifier);
+	if (w->rootPort == MACH_PORT_NULL) {
+		free(w);
+		return NULL;
+	}
+	pthread_t tid;
+	if (pthread_create(&tid, NULL, runLoopThread, w) != 0) {
+		IODeregisterForSystemPower(&w->notifier);
+		IONotificationPortDestroy(w->notifyPort);
+		IOServiceClose(w->rootPort);
+		free(w);
+		return NULL;
+	}
+	pthread_detach(tid);
+	return w;
+}
+
+static void stopPowerWatcher(PowerWatcher *w) {
+	if (!w) return;
+	if (w->runLoop) CFRunLoopStop(w->runLoop);
+	if (w->notifier) IODeregisterForSystemPower(&w->notifier);
+	if (w->notifyPort) IONotificationPortDestroy(w->notifyPort);
+	if (w->rootPort) IOServiceClose(w->rootPort);
+	free(w);
 }
 */
 import "C"
@@ -41,15 +92,15 @@ import (
 )
 
 // darwinSleepDetector detects sleep/wake on macOS using two mechanisms:
-//  1. NSWorkspace didWakeNotification via cgo — immediate notification on wake.
-//  2. Wall-clock polling as fallback — catches wake events if the notification
-//     doesn't fire (e.g. if the NSRunLoop isn't pumped in this process).
+//  1. IOKit IORegisterForSystemPower — works in root LaunchDaemons (no window
+//     server required; communicates via Mach IPC to powerd directly).
+//  2. Wall-clock polling as fallback — catches any events the IOKit path misses.
 type darwinSleepDetector struct {
-	mu       sync.Mutex
-	wakeCh   chan struct{}
-	stopCh   chan struct{}
-	observer unsafe.Pointer // opaque NSObject observer handle
-	handle   uintptr        // numeric handle for cgo callback lookup
+	mu      sync.Mutex
+	wakeCh  chan struct{}
+	stopCh  chan struct{}
+	watcher *C.PowerWatcher
+	handle  uintptr
 }
 
 func NewSleepDetector() SleepDetector {
@@ -62,21 +113,18 @@ func NewSleepDetector() SleepDetector {
 func (d *darwinSleepDetector) Start() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	// Reinitialize stopCh so the detector is reusable after Stop().
 	d.stopCh = make(chan struct{})
 
-	// Register in the lookup table and pass the numeric handle to C.
-	// We use a uintptr handle (cast to void*) instead of a Go pointer,
-	// which satisfies cgo's pointer-passing rules.
 	d.handle = registerDetector(d)
-	// The handle is a small integer (not a Go pointer), so casting it to
-	// unsafe.Pointer for the C call is safe — it's an opaque token the C
-	// side passes back to goWakeCallback unchanged.
-	//nolint:govet // uintptr->unsafe.Pointer is intentional: handle is not a Go pointer
+	// Cast the numeric handle to unsafe.Pointer — it is an opaque integer
+	// token, not a Go pointer, so cgo pointer rules don't apply.
+	//nolint:govet
 	ctx := *(*unsafe.Pointer)(unsafe.Pointer(&d.handle))
-	d.observer = C.registerWakeNotification(ctx)
+	d.watcher = C.startPowerWatcher(ctx)
+	if d.watcher == nil {
+		slog.Warn("IOKit power watcher failed to start; relying on poll fallback")
+	}
 
-	// Start polling fallback.
 	go d.poll()
 }
 
@@ -85,13 +133,12 @@ func (d *darwinSleepDetector) Stop() {
 	defer d.mu.Unlock()
 	select {
 	case <-d.stopCh:
-		// Already closed; nothing to do.
 	default:
 		close(d.stopCh)
 	}
-	if d.observer != nil {
-		C.unregisterWakeNotification(d.observer)
-		d.observer = nil
+	if d.watcher != nil {
+		C.stopPowerWatcher(d.watcher)
+		d.watcher = nil
 	}
 	if d.handle != 0 {
 		unregisterDetector(d.handle)
@@ -103,7 +150,6 @@ func (d *darwinSleepDetector) WakeChan() <-chan struct{} {
 	return d.wakeCh
 }
 
-// sendWake sends a wake event to the channel (non-blocking).
 func (d *darwinSleepDetector) sendWake() {
 	select {
 	case d.wakeCh <- struct{}{}:
@@ -112,11 +158,9 @@ func (d *darwinSleepDetector) sendWake() {
 }
 
 func (d *darwinSleepDetector) poll() {
-	// Fallback: detect sleep by checking if wall clock advanced much more than
-	// expected between iterations.
 	lastCheck := time.Now()
 	const pollInterval = 10 * time.Second
-	const sleepThreshold = 30 * time.Second // if 30s+ gap, assume sleep
+	const sleepThreshold = 30 * time.Second
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -129,7 +173,6 @@ func (d *darwinSleepDetector) poll() {
 			now := time.Now()
 			elapsed := now.Sub(lastCheck)
 			lastCheck = now
-
 			if elapsed > pollInterval+sleepThreshold {
 				slog.Info("sleep/wake detected via polling fallback",
 					"expected", pollInterval,
@@ -140,9 +183,6 @@ func (d *darwinSleepDetector) poll() {
 	}
 }
 
-// wakeDetectors maps numeric handles to their darwinSleepDetector. Numeric
-// handles (uintptr cast to void*) are used instead of Go pointers to satisfy
-// cgo's pointer-passing rules.
 var (
 	wakeDetectorsMu  sync.Mutex
 	wakeDetectors    = make(map[uintptr]*darwinSleepDetector)
@@ -173,7 +213,6 @@ func goWakeCallback(ctx unsafe.Pointer) {
 	if !ok {
 		return
 	}
-	slog.Info("sleep/wake detected via NSWorkspace notification")
+	slog.Info("sleep/wake detected via IOKit power notification")
 	d.sendWake()
 }
-

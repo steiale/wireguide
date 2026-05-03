@@ -46,7 +46,7 @@ tasks:
     env:
       GOOS: darwin
       CGO_ENABLED: 1
-      GOARCH: '{{.ARCH | default ARCH}}'
+      GOARCH: arm64
       CGO_CFLAGS: "-mmacosx-version-min=10.15"
       CGO_LDFLAGS: "-mmacosx-version-min=10.15"
       MACOSX_DEPLOYMENT_TARGET: "10.15"
@@ -92,45 +92,10 @@ tasks:
             fi
           done | tr '\n' ' '
 
-  build:universal:
-    summary: Builds darwin universal binary (arm64 + amd64)
-    deps:
-      - task: build
-        vars:
-          ARCH: amd64
-          OUTPUT: "{{.BIN_DIR}}/{{.APP_NAME}}-amd64"
-      - task: build
-        vars:
-          ARCH: arm64
-          OUTPUT: "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
-    cmds:
-      - task: '{{if eq OS "darwin"}}build:universal:lipo:native{{else}}build:universal:lipo:go{{end}}'
-
-  build:universal:lipo:native:
-    summary: Creates universal binary using native lipo (macOS)
-    internal: true
-    cmds:
-      - lipo -create -output "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}-amd64" "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
-      - rm "{{.BIN_DIR}}/{{.APP_NAME}}-amd64" "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
-
-  build:universal:lipo:go:
-    summary: Creates universal binary using wails3 tool lipo (Linux/Windows)
-    internal: true
-    cmds:
-      - wails3 tool lipo -output "{{.BIN_DIR}}/{{.APP_NAME}}" -input "{{.BIN_DIR}}/{{.APP_NAME}}-amd64" -input "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
-      - rm -f "{{.BIN_DIR}}/{{.APP_NAME}}-amd64" "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
-
   package:
     summary: Packages the application into a `.app` bundle
     deps:
       - task: build
-    cmds:
-      - task: create:app:bundle
-
-  package:universal:
-    summary: Packages darwin universal binary (arm64 + amd64)
-    deps:
-      - task: build:universal
     cmds:
       - task: create:app:bundle
 
@@ -195,7 +160,7 @@ tasks:
   release:
     summary: Full release build - sign, notarize, staple, zip, sign with Ed25519, print sha256
     desc: |
-      Builds, codesigns, notarizes, and zips the universal app bundle.
+      Builds, codesigns, notarizes, and zips the arm64 app bundle.
       Then produces an Ed25519 detached signature next to the zip so the
       auto-updater can verify authenticity. Set WIREGUIDE_SIGNING_KEY
       (base64-encoded ed25519 private key) before running, OR pass
@@ -204,7 +169,7 @@ tasks:
       - task: sign:notarize
       - |
         VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' build/darwin/Info.plist)
-        ZIP="wireguide-plus-v${VERSION}-darwin-universal.zip"
+        ZIP="wireguide-plus-v${VERSION}-darwin-arm64.zip"
         cp -r "{{.BIN_DIR}}/{{.APP_NAME}}.app" "WireGuide+.app"
         zip -r "${ZIP}" "WireGuide+.app"
         rm -rf "WireGuide+.app"

@@ -190,11 +190,18 @@ func helperBinaryPath() (string, error) {
 	if resolved, err := filepath.EvalSymlinks(self); err == nil {
 		self = resolved
 	}
-	candidate := filepath.Join(filepath.Dir(self), "wireguide-plus-helper")
+	dir := filepath.Dir(self)
+	candidate := filepath.Join(dir, "wireguide-plus-helper")
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate, nil
 	}
-	// Fallback: use the GUI binary itself (dev builds / single-binary setups).
+	// Inside a .app bundle the helper MUST be present — falling back to the
+	// GUI binary would silently reinstall the crashing Wails binary as the
+	// root daemon, recreating the crash-loop we fixed in v1.0.22.
+	if strings.HasSuffix(dir, ".app/Contents/MacOS") {
+		return "", fmt.Errorf("helper binary missing from app bundle at %s (reinstall the app)", candidate)
+	}
+	slog.Warn("helper binary not found; falling back to self (dev build only)", "path", candidate)
 	return self, nil
 }
 
