@@ -160,7 +160,7 @@
     padding: 0 var(--space-2);
     background: var(--bg-card);
     border: 0.5px solid var(--border);
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-btn);
     color: var(--text-secondary);
     font: 10px/1 var(--font-sans);
     font-weight: 600;
@@ -180,12 +180,13 @@
     font: var(--text-footnote);
     color: var(--text-secondary);
   }
+  .log-actions input[type="checkbox"] { accent-color: var(--green); }
   .btn-action {
     height: 22px;
     padding: 0 var(--space-2);
     background: var(--bg-card);
     border: 0.5px solid var(--border);
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-btn);
     color: var(--text-secondary);
     font: var(--text-footnote);
     cursor: pointer;

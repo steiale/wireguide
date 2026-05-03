@@ -80,7 +80,7 @@
     padding: 0 var(--space-4);
     background: var(--accent);
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-btn);
     color: var(--text-inverse);
     cursor: pointer;
     font: var(--text-headline);
