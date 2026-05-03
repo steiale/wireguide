@@ -1,9 +1,10 @@
 import { writable, derived, get } from 'svelte/store';
 import en from './en.json';
+import de from './de.json';
 import ko from './ko.json';
 import ja from './ja.json';
 
-const translations = { en, ko, ja };
+const translations = { en, de, ko, ja };
 
 // `locale` is the current UI language. Components don't usually touch it
 // directly — they subscribe to the `t` derived store below via `$t(...)`.
