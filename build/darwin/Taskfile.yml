@@ -190,12 +190,16 @@ tasks:
         shasum -a 256 "${ZIP}"
 
         # Ed25519 detached signature for the auto-updater.
+        # Key lookup order: explicit KEY_PATH → WIREGUIDE_SIGNING_KEY env → macOS Keychain.
         if [ -n "${KEY_PATH:-{{.KEY_PATH}}}" ]; then
           go run ./cmd/sign --key "${KEY_PATH:-{{.KEY_PATH}}}" "${ZIP}"
         elif [ -n "${WIREGUIDE_SIGNING_KEY:-}" ]; then
           go run ./cmd/sign --key-env WIREGUIDE_SIGNING_KEY "${ZIP}"
+        elif security find-generic-password -s wireguide-sign -w > /tmp/wg-sign-release.key 2>/dev/null; then
+          go run ./cmd/sign --key /tmp/wg-sign-release.key "${ZIP}"
+          rm -f /tmp/wg-sign-release.key
         else
-          echo "WARNING: no Ed25519 signing key supplied (set WIREGUIDE_SIGNING_KEY or KEY_PATH=...)"
+          echo "WARNING: no Ed25519 signing key found (KEY_PATH, WIREGUIDE_SIGNING_KEY, or Keychain 'wireguide-sign')"
           echo "         the release will work in grace mode but won't be signed."
         fi
 
