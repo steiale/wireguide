@@ -1,7 +1,10 @@
 package update
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -101,8 +104,8 @@ func TestIsNewerVersion_EmptyStrings(t *testing.T) {
 
 func TestCurrentVersion(t *testing.T) {
 	got := CurrentVersion()
-	if got != currentVersion {
-		t.Errorf("CurrentVersion() = %q, want %q", got, currentVersion)
+	if got != fallbackVersion {
+		t.Errorf("CurrentVersion() = %q, want %q", got, fallbackVersion)
 	}
 	// Sanity: should look like a semver string.
 	parts := strings.Split(got, ".")
@@ -539,7 +542,7 @@ func testCheckForUpdateWithServer(t *testing.T, srv *httptest.Server) (*UpdateIn
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return &UpdateInfo{Available: false, CurrentVer: currentVersion}, nil
+		return &UpdateInfo{Available: false, CurrentVer: fallbackVersion}, nil
 	}
 
 	var release Release
@@ -548,13 +551,13 @@ func testCheckForUpdateWithServer(t *testing.T, srv *httptest.Server) (*UpdateIn
 	}
 
 	latestVer := strings.TrimPrefix(release.TagName, "v")
-	if !isNewerVersion(latestVer, currentVersion) {
-		return &UpdateInfo{Available: false, CurrentVer: currentVersion}, nil
+	if !isNewerVersion(latestVer, fallbackVersion) {
+		return &UpdateInfo{Available: false, CurrentVer: fallbackVersion}, nil
 	}
 
 	assetName := matchAsset(release.Assets)
 	if assetName == "" {
-		return &UpdateInfo{Available: false, CurrentVer: currentVersion}, nil
+		return &UpdateInfo{Available: false, CurrentVer: fallbackVersion}, nil
 	}
 
 	var downloadURL string
@@ -581,7 +584,7 @@ func testCheckForUpdateWithServer(t *testing.T, srv *httptest.Server) (*UpdateIn
 	return &UpdateInfo{
 		Available:   true,
 		Version:     latestVer,
-		CurrentVer:  currentVersion,
+		CurrentVer:  fallbackVersion,
 		ReleaseURL:  release.HTMLURL,
 		DownloadURL: downloadURL,
 		AssetName:   assetName,
@@ -735,6 +738,217 @@ func TestIsBrewInstall_CaskroomWithoutBrew(t *testing.T) {
 		}
 	} else {
 		t.Log("brew is in PATH on this machine; skipping no-brew assertion")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ed25519 signature verification
+// ---------------------------------------------------------------------------
+
+// withTestPublicKey swaps the package-level embeddedPublicKey for the duration
+// of a test so we can verify signatures made by an ephemeral keypair.
+func withTestPublicKey(t *testing.T, pub ed25519.PublicKey) {
+	t.Helper()
+	prev := embeddedPublicKey
+	embeddedPublicKey = base64.StdEncoding.EncodeToString(pub)
+	t.Cleanup(func() { embeddedPublicKey = prev })
+}
+
+// signedAssetServer returns an httptest server that serves both the asset and
+// its `.sig` at predictable paths.
+func signedAssetServer(t *testing.T, body, sig []byte) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/asset.zip", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.Write(body)
+	})
+	mux.HandleFunc("/asset.zip.sig", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(sig)
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestDownloadUpdate_SignatureValid(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	withTestPublicKey(t, pub)
+
+	bodySize := minAssetSize + 1024
+	body := make([]byte, bodySize)
+	for i := range body {
+		body[i] = byte(i % 256)
+	}
+	sig := ed25519.Sign(priv, body)
+	h := sha256.Sum256(body)
+	expectedHash := hex.EncodeToString(h[:])
+
+	srv := signedAssetServer(t, body, sig)
+	defer srv.Close()
+
+	info := &UpdateInfo{
+		DownloadURL:  srv.URL + "/asset.zip",
+		AssetName:    "asset.zip",
+		AssetSize:    int64(bodySize),
+		ExpectedHash: expectedHash,
+		SignatureURL: srv.URL + "/asset.zip.sig",
+	}
+
+	path, err := DownloadUpdate(info)
+	if err != nil {
+		t.Fatalf("DownloadUpdate failed: %v", err)
+	}
+	if !info.HashVerified {
+		t.Error("expected HashVerified=true")
+	}
+	if !info.SignatureVerified {
+		t.Error("expected SignatureVerified=true")
+	}
+	os.Remove(path)
+}
+
+func TestDownloadUpdate_SignatureInvalid(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	// Trust `pub` but sign with a DIFFERENT key — verification must fail.
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate other key: %v", err)
+	}
+	withTestPublicKey(t, pub)
+
+	bodySize := minAssetSize + 1024
+	body := make([]byte, bodySize)
+	sig := ed25519.Sign(otherPriv, body)
+	h := sha256.Sum256(body)
+	expectedHash := hex.EncodeToString(h[:])
+
+	srv := signedAssetServer(t, body, sig)
+	defer srv.Close()
+
+	info := &UpdateInfo{
+		DownloadURL:  srv.URL + "/asset.zip",
+		AssetName:    "asset.zip",
+		AssetSize:    int64(bodySize),
+		ExpectedHash: expectedHash,
+		SignatureURL: srv.URL + "/asset.zip.sig",
+	}
+
+	_, err = DownloadUpdate(info)
+	if err == nil {
+		t.Fatal("expected error for invalid signature")
+	}
+	if !strings.Contains(err.Error(), "signature verification FAILED") {
+		t.Errorf("expected signature failure error, got: %v", err)
+	}
+	if info.SignatureVerified {
+		t.Error("expected SignatureVerified=false after failure")
+	}
+}
+
+func TestDownloadUpdate_SignatureMissing_GraceMode(t *testing.T) {
+	if requireSignature {
+		t.Skip("requireSignature=true; this test only meaningful in grace mode")
+	}
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	withTestPublicKey(t, pub)
+
+	bodySize := minAssetSize + 1024
+	body := make([]byte, bodySize)
+	h := sha256.Sum256(body)
+	expectedHash := hex.EncodeToString(h[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	info := &UpdateInfo{
+		DownloadURL:  srv.URL + "/asset.zip",
+		AssetName:    "asset.zip",
+		AssetSize:    int64(bodySize),
+		ExpectedHash: expectedHash,
+		// SignatureURL intentionally empty — simulates a legacy release.
+	}
+
+	path, err := DownloadUpdate(info)
+	if err != nil {
+		t.Fatalf("expected no error in grace mode for missing signature, got: %v", err)
+	}
+	if info.SignatureVerified {
+		t.Error("expected SignatureVerified=false when no signature was supplied")
+	}
+	os.Remove(path)
+}
+
+func TestDownloadUpdate_SignatureWrongSize(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	withTestPublicKey(t, pub)
+
+	bodySize := minAssetSize + 1024
+	body := make([]byte, bodySize)
+	h := sha256.Sum256(body)
+	expectedHash := hex.EncodeToString(h[:])
+
+	// 32-byte signature (wrong size — Ed25519 sigs are 64 bytes).
+	junkSig := make([]byte, 32)
+
+	srv := signedAssetServer(t, body, junkSig)
+	defer srv.Close()
+
+	info := &UpdateInfo{
+		DownloadURL:  srv.URL + "/asset.zip",
+		AssetName:    "asset.zip",
+		AssetSize:    int64(bodySize),
+		ExpectedHash: expectedHash,
+		SignatureURL: srv.URL + "/asset.zip.sig",
+	}
+
+	_, err = DownloadUpdate(info)
+	if err == nil {
+		t.Fatal("expected error for wrong-size signature")
+	}
+	if !strings.Contains(err.Error(), "wrong size") {
+		t.Errorf("expected wrong-size error, got: %v", err)
+	}
+}
+
+func TestLoadEmbeddedPublicKey(t *testing.T) {
+	pub, err := loadEmbeddedPublicKey()
+	if err != nil {
+		t.Fatalf("embedded key did not parse: %v", err)
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		t.Errorf("got key of size %d, want %d", len(pub), ed25519.PublicKeySize)
+	}
+}
+
+func TestFetchSignature_LimitsSize(t *testing.T) {
+	// Server returns way more than maxSignatureSize bytes; fetchSignature
+	// must cap the read so a hostile peer can't blow up memory.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		junk := make([]byte, 10*maxSignatureSize)
+		w.Write(junk)
+	}))
+	defer srv.Close()
+
+	body, err := fetchSignature(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("fetchSignature errored: %v", err)
+	}
+	if len(body) > maxSignatureSize {
+		t.Errorf("fetchSignature returned %d bytes, expected <= %d", len(body), maxSignatureSize)
 	}
 }
 

@@ -2,7 +2,9 @@
 package update
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,26 +13,114 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	githubRepo     = "korjwl1/wireguide"
-	apiEndpoint    = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
-	currentVersion = "0.1.9"
+	githubRepo  = "korjwl1/wireguide"
+	apiEndpoint = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
+	// fallbackVersion is the build-time constant used when the running
+	// bundle's Info.plist cannot be read (e.g. unit tests, non-darwin
+	// builds, or running the bare binary without an enclosing .app).
+	// Keep this in sync with build/darwin/Info.plist on each release.
+	fallbackVersion = "1.0.16"
 
 	// minAssetSize is the minimum acceptable size for a release asset.
 	// A macOS .dmg/.zip containing WireGuide.app is always well over 1 MB;
 	// anything smaller is almost certainly corrupted or a placeholder file
 	// injected by an attacker.
 	minAssetSize = 1 << 20 // 1 MB
+
+	// requireSignature controls whether a missing or invalid Ed25519
+	// signature aborts the install. Older releases (uploaded before the
+	// signing pipeline existed) do not have a `.sig` file, so we leave a
+	// grace period during which a missing signature only logs a warning.
+	// Flip this to true once every supported release has been re-signed.
+	requireSignature = false
+
+	// maxSignatureSize bounds how many bytes we read from a `.sig` URL.
+	// An Ed25519 signature is exactly 64 bytes; anything larger is bogus.
+	maxSignatureSize = 1 << 10 // 1 KB (huge margin over 64 bytes)
 )
 
-// CurrentVersion returns the hardcoded app version string.
-func CurrentVersion() string { return currentVersion }
+// embeddedPublicKey is the base64-encoded Ed25519 public key used to verify
+// release signatures. The matching private key is kept offline and used to
+// sign each release zip via `go run ./cmd/sign`. Replacing this value
+// invalidates every previously-signed release.
+//
+// It is a var rather than a const so tests can substitute a known-good
+// keypair; production code never reassigns it.
+//
+// To rotate: run `go run ./cmd/sign --gen`, replace this value with the new
+// PUBLIC_KEY, and re-sign any release that should remain installable by
+// clients shipped after the rotation.
+var embeddedPublicKey = "0aHPGlSK9ipc/ZNocKqXZOwOw68wZx7ziAuw9DXwIQA="
+
+var (
+	versionOnce   sync.Once
+	cachedVersion string
+)
+
+// CurrentVersion returns the running app's version string. On macOS it
+// reads CFBundleShortVersionString from the enclosing .app bundle's
+// Info.plist (located at ../Info.plist relative to the executable). If
+// that lookup fails for any reason we fall back to the build-time
+// fallbackVersion constant. The result is cached for the lifetime of
+// the process.
+func CurrentVersion() string {
+	versionOnce.Do(func() {
+		if v := readBundleVersion(); v != "" {
+			cachedVersion = v
+			return
+		}
+		cachedVersion = fallbackVersion
+	})
+	return cachedVersion
+}
+
+// readBundleVersion attempts to read CFBundleShortVersionString from the
+// running .app bundle's Info.plist. Returns "" on any failure so the
+// caller can fall back to the build-time constant.
+func readBundleVersion() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	// Resolve symlinks so /Applications/WireGuide+.app/Contents/MacOS/wireguide-plus
+	// (or a Homebrew-installed cask, which uses copies, not symlinks) both work.
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	// Bundle layout: <App>.app/Contents/MacOS/<binary>
+	// Info.plist sits at <App>.app/Contents/Info.plist (../Info.plist).
+	plistPath := filepath.Join(filepath.Dir(exe), "..", "Info.plist")
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		return ""
+	}
+	return parseShortVersion(data)
+}
+
+// parseShortVersion extracts CFBundleShortVersionString from a plist's
+// XML body using a simple regex. Avoids pulling in an XML/plist library
+// for what is a trivial, well-known shape.
+var shortVersionRe = regexp.MustCompile(`<key>\s*CFBundleShortVersionString\s*</key>\s*<string>\s*([^<\s][^<]*?)\s*</string>`)
+
+func parseShortVersion(data []byte) string {
+	m := shortVersionRe.FindSubmatch(data)
+	if len(m) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(string(m[1]))
+}
 
 // Release represents a GitHub release.
 type Release struct {
@@ -59,13 +149,16 @@ type UpdateInfo struct {
 	ReleaseNotes string `json:"release_notes"`
 	AssetName    string `json:"asset_name"`
 	AssetSize    int64  `json:"asset_size"`
-	ChecksumURL  string `json:"checksum_url,omitempty"`  // URL to SHA256SUMS file
-	ExpectedHash string `json:"expected_hash,omitempty"` // pre-parsed SHA256 for this asset
-	HashVerified bool   `json:"hash_verified"`           // set to true after successful checksum verification
+	ChecksumURL       string `json:"checksum_url,omitempty"`       // URL to SHA256SUMS file
+	ExpectedHash      string `json:"expected_hash,omitempty"`      // pre-parsed SHA256 for this asset
+	HashVerified      bool   `json:"hash_verified"`                // set to true after successful checksum verification
+	SignatureURL      string `json:"signature_url,omitempty"`      // URL to the Ed25519 .sig file (empty for legacy releases)
+	SignatureVerified bool   `json:"signature_verified"`           // set to true after successful Ed25519 verification
 }
 
 // CheckForUpdate queries GitHub Releases API for newer version.
 func CheckForUpdate() (*UpdateInfo, error) {
+	cur := CurrentVersion()
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiEndpoint)
 	if err != nil {
@@ -74,7 +167,7 @@ func CheckForUpdate() (*UpdateInfo, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return &UpdateInfo{Available: false, CurrentVer: currentVersion}, nil
+		return &UpdateInfo{Available: false, CurrentVer: cur}, nil
 	}
 
 	var release Release
@@ -86,8 +179,8 @@ func CheckForUpdate() (*UpdateInfo, error) {
 	}
 
 	latestVer := strings.TrimPrefix(release.TagName, "v")
-	if !isNewerVersion(latestVer, currentVersion) {
-		return &UpdateInfo{Available: false, CurrentVer: currentVersion}, nil
+	if !isNewerVersion(latestVer, cur) {
+		return &UpdateInfo{Available: false, CurrentVer: cur}, nil
 	}
 
 	// Find matching asset for current OS/arch
@@ -95,20 +188,26 @@ func CheckForUpdate() (*UpdateInfo, error) {
 	if assetName == "" {
 		slog.Warn("update available but no matching asset for this platform",
 			"version", latestVer, "os", runtime.GOOS, "arch", runtime.GOARCH)
-		return &UpdateInfo{Available: false, CurrentVer: currentVersion}, nil
+		return &UpdateInfo{Available: false, CurrentVer: cur}, nil
 	}
 	downloadURL := ""
 	var assetSize int64
 	checksumURL := ""
+	signatureURL := ""
+	wantSigName := strings.ToLower(assetName + ".sig")
 	for _, a := range release.Assets {
 		if a.Name == assetName {
 			downloadURL = a.BrowserDownloadURL
 			assetSize = a.Size
 		}
-		// Look for checksum file (SHA256SUMS, checksums.txt, etc.)
 		lower := strings.ToLower(a.Name)
+		// Look for checksum file (SHA256SUMS, checksums.txt, etc.)
 		if strings.Contains(lower, "sha256") || strings.Contains(lower, "checksum") {
 			checksumURL = a.BrowserDownloadURL
+		}
+		// Look for the matching Ed25519 detached signature.
+		if lower == wantSigName {
+			signatureURL = a.BrowserDownloadURL
 		}
 	}
 
@@ -131,7 +230,7 @@ func CheckForUpdate() (*UpdateInfo, error) {
 	return &UpdateInfo{
 		Available:    true,
 		Version:      latestVer,
-		CurrentVer:   currentVersion,
+		CurrentVer:   cur,
 		ReleaseURL:   release.HTMLURL,
 		DownloadURL:  downloadURL,
 		ReleaseNotes: release.Body,
@@ -139,6 +238,7 @@ func CheckForUpdate() (*UpdateInfo, error) {
 		AssetSize:    assetSize,
 		ChecksumURL:  checksumURL,
 		ExpectedHash: expectedHash,
+		SignatureURL: signatureURL,
 	}, nil
 }
 
@@ -217,20 +317,92 @@ func DownloadUpdate(info *UpdateInfo) (string, error) {
 	}
 	info.HashVerified = true
 
-	// TODO(security): Add Ed25519/minisign signature verification once a
-	// signing key is established. The checksum file itself is hosted alongside
-	// the asset on GitHub, so a compromised GitHub account can replace both.
-	// Proper defense requires verifying a cryptographic signature made with a
-	// private key that never touches GitHub:
-	//   1. Generate an Ed25519 keypair (or use minisign).
-	//   2. Embed the public key in this binary at compile time.
-	//   3. Sign each release asset (or the SHA256SUMS file) offline.
-	//   4. Upload the .minisig detached signature as a release asset.
-	//   5. After checksum passes here, download <asset>.minisig and verify
-	//      against the embedded public key before proceeding.
-	slog.Warn("signature verification not yet implemented — update authenticated by SHA256 checksum only")
+	// Ed25519 signature verification. The signing key is kept offline, so a
+	// compromised GitHub release alone cannot forge a valid signature.
+	if err := verifySignature(destPath, info, client); err != nil {
+		os.Remove(destPath)
+		return "", err
+	}
 
 	return destPath, nil
+}
+
+// verifySignature downloads the detached Ed25519 signature for the asset and
+// verifies it against the embedded public key. When `requireSignature` is
+// false, missing signatures (e.g. on legacy releases) only log a warning so
+// the update can still proceed; signatures that ARE present must always
+// verify successfully.
+func verifySignature(filePath string, info *UpdateInfo, client *http.Client) error {
+	pub, err := loadEmbeddedPublicKey()
+	if err != nil {
+		// A broken embedded key is a programmer error; refuse to install.
+		return fmt.Errorf("embedded public key is invalid: %w", err)
+	}
+
+	if info.SignatureURL == "" {
+		if requireSignature {
+			return fmt.Errorf("refusing to install update %s: no Ed25519 signature (.sig) found in release", info.Version)
+		}
+		slog.Warn("update has no Ed25519 signature — accepting based on SHA256 alone (legacy release)",
+			"version", info.Version, "asset", info.AssetName)
+		return nil
+	}
+
+	sig, err := fetchSignature(info.SignatureURL, client)
+	if err != nil {
+		if requireSignature {
+			return fmt.Errorf("refusing to install update %s: %w", info.Version, err)
+		}
+		slog.Warn("could not fetch Ed25519 signature — accepting based on SHA256 alone",
+			"version", info.Version, "err", err)
+		return nil
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return fmt.Errorf("Ed25519 signature has wrong size: got %d bytes, want %d", len(sig), ed25519.SignatureSize)
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("re-reading downloaded asset for signature check: %w", err)
+	}
+
+	if !ed25519.Verify(pub, data, sig) {
+		return fmt.Errorf("Ed25519 signature verification FAILED for %s — possible tampering", info.AssetName)
+	}
+	info.SignatureVerified = true
+	slog.Info("Ed25519 signature verified", "asset", info.AssetName, "version", info.Version)
+	return nil
+}
+
+// loadEmbeddedPublicKey decodes the base64-encoded embedded public key.
+func loadEmbeddedPublicKey() (ed25519.PublicKey, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(embeddedPublicKey))
+	if err != nil {
+		return nil, fmt.Errorf("decode base64: %w", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("wrong size: got %d bytes, want %d", len(raw), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(raw), nil
+}
+
+// fetchSignature downloads the detached signature file. The body is capped
+// at maxSignatureSize to defend against a hostile server feeding the
+// updater an unbounded stream.
+func fetchSignature(url string, client *http.Client) ([]byte, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetching signature: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching signature: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSignatureSize))
+	if err != nil {
+		return nil, fmt.Errorf("reading signature: %w", err)
+	}
+	return body, nil
 }
 
 // isNewerVersion compares two semver strings (without "v" prefix).

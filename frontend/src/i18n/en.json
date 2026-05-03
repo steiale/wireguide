@@ -233,11 +233,20 @@
   },
   "wifi_rules": {
     "title": "Wi-Fi Rules",
+    "tab": "Wi-Fi",
+    "enabled": "Enable Wi-Fi auto-connect",
+    "enabled_hint": "Connect or disconnect tunnels automatically when joining specific networks.",
     "connect_untrusted": "Connect on untrusted Wi-Fi",
+    "default_tunnel": "Default tunnel",
     "trusted_ssids": "Trusted Networks",
+    "trusted_hint": "VPN is automatically disconnected when joining these networks.",
     "ssid_tunnel_map": "Auto-connect per SSID",
+    "mapping_hint": "Pick a specific tunnel for each named network.",
     "add_trusted": "Add",
+    "add_mapping": "Add",
     "ssid_placeholder": "Network name (SSID)",
-    "select_tunnel": "Choose tunnel..."
+    "select_tunnel": "Choose tunnel...",
+    "current_ssid": "Currently on",
+    "no_ssid": "Not connected to Wi-Fi"
   }
 }

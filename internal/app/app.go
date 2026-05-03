@@ -26,20 +26,22 @@ import (
 // helper can be re-spawned and the connection swapped without rebuilding
 // the whole service graph).
 type TunnelService struct {
-	tunnelStore   *storage.TunnelStore
-	settingsStore *storage.SettingsStore
-	clients       *ipc.ClientHolder
-	app           *application.App
-	win           *application.WebviewWindow
+	tunnelStore    *storage.TunnelStore
+	settingsStore  *storage.SettingsStore
+	wifiRulesStore *storage.WifiRulesStore
+	clients        *ipc.ClientHolder
+	app            *application.App
+	win            *application.WebviewWindow
 }
 
 // NewTunnelService creates a service. Set the app reference via SetApp()
 // after application.New() for dialog support.
-func NewTunnelService(ts *storage.TunnelStore, ss *storage.SettingsStore, clients *ipc.ClientHolder) *TunnelService {
+func NewTunnelService(ts *storage.TunnelStore, ss *storage.SettingsStore, wrs *storage.WifiRulesStore, clients *ipc.ClientHolder) *TunnelService {
 	return &TunnelService{
-		tunnelStore:   ts,
-		settingsStore: ss,
-		clients:       clients,
+		tunnelStore:    ts,
+		settingsStore:  ss,
+		wifiRulesStore: wrs,
+		clients:        clients,
 	}
 }
 

@@ -95,6 +95,22 @@ export class UpdateInfo {
              */
             this["hash_verified"] = false;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * URL to the Ed25519 .sig file (empty for legacy releases)
+             * @member
+             * @type {string | undefined}
+             */
+            this["signature_url"] = undefined;
+        }
+        if (!("signature_verified" in $$source)) {
+            /**
+             * set to true after successful Ed25519 verification
+             * @member
+             * @type {boolean}
+             */
+            this["signature_verified"] = false;
+        }
 
         Object.assign(this, $$source);
     }

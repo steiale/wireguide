@@ -29,6 +29,9 @@ import * as tunnel$0 from "../tunnel/models.js";
 import * as update$0 from "../update/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as wifi$0 from "../wifi/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as application$0 from "../../../../wailsapp/wails/v3/pkg/application/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -144,6 +147,16 @@ export function GetConfigText(name) {
 }
 
 /**
+ * GetCurrentSSID returns the SSID the user is currently connected to,
+ * or "" if not connected to a Wi-Fi network. Read on demand — no IPC, no
+ * state. The Wi-Fi Rules UI uses this for a live "Currently on:" badge.
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetCurrentSSID() {
+    return $Call.ByID(2005225111);
+}
+
+/**
  * GetEndpointLatency returns round-trip latency in ms to a WireGuard endpoint
  * (host:port). Returns -1 if unreachable or the endpoint is empty.
  * @param {string} endpoint
@@ -216,6 +229,17 @@ export function GetVersion() {
 }
 
 /**
+ * GetWifiRules returns the persisted Wi-Fi auto-connect rules. Defaults
+ * (feature disabled, empty maps) on first run.
+ * @returns {$CancellablePromise<wifi$0.Rules | null>}
+ */
+export function GetWifiRules() {
+    return $Call.ByID(45284585).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType15($result);
+    }));
+}
+
+/**
  * ImportConfig parses, validates, and saves a tunnel config under the given
  * name. Returns a TunnelInfo for optimistic UI display.
  * @param {string} name
@@ -224,7 +248,7 @@ export function GetVersion() {
  */
 export function ImportConfig(name, content) {
     return $Call.ByID(2459134310, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType17($result);
     }));
 }
 
@@ -236,7 +260,7 @@ export function ImportConfig(name, content) {
  */
 export function ImportFoundConfigs(paths) {
     return $Call.ByID(3040882779, paths).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType19($result);
     }));
 }
 
@@ -271,7 +295,7 @@ export function ImportQRFromPath(path, name) {
  */
 export function ImportZip(path) {
     return $Call.ByID(976469479, path).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType19($result);
     }));
 }
 
@@ -283,7 +307,7 @@ export function ImportZip(path) {
  */
 export function ImportZipData(data) {
     return $Call.ByID(2432663343, data).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType19($result);
     }));
 }
 
@@ -301,7 +325,7 @@ export function ImportZipData(data) {
  */
 export function ListTunnels() {
     return $Call.ByID(3587038916).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType20($result);
     }));
 }
 
@@ -316,7 +340,7 @@ export function ListTunnels() {
  */
 export function ListTunnelsLocal() {
     return $Call.ByID(3031176175).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType20($result);
     }));
 }
 
@@ -378,7 +402,7 @@ export function ResizeToFit(tunnelCount) {
  */
 export function RunDNSLeakTest() {
     return $Call.ByID(2469114850).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType20($result);
+        return $$createType22($result);
     }));
 }
 
@@ -416,13 +440,23 @@ export function SaveTunnelMeta(name, meta) {
 }
 
 /**
+ * SaveWifiRules persists the rules and pushes them to the live monitor so
+ * the next SSID poll uses the new configuration without an app restart.
+ * @param {wifi$0.Rules} rules
+ * @returns {$CancellablePromise<void>}
+ */
+export function SaveWifiRules(rules) {
+    return $Call.ByID(156452812, rules);
+}
+
+/**
  * ScanForWireGuardConfigs returns existing WireGuard configs found on the
  * filesystem that haven't been imported into WireGuide+ yet.
  * @returns {$CancellablePromise<$models.FoundConfig[]>}
  */
 export function ScanForWireGuardConfigs() {
     return $Call.ByID(1549830634).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType24($result);
     }));
 }
 
@@ -521,7 +555,7 @@ export function UpdateConfig(name, content) {
  */
 export function ValidateConfig(content) {
     return $Call.ByID(592398029, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType23($result);
+        return $$createType25($result);
     }));
 }
 
@@ -540,13 +574,15 @@ const $$createType10 = domain$0.WireGuardConfig.createFrom;
 const $$createType11 = $Create.Nullable($$createType10);
 const $$createType12 = storage$0.TunnelMeta.createFrom;
 const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = $models.TunnelInfo.createFrom;
+const $$createType14 = wifi$0.Rules.createFrom;
 const $$createType15 = $Create.Nullable($$createType14);
-const $$createType16 = $models.ZipImportResult.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = $Create.Array($$createType14);
-const $$createType19 = $models.DNSLeakResult.createFrom;
-const $$createType20 = $Create.Nullable($$createType19);
-const $$createType21 = $models.FoundConfig.createFrom;
-const $$createType22 = $Create.Array($$createType21);
-const $$createType23 = $Create.Array($Create.Any);
+const $$createType16 = $models.TunnelInfo.createFrom;
+const $$createType17 = $Create.Nullable($$createType16);
+const $$createType18 = $models.ZipImportResult.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = $Create.Array($$createType16);
+const $$createType21 = $models.DNSLeakResult.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
+const $$createType23 = $models.FoundConfig.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = $Create.Array($Create.Any);

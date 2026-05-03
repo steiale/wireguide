@@ -233,11 +233,20 @@
   },
   "wifi_rules": {
     "title": "WLAN-Regeln",
+    "tab": "WLAN",
+    "enabled": "WLAN-Automatik aktivieren",
+    "enabled_hint": "Tunnel automatisch verbinden oder trennen, je nach WLAN-Netz.",
     "connect_untrusted": "Bei unbekanntem WLAN verbinden",
+    "default_tunnel": "Standard-Tunnel",
     "trusted_ssids": "Vertrauenswürdige Netzwerke",
+    "trusted_hint": "VPN wird in diesen Netzwerken automatisch getrennt.",
     "ssid_tunnel_map": "Automatisch verbinden nach SSID",
+    "mapping_hint": "Wähle einen Tunnel pro Netzwerk.",
     "add_trusted": "Hinzufügen",
+    "add_mapping": "Hinzufügen",
     "ssid_placeholder": "Netzwerkname (SSID)",
-    "select_tunnel": "Tunnel auswählen..."
+    "select_tunnel": "Tunnel auswählen...",
+    "current_ssid": "Aktuell verbunden mit",
+    "no_ssid": "Kein WLAN verbunden"
   }
 }

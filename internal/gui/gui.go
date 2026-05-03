@@ -69,6 +69,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	}
 	tunnelStore := storage.NewTunnelStore(paths.TunnelsDir)
 	settingsStore := storage.NewSettingsStore(paths.ConfigDir)
+	wifiRulesStore := storage.NewWifiRulesStore(paths.ConfigDir)
 
 	// Apply persisted log level to the GUI side immediately (helper-side
 	// gets it after ensureHelper + the SaveSettings path).
@@ -103,7 +104,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	clients := ipc.NewClientHolder(initialClient)
 
 	// 3. Wails service
-	tunnelService := wgapp.NewTunnelService(tunnelStore, settingsStore, clients)
+	tunnelService := wgapp.NewTunnelService(tunnelStore, settingsStore, wifiRulesStore, clients)
 
 	// 4. Wails app
 	app := application.New(application.Options{
@@ -243,8 +244,15 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	healthWg.Add(1)
 	startHelperHealthMonitor(app, clients, dataDir, bridge, healthDone, &healthWg)
 
+	// 8b. Wi-Fi auto-connect lifecycle. Started after the IPC client holder
+	// and bridge are alive so the SSID-change callback can issue Connect /
+	// Disconnect calls immediately. Stopped during shutdown so the 5 s
+	// poll goroutine doesn't outlive the app.
+	wifiLC := startWifiLifecycle(clients, wifiRulesStore, tunnelStore)
+
 	// 9. Run (blocks)
 	err = app.Run()
+	wifiLC.stop()
 	close(healthDone)
 	healthWg.Wait()
 	return err

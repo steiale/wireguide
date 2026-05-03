@@ -75,13 +75,18 @@
     await initialLoad(TunnelService);
     subscribeToEvents();
 
-    // Auto-check for updates (non-blocking, best-effort)
-    try {
-      const info = await TunnelService.CheckForUpdate();
-      if (info?.available) updateInfo = info;
-    } catch (e) {
-      // Silent — update check failure should never block the app
-    }
+    // Auto-check for updates ~3s after launch. Delayed so the network
+    // call doesn't compete with initial tunnel scan / status refresh on
+    // startup. The result feeds the existing UpdateNotice popup and the
+    // About-tab badge by setting `updateInfo` — no separate UI path.
+    setTimeout(async () => {
+      try {
+        const info = await TunnelService.CheckForUpdate();
+        if (info?.available) updateInfo = info;
+      } catch (e) {
+        // Silent — update check failure should never block the app
+      }
+    }, 3000);
 
     // Wails v3 native file drop — HTML5 dragdrop doesn't work in WebKit.
     // Event payload: { files: string[], details: {...} }

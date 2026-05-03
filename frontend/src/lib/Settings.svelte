@@ -2,7 +2,8 @@
   import { onDestroy, onMount } from 'svelte';
   import { t, setLanguage, getLanguage, detectLanguage } from '../i18n/index.js';
   import { applyTheme } from '../stores/theme.js';
-  import { connectionStatus } from '../stores/tunnels.js';
+  import { connectionStatus, tunnels } from '../stores/tunnels.js';
+  import WifiRules from './WifiRules.svelte';
 
   export let TunnelService;
   export let onClose = () => {};
@@ -45,6 +46,50 @@
   };
   let loaded = false;
   let appVersion = '';
+
+  // Wi-Fi Rules state. Loaded lazily so Settings can render the General/
+  // Advanced tabs without waiting on the wifi rules round-trip.
+  let wifiRules = {
+    enabled: false,
+    default_tunnel: '',
+    auto_connect_untrusted: false,
+    trusted_ssids: [],
+    ssid_tunnel_map: {},
+  };
+  let wifiLoaded = false;
+  let wifiSaveError = '';
+
+  async function loadWifiRules() {
+    try {
+      const r = await TunnelService.GetWifiRules();
+      if (r) {
+        wifiRules = {
+          enabled: r.enabled ?? false,
+          default_tunnel: r.default_tunnel ?? '',
+          auto_connect_untrusted: r.auto_connect_untrusted ?? false,
+          trusted_ssids: Array.isArray(r.trusted_ssids) ? r.trusted_ssids : [],
+          ssid_tunnel_map: r.ssid_tunnel_map && typeof r.ssid_tunnel_map === 'object' ? r.ssid_tunnel_map : {},
+        };
+      }
+      wifiLoaded = true;
+    } catch (e) {
+      console.error('load wifi rules:', e);
+      wifiLoaded = true;
+    }
+  }
+
+  async function onWifiChange(e) {
+    wifiRules = { ...e.detail };
+    try {
+      await TunnelService.SaveWifiRules(wifiRules);
+      wifiSaveError = '';
+    } catch (err) {
+      console.error('save wifi rules:', err);
+      wifiSaveError = err?.message ?? String(err);
+    }
+  }
+
+  $: tunnelNames = ($tunnels || []).map((t) => t.name);
 
   async function load() {
     try {
@@ -218,6 +263,9 @@
         <button role="tab" aria-selected={activeTab === 'advanced'} class:active={activeTab === 'advanced'} on:click={() => activeTab = 'advanced'}>
           {$t('settings.advanced')}
         </button>
+        <button role="tab" aria-selected={activeTab === 'wifi'} class:active={activeTab === 'wifi'} on:click={() => { activeTab = 'wifi'; if (!wifiLoaded) loadWifiRules(); }}>
+          {$t('wifi_rules.tab')}
+        </button>
         <button role="tab" aria-selected={activeTab === 'about'} class:active={activeTab === 'about'} on:click={() => activeTab = 'about'}>
           {$t('settings.about')}
         </button>
@@ -293,6 +341,19 @@
           </div>
           <p class="setting-hint">{$t('settings.pin_interface_hint')}</p>
 
+        {:else if activeTab === 'wifi'}
+          {#if wifiLoaded}
+            <WifiRules
+              {TunnelService}
+              bind:rules={wifiRules}
+              tunnelNames={tunnelNames}
+              on:change={onWifiChange}
+            />
+            {#if wifiSaveError}
+              <p class="setting-hint" role="alert" style="color: var(--error-text, #d03025);">{wifiSaveError}</p>
+            {/if}
+          {/if}
+
         {:else if activeTab === 'about'}
           <div class="about-section">
             <div class="about-header">
@@ -315,6 +376,9 @@
             </div>
 
             <p class="about-desc">{$t('settings.about_desc')}</p>
+            {#if appVersion}
+              <p class="about-version-line">Version {appVersion}</p>
+            {/if}
 
             {#if aboutShowVpnWarn}
               <div class="about-vpn-warn">
@@ -523,6 +587,12 @@
     font: 400 12px/16px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     color: var(--text-secondary);
     margin: 0;
+  }
+  .about-version-line {
+    font: 400 11px/14px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    color: var(--text-secondary);
+    margin: 0;
+    letter-spacing: 0.01em;
   }
   .about-links {
     display: flex;
