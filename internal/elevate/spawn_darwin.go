@@ -156,15 +156,20 @@ func installAndLoadDaemon(args Args) error {
 		return fmt.Errorf("osascript install: %w", err)
 	}
 
-	// Wait for daemon socket to come up.
-	for i := 0; i < 30; i++ {
-		time.Sleep(200 * time.Millisecond)
-		if isSocketLive(args.SocketPath) {
-			slog.Info("LaunchDaemon installed and running")
-			return nil
-		}
-	}
-	return fmt.Errorf("daemon installed but socket not live after 6s")
+	// Do NOT poll for the socket here. After kickstart, launchd may apply a
+	// throttle (default 10 s "ThrottleInterval") if the previous daemon
+	// instance had been alive for less than 10 s — exactly what happens during
+	// a version-upgrade flow where the GUI had just sent Shutdown to the old
+	// helper. A short wait loop here would expire before launchd respawns,
+	// causing SpawnHelper to return a spurious error and the GUI to show the
+	// "grant administrator access" retry dialog even though the install
+	// actually succeeded.
+	//
+	// The caller (ensureHelper in internal/gui) already polls the socket for
+	// up to 60 s after SpawnHelper returns, which comfortably covers any
+	// launchd throttle window.
+	slog.Info("LaunchDaemon install/restart command issued; caller will poll for socket")
+	return nil
 }
 
 // isSocketLive checks whether the helper socket accepts a connection.

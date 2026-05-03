@@ -25,10 +25,11 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 
 	// Try an existing helper first (survives GUI restarts).
 	if client, err := ipc.NewClient(addr); err == nil {
-		pingCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		defer cancel()
+		pingCtx, pingCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		var resp ipc.PingResponse
-		if err := client.CallWithContext(pingCtx, ipc.MethodPing, nil, &resp); err == nil {
+		pingErr := client.CallWithContext(pingCtx, ipc.MethodPing, nil, &resp)
+		pingCancel()
+		if pingErr == nil {
 			guiVersion := update.CurrentVersion()
 			helperAppVersion := resp.AppVersion
 			if helperAppVersion == "" {
@@ -39,15 +40,28 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 				slog.Info("connected to existing helper", "version", helperAppVersion)
 				return client, nil
 			}
-			// Helper version mismatch — shut down old helper and reinstall.
+			// Helper version mismatch — reinstall and let kickstart restart it.
+			//
+			// Do NOT send Shutdown here. The old helper has KeepAlive=true, so
+			// shutting it down causes launchd to immediately respawn the OLD
+			// binary. A few hundred ms later we kickstart, which kills the
+			// just-respawned helper. If that helper had been alive for less
+			// than launchd's ThrottleInterval (default 10 s), launchd refuses
+			// to respawn for ~10 s — long enough that the caller may give up.
+			//
+			// Skipping Shutdown means the old daemon stays alive until the
+			// install script runs `launchctl kickstart -k`. That command kills
+			// the (long-running) old helper exactly once, after the new binary
+			// is already on disk, and launchd respawns the new binary
+			// immediately because the previous instance had been up much
+			// longer than the throttle window.
 			slog.Warn("helper version mismatch, upgrading",
 				"helper", helperAppVersion, "gui", guiVersion)
-			_ = client.Call(ipc.MethodShutdown, nil, nil)
 			client.Close()
 			// Force reinstall so SpawnHelper skips the "already running"
-			// check — KeepAlive may have restarted the old binary already.
+			// check — installAndLoadDaemon will kickstart the daemon to
+			// pick up the new binary.
 			forceReinstall = true
-			time.Sleep(300 * time.Millisecond)
 		} else {
 			client.Close()
 		}
