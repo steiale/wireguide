@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/makiuchi-d/gozxing v0.1.1
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.74
 	golang.org/x/crypto v0.49.0
 	golang.org/x/sys v0.42.0
@@ -37,7 +38,6 @@ require (
 	github.com/leaanthony/go-ansi-parser v1.6.1 // indirect
 	github.com/leaanthony/u v1.1.1 // indirect
 	github.com/lmittmann/tint v1.1.2 // indirect
-	github.com/makiuchi-d/gozxing v0.1.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mdlayher/genetlink v1.3.2 // indirect

@@ -39,10 +39,17 @@ tasks:
       - task: common:generate:icons
     cmds:
       - go build {{.BUILD_FLAGS}} -o {{.OUTPUT}}
+      # Build the standalone helper binary (cmd/helper). It MUST be a separate
+      # binary from the GUI: the GUI links Wails/AppKit/WebKit which crash when
+      # the daemon is launched as root without a window server. The helper-only
+      # binary imports just internal/helper, so it has no AppKit dependency and
+      # is safe to run as a root LaunchDaemon.
+      - go build {{.BUILD_FLAGS}} -o {{.HELPER_OUTPUT}} ./cmd/helper
     vars:
       BUILD_FLAGS: '{{if eq .DEV "true"}}{{if .EXTRA_TAGS}}-tags {{.EXTRA_TAGS}} {{end}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
+      HELPER_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}-helper'
     env:
       GOOS: darwin
       CGO_ENABLED: 1
@@ -107,6 +114,13 @@ tasks:
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
       - cp build/darwin/icons.icns "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
+      # Bundle the standalone helper binary alongside the GUI binary. The
+      # privileged installer (internal/elevate/spawn_darwin.go) copies this
+      # file to /Library/PrivilegedHelperTools/<label> and points the
+      # LaunchDaemon plist at it. Without this copy step the bundled helper
+      # is missing and the elevate path fails with "helper binary missing
+      # from app bundle".
+      - cp "{{.BIN_DIR}}/{{.APP_NAME}}-helper" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - cp build/darwin/Info.plist "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents"
       - task: '{{if eq OS "darwin"}}codesign:adhoc{{else}}codesign:skip{{end}}'
 
