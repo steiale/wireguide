@@ -45,7 +45,16 @@ func (h *Helper) handleSetLogLevel(params json.RawMessage) (interface{}, error) 
 }
 
 func (h *Helper) handlePing(params json.RawMessage) (interface{}, error) {
-	return ipc.PingResponse{Version: ipc.ProtocolVersion, AppVersion: update.CurrentVersion(), PID: os.Getpid()}, nil
+	// Best-effort lookup of the running binary path. Used by the GUI to
+	// detect a stale daemon (old combined GUI binary running in --helper
+	// mode after an upgrade that the user didn't grant admin rights to).
+	exe, _ := os.Executable()
+	return ipc.PingResponse{
+		Version:    ipc.ProtocolVersion,
+		AppVersion: update.CurrentVersion(),
+		PID:        os.Getpid(),
+		BinaryPath: exe,
+	}, nil
 }
 
 func (h *Helper) handleShutdown(params json.RawMessage) (interface{}, error) {

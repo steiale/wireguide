@@ -36,9 +36,28 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 				// Old helper that doesn't have AppVersion field — force upgrade.
 				helperAppVersion = "unknown"
 			}
-			if helperAppVersion == guiVersion {
-				slog.Info("connected to existing helper", "version", helperAppVersion)
+			// Detect a daemon that's the OLD combined GUI binary running in
+			// --helper mode. The expected daemon binary lives at the
+			// PrivilegedHelperTools path (see internal/elevate/spawn_darwin.go
+			// daemonBinary). If the running daemon is anywhere else — most
+			// commonly /Applications/<App>.app/Contents/MacOS/wireguide-plus
+			// (the v1.0.22 single-binary layout) — force reinstall regardless
+			// of AppVersion match. Otherwise both binaries fall back to the
+			// same compiled-in fallbackVersion and the version check spuriously
+			// passes, leaving the old NSWorkspace-based reconnect code path
+			// running as root LaunchDaemon (which the v1.0.23 IOKit rewrite
+			// was specifically meant to replace).
+			const expectedDaemonBinary = "/Library/PrivilegedHelperTools/io.github.steiale.wireguide-plus.helper"
+			binaryMismatch := resp.BinaryPath != "" && resp.BinaryPath != expectedDaemonBinary
+			if helperAppVersion == guiVersion && !binaryMismatch {
+				slog.Info("connected to existing helper",
+					"version", helperAppVersion,
+					"binary", resp.BinaryPath)
 				return client, nil
+			}
+			if binaryMismatch {
+				slog.Warn("helper running from unexpected binary path, forcing reinstall",
+					"got", resp.BinaryPath, "want", expectedDaemonBinary)
 			}
 			// Helper version mismatch — reinstall and let kickstart restart it.
 			//
@@ -108,7 +127,15 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 				client.Close()
 				continue
 			}
-			slog.Info("helper ready", "app_version", resp.AppVersion)
+			// Also verify the running daemon is the standalone helper binary,
+			// not the leftover combined GUI binary from a stale install.
+			const expectedDaemonBinary = "/Library/PrivilegedHelperTools/io.github.steiale.wireguide-plus.helper"
+			if forceReinstall && resp.BinaryPath != "" && resp.BinaryPath != expectedDaemonBinary {
+				slog.Debug("polling: still old helper binary path", "got", resp.BinaryPath)
+				client.Close()
+				continue
+			}
+			slog.Info("helper ready", "app_version", resp.AppVersion, "binary", resp.BinaryPath)
 			return client, nil
 		}
 		client.Close()

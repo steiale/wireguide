@@ -10,6 +10,13 @@ type PingResponse struct {
 	Version    string `json:"version"`     // IPC protocol version
 	AppVersion string `json:"app_version"` // Application version (e.g. "0.1.5")
 	PID        int    `json:"pid"`
+	// BinaryPath is the absolute path of the running helper executable.
+	// The GUI uses this to detect when the daemon is still the OLD
+	// combined GUI binary running in --helper mode (i.e. the helper was
+	// never reinstalled after a version upgrade). When the path is not the
+	// expected /Library/PrivilegedHelperTools/...helper, the GUI forces
+	// reinstall regardless of AppVersion match.
+	BinaryPath string `json:"binary_path,omitempty"`
 }
 
 // ConnectRequest is the parameter for Tunnel.Connect.
