@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { TunnelService } from '../../bindings/github.com/korjwl1/wireguide/internal/app';
+  import { TunnelService } from '../../bindings/github.com/steiale/wireguide/internal/app';
   import { t } from '../i18n/index.js';
 
   let sessions = [];

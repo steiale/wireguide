@@ -18,7 +18,7 @@
   import { errText } from './lib/errors.js';
   import { uint8ArrayToBase64 } from './lib/encoding.js';
   import { t, setLanguage, detectLanguage } from './i18n/index.js';
-  import { TunnelService } from '../bindings/github.com/korjwl1/wireguide/internal/app';
+  import { TunnelService } from '../bindings/github.com/steiale/wireguide/internal/app';
 
   // View state
   let currentView = 'tunnels'; // 'tunnels' | 'dnsleak' | 'routes' | 'logs' | 'history'

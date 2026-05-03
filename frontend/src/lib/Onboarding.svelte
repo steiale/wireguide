@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
-  import { TunnelService } from '../../bindings/github.com/korjwl1/wireguide/internal/app';
+  import { TunnelService } from '../../bindings/github.com/steiale/wireguide/internal/app';
   import { uint8ArrayToBase64 } from './encoding.js';
   import { errText } from './errors.js';
 
