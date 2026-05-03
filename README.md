@@ -19,6 +19,19 @@
 
 ---
 
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/01-tunnels.png" width="420" /><br><sub>Tunnel overview</sub></td>
+    <td align="center"><img src="docs/screenshots/02-expanded.png" width="420" /><br><sub>Expanded tunnel — config details</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/03-connected.png" width="420" /><br><sub>Connected with live stats</sub></td>
+    <td align="center"><img src="docs/screenshots/04-speedgraph.png" width="420" /><br><sub>Real-time speed graph</sub></td>
+  </tr>
+</table>
+
+---
+
 ## Features
 
 | Feature | Description |
