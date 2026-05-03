@@ -33,9 +33,15 @@ func (s *TunnelService) ListTunnelsLocal() ([]TunnelInfo, error) {
 		if len(cfg.Peers) > 0 {
 			endpoint = cfg.Peers[0].Endpoint
 		}
+		meta, _ := s.tunnelStore.LoadMeta(name)
+		notes := ""
+		if meta != nil {
+			notes = meta.Notes
+		}
 		result = append(result, TunnelInfo{
 			Name:     name,
 			Endpoint: endpoint,
+			Notes:    notes,
 		})
 	}
 	return result, nil
@@ -73,10 +79,16 @@ func (s *TunnelService) ListTunnels() ([]TunnelInfo, error) {
 		if len(cfg.Peers) > 0 {
 			endpoint = cfg.Peers[0].Endpoint
 		}
+		meta, _ := s.tunnelStore.LoadMeta(name)
+		notes := ""
+		if meta != nil {
+			notes = meta.Notes
+		}
 		result = append(result, TunnelInfo{
 			Name:        name,
 			IsConnected: name == active.Value,
 			Endpoint:    endpoint,
+			Notes:       notes,
 		})
 	}
 	return result, nil

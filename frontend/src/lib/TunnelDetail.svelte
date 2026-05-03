@@ -11,14 +11,33 @@
   let loading = false;
   let error = '';
   let autoReconnect = false;
+  let notes = '';
+  let notesLoadedFor = null;
 
   $: if ($selectedTunnel) loadDetail($selectedTunnel.name);
 
-  // Load per-tunnel metadata (auto-reconnect flag) whenever the selection changes.
+  // Load per-tunnel metadata whenever the selection changes.
   $: if ($selectedTunnel?.name) {
     TunnelService.GetTunnelMeta($selectedTunnel.name)
-      .then(m => { autoReconnect = m?.auto_reconnect ?? false; })
-      .catch(() => { autoReconnect = false; });
+      .then(m => {
+        autoReconnect = m?.auto_reconnect ?? false;
+        notes = m?.notes ?? ($selectedTunnel?.notes || '');
+        notesLoadedFor = $selectedTunnel.name;
+      })
+      .catch(() => {
+        autoReconnect = false;
+        notes = $selectedTunnel?.notes || '';
+        notesLoadedFor = $selectedTunnel.name;
+      });
+  }
+
+  async function saveNotes() {
+    if (!$selectedTunnel?.name || notesLoadedFor !== $selectedTunnel.name) return;
+    try {
+      await TunnelService.SaveTunnelMeta($selectedTunnel.name, { auto_reconnect: autoReconnect, notes });
+    } catch (e) {
+      // non-critical — ignore
+    }
   }
 
   async function toggleAutoReconnect() {
@@ -283,6 +302,18 @@
           <span class="toggle-hint">{autoReconnect ? 'On wake & network change' : 'Off'}</span>
         </label>
       </div>
+    </div>
+
+    <div class="notes-section">
+      <label class="notes-label" for="tunnel-notes">{$t('tunnel.notes_label')}</label>
+      <textarea
+        id="tunnel-notes"
+        class="notes-textarea"
+        placeholder={$t('tunnel.notes_placeholder')}
+        bind:value={notes}
+        on:blur={saveNotes}
+        rows="3"
+      ></textarea>
     </div>
 
     {#if error}
@@ -554,6 +585,36 @@
     font: var(--text-footnote);
     color: var(--text-secondary);
   }
+
+  /* ---------- Notes ---------- */
+  .notes-section {
+    margin-bottom: var(--space-5);
+  }
+  .notes-label {
+    display: block;
+    font: var(--text-footnote);
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: var(--space-2);
+  }
+  .notes-textarea {
+    width: 100%;
+    min-height: 64px;
+    padding: var(--space-2) var(--space-3);
+    background: var(--bg-input);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font: var(--text-body);
+    outline: none;
+    resize: vertical;
+    box-sizing: border-box;
+    transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .notes-textarea::placeholder { color: var(--text-muted); }
+  .notes-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--blue-tint); }
 
   /* ---------- Error message ---------- */
   .error-msg {

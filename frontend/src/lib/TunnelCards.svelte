@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher, tick } from 'svelte';
+  import { createEventDispatcher, tick, onDestroy } from 'svelte';
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { tunnels, connectionStatus, selectedTunnel, refreshTunnels, refreshStatus } from '../stores/tunnels.js';
@@ -17,6 +17,34 @@
   let loading = {};   // name → bool (disconnect in progress)
   let errors = {};    // name → string
   let search = '';
+  let latencies = {}; // name → ms (-1 = unreachable)
+  let latencyIntervals = {}; // name → intervalId
+
+  async function pollLatency(name, endpoint) {
+    if (!endpoint) return;
+    try {
+      const ms = await TunnelService.GetEndpointLatency(endpoint);
+      latencies = { ...latencies, [name]: ms };
+    } catch (e) {}
+  }
+
+  function startLatencyPolling(name, endpoint) {
+    if (!endpoint || latencyIntervals[name]) return;
+    pollLatency(name, endpoint);
+    latencyIntervals[name] = setInterval(() => pollLatency(name, endpoint), 10000);
+  }
+
+  function stopLatencyPolling(name) {
+    if (latencyIntervals[name]) {
+      clearInterval(latencyIntervals[name]);
+      delete latencyIntervals[name];
+      latencyIntervals = latencyIntervals;
+    }
+  }
+
+  onDestroy(() => {
+    for (const id of Object.values(latencyIntervals)) clearInterval(id);
+  });
 
   // Delete confirm state
   let deleteConfirmName = null;
@@ -52,17 +80,20 @@
       expandedName = null;
       chartReadyNames.delete(name);
       chartReadyNames = chartReadyNames;
+      stopLatencyPolling(name);
       selectedTunnel.set(null);
       return;
     }
+    if (expandedName) stopLatencyPolling(expandedName);
     expandedName = name;
+    const tun = ($tunnels || []).find(t => t.name === name);
+    if (tun?.endpoint) startLatencyPolling(name, tun.endpoint);
+    if (tun) selectedTunnel.set(tun);
     // Delay chart mount until after the 180ms slide animation so the canvas
     // can read non-zero offsetWidth/offsetHeight on its first draw tick.
     setTimeout(() => {
       chartReadyNames = new Set([...chartReadyNames, name]);
     }, 220);
-    const tun = ($tunnels || []).find(t => t.name === name);
-    if (tun) selectedTunnel.set(tun);
 
     if (!details[name]) {
       try {
@@ -139,6 +170,7 @@
     <div class="header-actions">
       <button class="hdr-btn hdr-btn-primary" on:click={() => dispatch('new')}>+ {$t('tunnel.new_tunnel')}</button>
       <button class="hdr-btn hdr-btn-secondary" on:click={() => dispatch('import')}>↓ {$t('tunnel.import')}</button>
+      <button class="hdr-btn hdr-btn-secondary" on:click={() => dispatch('import-qr')} title={$t('import.qr_button')}>QR</button>
     </div>
   </div>
 
@@ -175,8 +207,23 @@
               class:dot-on={isConnected && hasHandshake}
               class:dot-warn={isConnected && !hasHandshake}></span>
             <span class="card-chevron" class:open={isExpanded}>›</span>
-            <span class="card-name">{tun.name}</span>
+            <span class="card-name-wrap">
+              <span class="card-name">{tun.name}</span>
+              {#if tun.notes}
+                <span class="card-notes">{tun.notes}</span>
+              {/if}
+            </span>
             <span class="card-flex"></span>
+            {#if isExpanded && latencies[tun.name] !== undefined}
+              {@const ms = latencies[tun.name]}
+              <span class="latency-badge"
+                class:lat-good={ms >= 0 && ms < 50}
+                class:lat-ok={ms >= 50 && ms < 150}
+                class:lat-bad={ms >= 150}
+                class:lat-none={ms < 0}>
+                {ms >= 0 ? ms + ' ms' : '—'}
+              </span>
+            {/if}
             {#if isConnected}
               <span class="card-badge">{isConnected && !hasHandshake ? $t('app.no_handshake') : $t('app.connected')}</span>
             {/if}
@@ -408,16 +455,41 @@
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange, #FF9F0A) 25%, transparent);
   }
 
+  .card-name-wrap {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    gap: 1px;
+  }
   .card-name {
     font: 500 14px/20px var(--font-sans);
     color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    flex: 1;
-    min-width: 0;
+  }
+  .card-notes {
+    font: var(--text-footnote);
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .card-flex { flex: 1; }
+
+  /* Latency badge */
+  .latency-badge {
+    padding: 1px 6px;
+    border-radius: 100px;
+    font: 600 10px/14px var(--font-mono);
+    flex-shrink: 0;
+    margin-right: var(--space-1);
+  }
+  .lat-good  { background: var(--green-tint);  color: var(--green); }
+  .lat-ok    { background: var(--yellow-tint); color: var(--yellow); }
+  .lat-bad   { background: var(--error-bg);    color: var(--red); }
+  .lat-none  { background: var(--bg-secondary); color: var(--text-muted); }
 
   .card-badge {
     padding: 2px var(--space-2);

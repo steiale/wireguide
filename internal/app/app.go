@@ -30,6 +30,7 @@ type TunnelService struct {
 	settingsStore *storage.SettingsStore
 	clients       *ipc.ClientHolder
 	app           *application.App
+	win           *application.WebviewWindow
 }
 
 // NewTunnelService creates a service. Set the app reference via SetApp()
@@ -45,6 +46,47 @@ func NewTunnelService(ts *storage.TunnelStore, ss *storage.SettingsStore, client
 // SetApp injects the Wails app for dialog access.
 func (s *TunnelService) SetApp(app *application.App) {
 	s.app = app
+}
+
+// SetWindow injects the main window so ResizeToFit can adjust its height.
+func (s *TunnelService) SetWindow(win *application.WebviewWindow) {
+	s.win = win
+}
+
+// ResizeToFit sizes the window to snugly fit the given number of tunnels.
+//
+// Pixel constants mirror the CSS:
+//
+//	titlebar : 50  (InvisibleTitleBarHeight)
+//	header   : 20  (list-header padding + h2)
+//	search   : 36  (search-box 24px input + 12px padding)
+//	row      : 29  (tunnel-item 28px + 1px margin)
+//	listpad  :  8  (list-items bottom padding)
+//	footer   : 84  (2×28px buttons + gaps + border + padding)
+func (s *TunnelService) ResizeToFit(tunnelCount int) {
+	if s.win == nil {
+		return
+	}
+	const (
+		titlebar   = 50
+		header     = 20
+		search     = 36
+		row        = 29
+		listPad    = 8
+		footer     = 84
+		minContent = 420
+		maxContent = 720
+		width      = 1100
+	)
+	sidebarH := header + search + tunnelCount*row + listPad + footer
+	contentH := sidebarH
+	if contentH < minContent {
+		contentH = minContent
+	}
+	if contentH > maxContent {
+		contentH = maxContent
+	}
+	s.win.SetSize(width, titlebar+contentH)
 }
 
 // errHelperUnavailable is the error returned when the IPC client has been
@@ -87,6 +129,7 @@ type TunnelInfo struct {
 	Name        string `json:"name"`
 	IsConnected bool   `json:"is_connected"`
 	Endpoint    string `json:"endpoint"`
+	Notes       string `json:"notes,omitempty"`
 }
 
 // ConnectionStatus is re-exported from the domain package so Wails bindings

@@ -88,6 +88,7 @@ export async function initialLoad(TunnelService) {
   try {
     const list = (await TunnelService.ListTunnels()) || [];
     tunnels.set(list);
+    TunnelService.ResizeToFit(list.length).catch(() => {});
   } catch (e) {
     console.error('initial load failed:', e);
   }
@@ -103,6 +104,7 @@ export async function refreshTunnels(TunnelService) {
       const updated = list.find((t) => t.name === sel.name);
       if (updated) selectedTunnel.set(updated);
     }
+    TunnelService.ResizeToFit(list.length).catch(() => {});
   } catch (e) {
     console.error('refresh error:', e);
   }

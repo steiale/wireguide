@@ -227,7 +227,8 @@ func (s *TunnelStore) path(name string) string {
 
 // TunnelMeta holds per-tunnel settings that live alongside the .conf file.
 type TunnelMeta struct {
-	AutoReconnect bool `json:"auto_reconnect"`
+	AutoReconnect bool   `json:"auto_reconnect"`
+	Notes         string `json:"notes,omitempty"`
 }
 
 // metaPath returns the path for the tunnel's sidecar metadata file.

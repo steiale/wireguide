@@ -144,6 +144,16 @@ export function GetConfigText(name) {
 }
 
 /**
+ * GetEndpointLatency returns round-trip latency in ms to a WireGuard endpoint
+ * (host:port). Returns -1 if unreachable or the endpoint is empty.
+ * @param {string} endpoint
+ * @returns {$CancellablePromise<number>}
+ */
+export function GetEndpointLatency(endpoint) {
+    return $Call.ByID(4283154300, endpoint);
+}
+
+/**
  * GetRoutingTable returns the current OS routing table.
  * @returns {$CancellablePromise<$models.RouteEntry[]>}
  */
@@ -228,6 +238,29 @@ export function ImportFoundConfigs(paths) {
     return $Call.ByID(3040882779, paths).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType17($result);
     }));
+}
+
+/**
+ * ImportQRFromBytes decodes a QR code from raw image bytes and imports the
+ * WireGuard config under the given name. Used by the file-picker path where
+ * the browser API provides bytes rather than a filesystem path.
+ * @param {string} data
+ * @param {string} name
+ * @returns {$CancellablePromise<void>}
+ */
+export function ImportQRFromBytes(data, name) {
+    return $Call.ByID(3817928306, data, name);
+}
+
+/**
+ * ImportQRFromPath reads an image file, decodes its QR code, and imports the
+ * WireGuard config under the given name.
+ * @param {string} path
+ * @param {string} name
+ * @returns {$CancellablePromise<void>}
+ */
+export function ImportQRFromPath(path, name) {
+    return $Call.ByID(2544386800, path, name);
 }
 
 /**
@@ -317,6 +350,24 @@ export function ReadFile(path) {
  */
 export function RenameTunnel(oldName, newName) {
     return $Call.ByID(576069505, oldName, newName);
+}
+
+/**
+ * ResizeToFit sizes the window to snugly fit the given number of tunnels.
+ * 
+ * Pixel constants mirror the CSS:
+ * 
+ * 	titlebar : 50  (InvisibleTitleBarHeight)
+ * 	header   : 20  (list-header padding + h2)
+ * 	search   : 36  (search-box 24px input + 12px padding)
+ * 	row      : 29  (tunnel-item 28px + 1px margin)
+ * 	listpad  :  8  (list-items bottom padding)
+ * 	footer   : 84  (2×28px buttons + gaps + border + padding)
+ * @param {number} tunnelCount
+ * @returns {$CancellablePromise<void>}
+ */
+export function ResizeToFit(tunnelCount) {
+    return $Call.ByID(2004804483, tunnelCount);
 }
 
 /**
@@ -431,6 +482,15 @@ export function SetLogLevel(level) {
  */
 export function SetPinInterface(enabled) {
     return $Call.ByID(1245113173, enabled);
+}
+
+/**
+ * SetWindow injects the main window so ResizeToFit can adjust its height.
+ * @param {application$0.WebviewWindow | null} win
+ * @returns {$CancellablePromise<void>}
+ */
+export function SetWindow(win) {
+    return $Call.ByID(87278631, win);
 }
 
 /**

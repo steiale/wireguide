@@ -123,6 +123,13 @@ export class TunnelMeta {
              */
             this["auto_reconnect"] = false;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["notes"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }

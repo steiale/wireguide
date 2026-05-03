@@ -129,7 +129,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:          "WireGuide",
 		Width:          1100,
-		Height:         700,
+		Height:         470,
 		EnableFileDrop: true,
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
@@ -155,7 +155,8 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 		hideDock()
 	})
 
-	// Wire the window reference so showDock() can retry showing it.
+	// Wire the window into the service (for ResizeToFit) and tray helpers.
+	tunnelService.SetWindow(win)
 	dockWindow = win
 
 	// Native file drop forwarded to frontend

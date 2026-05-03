@@ -57,6 +57,19 @@ func (s *TunnelService) RunDNSLeakTest() (*DNSLeakResult, error) {
 	return out, nil
 }
 
+// GetEndpointLatency returns round-trip latency in ms to a WireGuard endpoint
+// (host:port). Returns -1 if unreachable or the endpoint is empty.
+func (s *TunnelService) GetEndpointLatency(endpoint string) int {
+	if endpoint == "" {
+		return -1
+	}
+	result := diag.PingEndpoint(endpoint)
+	if !result.Reachable {
+		return -1
+	}
+	return int(result.LatencyMs)
+}
+
 // GetRoutingTable returns the current OS routing table.
 func (s *TunnelService) GetRoutingTable() ([]RouteEntry, error) {
 	entries, err := diag.GetRoutingTable()

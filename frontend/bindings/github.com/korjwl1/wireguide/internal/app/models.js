@@ -245,6 +245,13 @@ export class TunnelInfo {
              */
             this["endpoint"] = "";
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["notes"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }

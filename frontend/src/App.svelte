@@ -89,12 +89,15 @@
       const payload = event.data || {};
       const paths = payload.files || [];
       for (const path of paths) {
-        if (path.toLowerCase().endsWith('.conf')) {
+        const lower = path.toLowerCase();
+        if (lower.endsWith('.conf')) {
           await importFromPath(path);
-        } else if (path.toLowerCase().endsWith('.zip')) {
+        } else if (lower.endsWith('.zip')) {
           await importZipFromPath(path);
+        } else if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.gif')) {
+          await importQRFromPath(path);
         } else {
-          showToast('Only .conf and .zip files are supported');
+          showToast('Only .conf, .zip, and QR image files are supported');
         }
       }
     });
@@ -193,6 +196,47 @@
     } catch (e) {
       showToast("Import failed: " + errText(e));
     }
+  }
+
+  // Import a QR code image from a filesystem path (native drag-drop).
+  async function importQRFromPath(path) {
+    try {
+      const baseName = (path.split('/').pop() || 'tunnel').replace(/\.[^.]+$/, '');
+      const name = await uniqueName(baseName);
+      await TunnelService.ImportQRFromPath(path, name);
+      showToast(`Imported "${name}" from QR`);
+      await refreshTunnels(TunnelService);
+    } catch (e) {
+      showToast($t('import.qr_error'));
+    }
+  }
+
+  // Import a QR code image from a browser File object (file picker).
+  async function importQRFromFile(file) {
+    if (!file) return;
+    try {
+      const baseName = file.name.replace(/\.[^.]+$/, '');
+      const name = await uniqueName(baseName);
+      const buf = await file.arrayBuffer();
+      const b64 = uint8ArrayToBase64(new Uint8Array(buf));
+      await TunnelService.ImportQRFromBytes(b64, name);
+      showToast(`Imported "${name}" from QR`);
+      await refreshTunnels(TunnelService);
+    } catch (e) {
+      showToast($t('import.qr_error'));
+    }
+  }
+
+  // Show the file picker for QR image import.
+  function handleImportQR() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (file) importQRFromFile(file);
+    };
+    input.click();
   }
 
   // Import from a browser File object (used by file picker button).
@@ -435,6 +479,7 @@
           <TunnelCards {TunnelService}
             on:new={handleNewTunnelOpen}
             on:import={handleImportOpen}
+            on:import-qr={handleImportQR}
             on:connect={handleConnect}
             on:edit={handleEdit}
             on:export={handleExport}

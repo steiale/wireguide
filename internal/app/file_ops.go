@@ -4,6 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +16,8 @@ import (
 
 	"github.com/korjwl1/wireguide/internal/config"
 	"github.com/korjwl1/wireguide/internal/ipc"
+	"github.com/makiuchi-d/gozxing"
+	"github.com/makiuchi-d/gozxing/qrcode"
 )
 
 // ZipImportResult holds the outcome of importing one .conf entry from a zip.
@@ -179,6 +185,48 @@ func (s *TunnelService) UpdateConfig(name, content string) error {
 // ExportConfig returns the serialized text for display in the export dialog.
 func (s *TunnelService) ExportConfig(name string) (string, error) {
 	return s.GetConfigText(name)
+}
+
+// decodeQRFromImage decodes a WireGuard config from a QR code in an image.
+func decodeQRFromImage(img image.Image) (string, error) {
+	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
+	if err != nil {
+		return "", err
+	}
+	result, err := qrcode.NewQRCodeReader().Decode(bmp, nil)
+	if err != nil {
+		return "", fmt.Errorf("no WireGuard QR code found in image")
+	}
+	return result.GetText(), nil
+}
+
+// ImportQRFromPath reads an image file, decodes its QR code, and imports the
+// WireGuard config under the given name.
+func (s *TunnelService) ImportQRFromPath(path, name string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return s.ImportQRFromBytes(data, name)
+}
+
+// ImportQRFromBytes decodes a QR code from raw image bytes and imports the
+// WireGuard config under the given name. Used by the file-picker path where
+// the browser API provides bytes rather than a filesystem path.
+func (s *TunnelService) ImportQRFromBytes(data []byte, name string) error {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("cannot decode image: %w", err)
+	}
+	text, err := decodeQRFromImage(img)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(text, "[Interface]") {
+		return fmt.Errorf("no WireGuard QR code found in image")
+	}
+	_, err = s.tunnelStore.ImportFromContent(name, text)
+	return err
 }
 
 // ExportTunnel shows a native save dialog and writes the .conf file.
