@@ -84,10 +84,19 @@ func (s *Store) RecordDisconnect(id string, rx, tx int64, reason string) {
 		if sessions[i].ID == id && sessions[i].EndTime == nil {
 			end := now
 			sessions[i].EndTime = &end
-			sessions[i].DurationSec = int64(end.Sub(sessions[i].StartTime).Seconds())
-			if sessions[i].DurationSec < 0 {
-				sessions[i].DurationSec = 0
+			dur := int64(end.Sub(sessions[i].StartTime).Seconds())
+			if dur < 0 {
+				dur = 0
 			}
+			// Drop phantom sessions (0-duration, 0-byte) — they come from
+			// interrupted bootstraps or helper restarts and add no value.
+			if dur == 0 && rx == 0 && tx == 0 {
+				sessions = append(sessions[:i], sessions[i+1:]...)
+				changed = true
+				break
+			}
+			sessions[i].EndTime = &end
+			sessions[i].DurationSec = dur
 			sessions[i].RxBytes = rx
 			sessions[i].TxBytes = tx
 			sessions[i].DisconnectReason = reason
@@ -114,18 +123,27 @@ func (s *Store) CloseOpenSessions(reason string) {
 	sessions := s.loadLocked()
 	now := time.Now()
 	changed := false
+	kept := sessions[:0]
 	for i := range sessions {
 		if sessions[i].EndTime == nil {
+			dur := int64(now.Sub(sessions[i].StartTime).Seconds())
+			if dur < 0 {
+				dur = 0
+			}
+			// Drop 0-duration open sessions — phantom rows from crashes/restarts.
+			if dur == 0 {
+				changed = true
+				continue
+			}
 			end := now
 			sessions[i].EndTime = &end
-			sessions[i].DurationSec = int64(end.Sub(sessions[i].StartTime).Seconds())
-			if sessions[i].DurationSec < 0 {
-				sessions[i].DurationSec = 0
-			}
+			sessions[i].DurationSec = dur
 			sessions[i].DisconnectReason = reason
 			changed = true
 		}
+		kept = append(kept, sessions[i])
 	}
+	sessions = kept
 	if !changed {
 		return
 	}
@@ -140,10 +158,16 @@ func (s *Store) GetAll() []Session {
 	defer s.mu.Unlock()
 
 	sessions := s.loadLocked()
-	// Reverse: stored oldest-first, return newest-first.
-	out := make([]Session, len(sessions))
-	for i, sess := range sessions {
-		out[len(sessions)-1-i] = sess
+	// Reverse and filter: stored oldest-first, return newest-first.
+	// Drop completed sessions with 0 duration and 0 bytes — phantom rows
+	// from interrupted bootstraps recorded before this fix.
+	var out []Session
+	for i := len(sessions) - 1; i >= 0; i-- {
+		s := sessions[i]
+		if s.EndTime != nil && s.DurationSec == 0 && s.RxBytes == 0 && s.TxBytes == 0 {
+			continue
+		}
+		out = append(out, s)
 	}
 	return out
 }

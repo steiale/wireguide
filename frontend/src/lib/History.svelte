@@ -119,15 +119,24 @@
   <div class="history-header">
     <h2>{$t('history.title')}</h2>
     <div class="header-actions">
-      {#if confirmingClear}
-        <span class="confirm-text">{$t('history.confirm_clear')}</span>
-        <button class="btn-action btn-danger" on:click={clearAll}>{$t('history.clear')}</button>
-        <button class="btn-action" on:click={() => confirmingClear = false}>{$t('confirm.no')}</button>
-      {:else if sessions.length > 0}
+      {#if sessions.length > 0}
         <button class="btn-action" on:click={() => confirmingClear = true}>{$t('history.clear')}</button>
       {/if}
     </div>
   </div>
+
+  {#if confirmingClear}
+    <div class="confirm-backdrop" on:click={() => confirmingClear = false}>
+      <div class="confirm-dialog" on:click|stopPropagation>
+        <h3>{$t('history.confirm_clear_title')}</h3>
+        <p>{$t('history.confirm_clear_message')}</p>
+        <div class="confirm-footer">
+          <button class="btn-action btn-danger" on:click={clearAll}>{$t('history.clear')}</button>
+          <button class="btn-action" on:click={() => confirmingClear = false}>{$t('confirm.no')}</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <div class="history-body">
     {#if loading}
@@ -233,10 +242,10 @@
     font: var(--text-footnote);
     color: var(--text-secondary);
   }
-  .confirm-text { color: var(--text-secondary); }
+
   .btn-action {
-    height: 24px;
-    padding: 0 var(--space-3);
+    height: 28px;
+    padding: 0 var(--space-4);
     background: var(--bg-card);
     border: 0.5px solid var(--border);
     border-radius: var(--radius-btn);
@@ -394,4 +403,26 @@
     align-items: center;
     gap: 6px;
   }
+
+  .confirm-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    backdrop-filter: blur(2px);
+  }
+  .confirm-dialog {
+    background: var(--bg-card);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+    width: 320px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .confirm-dialog h3 { margin: 0 0 var(--space-2); font: var(--text-title-3); color: var(--text-primary); }
+  .confirm-dialog p { margin: 0 0 var(--space-4); color: var(--text-secondary); font: var(--text-body); line-height: 1.5; }
+  .confirm-footer { display: flex; gap: var(--space-2); justify-content: flex-end; }
 </style>

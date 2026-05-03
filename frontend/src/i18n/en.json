@@ -236,6 +236,8 @@
     "title": "History",
     "no_history": "No connection history yet",
     "clear": "Clear",
+    "confirm_clear_title": "Clear History",
+    "confirm_clear_message": "Are you sure you want to delete all connection history?",
     "confirm_clear": "Clear all history?",
     "active": "Active",
     "reason_user": "Disconnected",

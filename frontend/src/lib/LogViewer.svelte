@@ -169,8 +169,8 @@
     gap: var(--space-1);
   }
   .log-filters button {
-    height: 22px;
-    padding: 0 var(--space-2);
+    height: 28px;
+    padding: 0 var(--space-3);
     background: var(--bg-card);
     border: 0.5px solid var(--border);
     border-radius: var(--radius-btn);
@@ -195,8 +195,8 @@
   }
   .log-actions input[type="checkbox"] { accent-color: var(--green); }
   .btn-action {
-    height: 22px;
-    padding: 0 var(--space-2);
+    height: 28px;
+    padding: 0 var(--space-4);
     background: var(--bg-card);
     border: 0.5px solid var(--border);
     border-radius: var(--radius-btn);

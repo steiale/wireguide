@@ -83,31 +83,25 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 		setGUILogLevel(s.LogLevel)
 	}
 
-	// 2. Helper process (spawn if needed).
-	// If the user cancels the admin prompt, retry up to 3 times with a
-	// user-visible dialog explaining why the helper is required.
-	var initialClient *ipc.Client
-	for attempt := 0; attempt < 3; attempt++ {
-		helperCtx, helperCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		var err error
-		initialClient, err = ensureHelper(helperCtx, dataDir)
-		helperCancel()
-		if err == nil {
-			break
-		}
-		slog.Warn("helper connection failed", "attempt", attempt+1, "error", err)
-		if attempt < 2 {
-			// Show retry dialog via osascript (Wails app isn't running yet)
-			retryCmd := `display dialog "WireGuide needs its helper service to manage VPN connections.\n\nPlease grant administrator access when prompted." buttons {"Quit", "Retry"} default button "Retry" with title "WireGuide" with icon caution`
-			out, retryErr := exec.Command("osascript", "-e", retryCmd).Output()
-			if retryErr != nil || strings.Contains(string(out), "Quit") {
-				return fmt.Errorf("helper setup cancelled by user")
-			}
-			continue
-		}
-		return fmt.Errorf("helper connection failed after 3 attempts: %w", err)
-	}
-	clients := ipc.NewClientHolder(initialClient)
+	// 2. Helper process — bootstrapped asynchronously after the Wails event
+	// loop is running (see the ApplicationStarted hook below).
+	//
+	// Why async: ensureHelper() can block for many seconds — it spawns
+	// `osascript` for the admin password prompt and then polls for the helper
+	// socket. On macOS, AppKit's run loop must own the main thread before any
+	// window can be shown. If we run ensureHelper() synchronously here, the
+	// admin prompt holds up app.Run(), and the main window never appears
+	// until after the helper finishes installing. In the worst case (the
+	// recurring "ghost process" bug) AppKit's startup races the osascript
+	// launch and the window never shows at all, even after the helper is up.
+	//
+	// The holder starts empty. Every IPC call site already returns
+	// errHelperUnavailable when the holder is nil, and the event bridge /
+	// health monitor / wifi lifecycle all tolerate a nil client. Once the
+	// background bootstrap succeeds it calls clients.Set(c) and triggers a
+	// resubscribe — the frontend reacts to the resulting "helper_reset"
+	// event by re-fetching tunnel state.
+	clients := ipc.NewClientHolder(nil)
 
 	// 3. Wails service
 	tunnelService := wgapp.NewTunnelService(tunnelStore, settingsStore, wifiRulesStore, historyStore, clients)
@@ -235,29 +229,36 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	// process restarts. The health monitor swaps the client in the holder.
 	// Pass the tray's cheap icon-update hook — NOT the full menu rebuild —
 	// so the 1 Hz status stream doesn't trigger IPC round-trips on every event.
+	//
+	// The bridge tolerates a nil client (resubscribe is a no-op until the
+	// holder has one), so we can construct it before the helper is ready.
 	bridge := newEventBridge(app, clients, trayMgr.setIconState, tunnelService.ReconcileHistoryFromStatus)
 	bridge.start()
-
-	// Push the persisted log level to the helper now that the event
-	// subscription is live — ensures DEBUG from Settings takes effect
-	// on helper-side records immediately after app launch, not only
-	// after the user opens and saves Settings.
-	if s, err := settingsStore.Load(); err == nil && s != nil && s.LogLevel != "" {
-		if c := clients.Get(); c != nil {
-			_ = c.Call(ipc.MethodSetLogLevel, ipc.SetLogLevelRequest{Level: s.LogLevel}, nil)
-		}
-	}
 
 	healthDone := make(chan struct{})
 	var healthWg sync.WaitGroup
 	healthWg.Add(1)
 	startHelperHealthMonitor(app, clients, dataDir, bridge, healthDone, &healthWg)
 
-	// 8b. Wi-Fi auto-connect lifecycle. Started after the IPC client holder
-	// and bridge are alive so the SSID-change callback can issue Connect /
-	// Disconnect calls immediately. Stopped during shutdown so the 5 s
-	// poll goroutine doesn't outlive the app.
+	// 8b. Wi-Fi auto-connect lifecycle. The lifecycle's connect/disconnect
+	// paths already check for a nil client and skip when the holder is
+	// empty, so it's safe to start before the helper bootstrap completes.
 	wifiLC := startWifiLifecycle(clients, wifiRulesStore, tunnelStore)
+
+	// 8c. Bootstrap the helper in the background once the Wails event loop
+	// is running. ApplicationStarted fires on the main goroutine after the
+	// app is ready to show windows, so the main window paints immediately
+	// while the privileged helper installs in the background.
+	//
+	// sync.Once guards against ApplicationStarted firing multiple times
+	// (e.g. activate/reopen on macOS) — we only want one bootstrap goroutine
+	// no matter how many times the event fires.
+	var bootstrapOnce sync.Once
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(_ *application.ApplicationEvent) {
+		bootstrapOnce.Do(func() {
+			go bootstrapHelper(app, clients, bridge, settingsStore, dataDir)
+		})
+	})
 
 	// 9. Run (blocks)
 	err = app.Run()
@@ -265,4 +266,67 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	close(healthDone)
 	healthWg.Wait()
 	return err
+}
+
+// bootstrapHelper runs ensureHelper() in the background after the Wails app
+// has started. On success it installs the client into the holder, kicks off
+// the event subscription, pushes the persisted log level, and notifies the
+// frontend. On terminal failure it shows an error dialog and quits the app.
+//
+// Splitting this from Run() lets app.Run() reach the AppKit main loop without
+// being blocked by the privileged helper install (which can take several
+// seconds and shows a modal admin password prompt on first launch).
+func bootstrapHelper(app *application.App, clients *ipc.ClientHolder, bridge *eventBridge, settingsStore *storage.SettingsStore, dataDir string) {
+	// Tell the frontend a connection is being established. The toast plumbing
+	// in App.svelte shows this as "Connecting to helper..." instead of an
+	// alarming "Helper process disconnected" message.
+	app.Event.Emit("helper", HelperEvent{
+		Alive:   false,
+		Message: "Connecting to helper service...",
+	})
+
+	var newClient *ipc.Client
+	for attempt := 0; attempt < 3; attempt++ {
+		helperCtx, helperCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		var err error
+		newClient, err = ensureHelper(helperCtx, dataDir)
+		helperCancel()
+		if err == nil {
+			break
+		}
+		slog.Warn("helper connection failed", "attempt", attempt+1, "error", err)
+		if attempt < 2 {
+			retryCmd := `display dialog "WireGuide needs its helper service to manage VPN connections.\n\nPlease grant administrator access when prompted." buttons {"Quit", "Retry"} default button "Retry" with title "WireGuide" with icon caution`
+			out, retryErr := exec.Command("osascript", "-e", retryCmd).Output()
+			if retryErr != nil || strings.Contains(string(out), "Quit") {
+				slog.Error("helper setup cancelled by user")
+				app.Quit()
+				return
+			}
+			continue
+		}
+		slog.Error("helper connection failed after 3 attempts", "error", err)
+		failCmd := `display dialog "WireGuide could not start its helper service.\n\nPlease quit any other running copies of WireGuide and try again." buttons {"Quit"} default button "Quit" with title "WireGuide" with icon stop`
+		_, _ = exec.Command("osascript", "-e", failCmd).Output()
+		app.Quit()
+		return
+	}
+
+	// Install the new client and re-subscribe the event bridge. Resubscribe
+	// (capitalised) emits "helper_reset" so the frontend reloads tunnel state
+	// from a fresh helper.
+	clients.Set(newClient)
+	bridge.Resubscribe()
+
+	// Push the persisted log level to the helper now that the event
+	// subscription is live — ensures DEBUG from Settings takes effect
+	// on helper-side records immediately after app launch.
+	if s, err := settingsStore.Load(); err == nil && s != nil && s.LogLevel != "" {
+		_ = newClient.Call(ipc.MethodSetLogLevel, ipc.SetLogLevelRequest{Level: s.LogLevel}, nil)
+	}
+
+	// Notify the frontend that helper IPC is now available. App.svelte uses
+	// this to dismiss the connecting toast.
+	app.Event.Emit("helper", HelperEvent{Alive: true})
+	slog.Info("helper bootstrap complete")
 }

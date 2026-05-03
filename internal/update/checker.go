@@ -28,7 +28,7 @@ const (
 	// bundle's Info.plist cannot be read (e.g. unit tests, non-darwin
 	// builds, or running the bare binary without an enclosing .app).
 	// Keep this in sync with build/darwin/Info.plist on each release.
-	fallbackVersion = "1.0.18"
+	fallbackVersion = "1.0.19"
 
 	// minAssetSize is the minimum acceptable size for a release asset.
 	// A macOS .dmg/.zip containing WireGuide.app is always well over 1 MB;

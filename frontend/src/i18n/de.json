@@ -236,6 +236,8 @@
     "title": "Verlauf",
     "no_history": "Noch kein Verbindungsverlauf",
     "clear": "Löschen",
+    "confirm_clear_title": "Verlauf löschen",
+    "confirm_clear_message": "Möchtest du den gesamten Verbindungsverlauf wirklich löschen?",
     "confirm_clear": "Gesamten Verlauf löschen?",
     "active": "Aktiv",
     "reason_user": "Getrennt",

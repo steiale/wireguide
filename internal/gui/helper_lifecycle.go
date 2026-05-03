@@ -53,7 +53,11 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 		}
 	}
 
-	// Spawn new helper with elevation
+	// Spawn new helper with elevation.
+	// SpawnHelper runs osascript (admin password prompt) + launchctl internally
+	// and has its own timeouts — do not pass the caller's context here since
+	// the prompt alone can take 20+ seconds, which would exhaust a 30s budget
+	// before the socket poll even starts.
 	slog.Info("spawning helper with elevation...")
 	args := elevate.Args{
 		SocketPath:     addr,
@@ -64,6 +68,20 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 	if err := elevate.SpawnHelper(args); err != nil {
 		return nil, fmt.Errorf("spawn helper: %w", err)
 	}
+
+	// After a successful install, reset the poll budget to 60 s regardless of
+	// how long SpawnHelper took. Merge with the parent context so a shutdown
+	// request (app quit) still cancels the loop promptly.
+	pollCtx, pollCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer pollCancel()
+	go func() {
+		select {
+		case <-ctx.Done():
+			pollCancel()
+		case <-pollCtx.Done():
+		}
+	}()
+	ctx = pollCtx
 
 	// Poll for readiness until the context is cancelled.
 	for {
