@@ -205,9 +205,24 @@ func (f *WindowsFirewall) EnableDNSProtection(interfaceName string, dnsServers [
 	// "allow these specific IPs, block everything else" in WFAS.
 	// This MUST succeed — if it fails, the DNS allow rules will NOT override
 	// the DNS block rules, resulting in ALL DNS being blocked silently.
+	//
+	// H3: If OverrideBlockRules fails, we are in a state where ALL DNS is
+	// dropped (block rules added, allow rules not overriding) but the GUI
+	// would think DNS protection is active. Roll back the just-added rules
+	// (block + per-server allow) so the system returns to a safe state, and
+	// surface a hard error to the caller / GUI.
 	if err := exec.Command("powershell", "-NoProfile", "-Command",
 		`Get-NetFirewallRule | Where-Object { $_.DisplayName -like 'WireGuide-AllowDNS-*' } | Set-NetFirewallRule -OverrideBlockRules $true`).Run(); err != nil {
-		return fmt.Errorf("setting OverrideBlockRules on DNS allow rules: %w (DNS will be completely blocked without this)", err)
+		// Roll back the block-all rules that would otherwise drop ALL DNS.
+		_ = runWinFW("netsh", "advfirewall", "firewall", "delete", "rule", "name=WireGuide-BlockDNS-UDP")
+		_ = runWinFW("netsh", "advfirewall", "firewall", "delete", "rule", "name=WireGuide-BlockDNS-TCP")
+		// Roll back the per-server DNS allow rules we added above so we leave
+		// no partial state behind. We don't know the count without iterating,
+		// but the wildcard cleanup matches them all.
+		_ = exec.Command("powershell", "-NoProfile", "-Command",
+			`Get-NetFirewallRule | Where-Object { $_.DisplayName -like 'WireGuide-AllowDNS-*' } | Remove-NetFirewallRule`).Run()
+		f.dnsProtectionEnabled = false
+		return fmt.Errorf("setting OverrideBlockRules on DNS allow rules failed; rolled back DNS rules to avoid blocking all DNS: %w", err)
 	}
 
 	f.dnsProtectionEnabled = true

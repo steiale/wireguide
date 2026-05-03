@@ -299,8 +299,14 @@ func loadAnchorRules(anchor, rules string) error {
 }
 
 // isPfEnabled checks whether pf is currently enabled by parsing `pfctl -si`.
+// M5: Force LC_ALL=C/LANG=C so the English "Status: Enabled" sentinel
+// matches even when the helper is launched under a non-English locale.
+// Without this, on (e.g.) a German macOS install pfctl emits "Status: Aktiviert"
+// and we'd silently report pf as disabled.
 func isPfEnabled() bool {
-	out, err := exec.Command("pfctl", "-si").CombinedOutput()
+	cmd := exec.Command("pfctl", "-si")
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return false
 	}

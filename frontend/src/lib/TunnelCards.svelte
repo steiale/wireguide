@@ -55,6 +55,19 @@
     t.name.toLowerCase().includes(search.toLowerCase())
   );
 
+  // Reactive per-tunnel notes map. Recomputes whenever the user types
+  // (metas updates) or when the tunnel store refreshes (tun.notes changes).
+  // Using a map (instead of inline `metas[name]?.notes ?? tun.notes`) makes
+  // Svelte re-render the subtitle inside the {#each} block reliably.
+  $: notesMap = (() => {
+    const map = {};
+    for (const tun of ($tunnels || [])) {
+      const meta = metas[tun.name];
+      map[tun.name] = (meta && typeof meta.notes === 'string') ? meta.notes : (tun.notes || '');
+    }
+    return map;
+  })();
+
   // Build handshake map for dot state. Prefer the explicit `has_handshake`
   // boolean from the backend; fall back to truthiness of the formatted
   // `last_handshake` string for older helper versions.
@@ -223,8 +236,8 @@
             <span class="card-chevron" class:open={isExpanded}>›</span>
             <span class="card-name-wrap">
               <span class="card-name">{tun.name}</span>
-              {#if tun.notes}
-                <span class="card-notes">{tun.notes}</span>
+              {#if notesMap[tun.name]}
+                <span class="card-notes">{notesMap[tun.name]}</span>
               {/if}
             </span>
             <span class="card-flex"></span>
@@ -249,18 +262,16 @@
                 <div class="card-error">{cardError}</div>
               {/if}
 
-              <!-- Live stats pills (only when connected) -->
-              {#if (isConnected && status) || latencies[tun.name] !== undefined}
+              <!-- Live stats pills -->
+              {#if isConnected && status}
                 <div class="stats-pills">
-                  {#if isConnected && status}
-                    <span class="stat-pill pill-rx">↓ {formatBytes(status.rx_bytes || 0)}</span>
-                    <span class="stat-pill pill-tx">↑ {formatBytes(status.tx_bytes || 0)}</span>
-                    {#if status.duration}
-                      <span class="stat-pill">⏱ {status.duration}</span>
-                    {/if}
-                    {#if status.last_handshake}
-                      <span class="stat-pill">⇄ {status.last_handshake}</span>
-                    {/if}
+                  <span class="stat-pill pill-rx">↓ {formatBytes(status.rx_bytes || 0)}</span>
+                  <span class="stat-pill pill-tx">↑ {formatBytes(status.tx_bytes || 0)}</span>
+                  {#if status.duration}
+                    <span class="stat-pill">⏱ {status.duration}</span>
+                  {/if}
+                  {#if status.last_handshake}
+                    <span class="stat-pill">⇄ {status.last_handshake}</span>
                   {/if}
                   {#if latencies[tun.name] !== undefined}
                     {@const ms = latencies[tun.name]}
@@ -277,6 +288,16 @@
                     <StatsDashboard />
                   </div>
                 {/if}
+              {:else if latencies[tun.name] !== undefined}
+                {@const ms = latencies[tun.name]}
+                <div class="stats-pills">
+                  <span class="stat-pill"
+                    class:pill-lat-good={ms >= 0 && ms < 50}
+                    class:pill-lat-ok={ms >= 50 && ms < 150}
+                    class:pill-lat-bad={ms >= 150}>
+                    ~ {ms >= 0 ? ms + ' ms' : '—'}
+                  </span>
+                </div>
               {/if}
 
               <!-- Config info rows -->
@@ -321,7 +342,10 @@
                   rows="2"
                   on:input={e => { metas = { ...metas, [tun.name]: { ...metas[tun.name], notes: e.target.value } }; }}
                   on:blur={async e => {
-                    try { await TunnelService.SaveTunnelMeta(tun.name, { ...metas[tun.name], notes: e.target.value }); } catch (_) {}
+                    try {
+                      await TunnelService.SaveTunnelMeta(tun.name, { ...metas[tun.name], notes: e.target.value });
+                      await refreshTunnels(TunnelService);
+                    } catch (_) {}
                   }}
                 ></textarea>
               </div>

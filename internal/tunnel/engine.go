@@ -91,13 +91,29 @@ func NewEngine(cfg *config.WireGuardConfig) (*Engine, error) {
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("peer[%d] resolve %q: no addresses found", i, host)
 		}
-		// Use the first resolved IP for the WG config. wireguard-go will
-		// roam to a different source if the peer's handshake arrives from
-		// somewhere else, so this is a reasonable starting point.
-		resolved := net.JoinHostPort(ips[0], port)
+		// M4: Prefer IPv4 records over IPv6 when both are returned. Many
+		// WireGuard servers publish both A and AAAA records but only have
+		// outbound IPv4 reachability working reliably, and on a typical
+		// dual-stack home network IPv4 also tends to be the more reliable
+		// path. By trying IPv4 first we avoid a class of "first IP is
+		// unreachable, no failover" failures where the resolver happens to
+		// hand us the AAAA record first.
+		ordered := orderIPsV4First(ips)
+		// Use the first IPv4 (or first IP if none) for the WG config.
+		// wireguard-go will roam to a different source if the peer's
+		// handshake arrives from somewhere else.
+		primary := ordered[0]
+		resolved := net.JoinHostPort(primary, port)
 		resolvedCfg.Peers[i].Endpoint = resolved
-		resolvedEndpointIPs = append(resolvedEndpointIPs, ips[0])
-		resolvedEndpoints = append(resolvedEndpoints, net.JoinHostPort(ips[0], port))
+		// Record EVERY resolved IP so the network adapter installs bypass
+		// routes for all of them. Without this, an unreachable first record
+		// blocks the tunnel even though a later record would have worked —
+		// wireguard-go's internal endpoint roaming can fall back to one of
+		// the alternates as soon as it sees a handshake from there.
+		for _, ip := range ordered {
+			resolvedEndpointIPs = append(resolvedEndpointIPs, ip)
+			resolvedEndpoints = append(resolvedEndpoints, net.JoinHostPort(ip, port))
+		}
 	}
 
 	mtu := cfg.Interface.MTU
@@ -276,6 +292,27 @@ func buildIpcConfig(cfg *config.WireGuardConfig) (string, error) {
 	}
 
 	return b.String(), nil
+}
+
+// orderIPsV4First returns the input list with all IPv4 addresses placed
+// before IPv6 addresses, preserving relative order within each family.
+// Used at peer-resolution time to bias toward IPv4 when a hostname has
+// both A and AAAA records.
+func orderIPsV4First(ips []string) []string {
+	if len(ips) == 0 {
+		return ips
+	}
+	v4 := make([]string, 0, len(ips))
+	v6 := make([]string, 0, len(ips))
+	for _, s := range ips {
+		ip := net.ParseIP(s)
+		if ip != nil && ip.To4() == nil {
+			v6 = append(v6, s)
+		} else {
+			v4 = append(v4, s)
+		}
+	}
+	return append(v4, v6...)
 }
 
 // validateWireGuardKey ensures a string is a base64-encoded 32-byte WG key.

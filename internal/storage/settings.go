@@ -2,10 +2,12 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Settings holds application-wide settings.
@@ -66,9 +68,14 @@ func (s *SettingsStore) Load() (*Settings, error) {
 		// Corrupt settings file (truncated write, manual edit, etc.) should
 		// not prevent the application from starting. Log the error, back up
 		// the corrupt file for debugging, and return default settings.
+		// M2: Append a timestamp suffix so a second corruption doesn't
+		// clobber a previously saved corrupt backup. Otherwise the original
+		// evidence is silently destroyed and we lose any chance of post-
+		// mortem debugging.
+		backup := fmt.Sprintf("%s.corrupt.%s", s.path, time.Now().UTC().Format("20060102T150405Z"))
 		slog.Warn("settings file is corrupt, falling back to defaults",
-			"path", s.path, "error", err)
-		_ = os.Rename(s.path, s.path+".corrupt")
+			"path", s.path, "backup", backup, "error", err)
+		_ = os.Rename(s.path, backup)
 		return DefaultSettings(), nil
 	}
 	return settings, nil

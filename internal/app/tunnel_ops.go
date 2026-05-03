@@ -1,9 +1,9 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/korjwl1/wireguide/internal/domain"
 	"github.com/korjwl1/wireguide/internal/ipc"
@@ -33,7 +33,13 @@ func (s *TunnelService) ListTunnelsLocal() ([]TunnelInfo, error) {
 		if len(cfg.Peers) > 0 {
 			endpoint = cfg.Peers[0].Endpoint
 		}
-		meta, _ := s.tunnelStore.LoadMeta(name)
+		// M6: Surface real LoadMeta errors at warn level instead of dropping
+		// them silently. A missing meta file is normal and returns nil err
+		// from LoadMeta; only true filesystem errors land here.
+		meta, err := s.tunnelStore.LoadMeta(name)
+		if err != nil {
+			slog.Warn("loading tunnel meta failed; treating as empty", "name", name, "error", err)
+		}
 		notes := ""
 		if meta != nil {
 			notes = meta.Notes
@@ -79,7 +85,12 @@ func (s *TunnelService) ListTunnels() ([]TunnelInfo, error) {
 		if len(cfg.Peers) > 0 {
 			endpoint = cfg.Peers[0].Endpoint
 		}
-		meta, _ := s.tunnelStore.LoadMeta(name)
+		// M6: Same as above — log real LoadMeta errors so they show up in
+		// the diagnostics log instead of vanishing.
+		meta, err := s.tunnelStore.LoadMeta(name)
+		if err != nil {
+			slog.Warn("loading tunnel meta failed; treating as empty", "name", name, "error", err)
+		}
 		notes := ""
 		if meta != nil {
 			notes = meta.Notes
@@ -164,8 +175,11 @@ func (s *TunnelService) DisconnectTunnel(name string) error {
 
 // isClientClosed returns true for errors caused by the IPC client being closed
 // mid-call (e.g., health monitor swapped clients during recovery).
+// L1: Match the sentinel error from ipc.ErrClientClosed via errors.Is rather
+// than substring-matching the error message, which is fragile and silently
+// breaks the moment the wording changes.
 func isClientClosed(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "client closed")
+	return errors.Is(err, ipc.ErrClientClosed)
 }
 
 // GetStatus queries the helper for the current connection status. IPC errors

@@ -3,6 +3,7 @@ package ipc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// ErrClientClosed is returned by Call/CallWithContext when the client has
+// been closed (either explicitly or because the underlying connection was
+// torn down). Callers can use errors.Is(err, ipc.ErrClientClosed) to detect
+// this condition without resorting to brittle string matching.
+var ErrClientClosed = errors.New("ipc client closed")
 
 // EventHandler is called when an event notification is received.
 type EventHandler func(method string, params json.RawMessage)
@@ -114,7 +121,7 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 // CallWithContext makes an RPC call with explicit context for cancellation/timeout.
 func (c *Client) CallWithContext(ctx context.Context, method string, params interface{}, result interface{}) error {
 	if c.IsClosed() {
-		return fmt.Errorf("client closed")
+		return ErrClientClosed
 	}
 
 	id := atomic.AddUint64(&c.nextID, 1)
@@ -145,10 +152,10 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.closed:
-		return fmt.Errorf("client closed")
+		return ErrClientClosed
 	case resp, ok := <-respCh:
 		if !ok {
-			return fmt.Errorf("client closed")
+			return ErrClientClosed
 		}
 		if resp.Error != nil {
 			return resp.Error

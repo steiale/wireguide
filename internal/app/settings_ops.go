@@ -53,10 +53,11 @@ func (s *TunnelService) SaveSettings(settings *storage.Settings) error {
 	// LaunchAgent plist / desktop file on every unrelated setting change.
 	prev, _ := s.settingsStore.Load()
 
-	if err := s.settingsStore.Save(settings); err != nil {
-		return err
-	}
-
+	// M3: Install/remove the autostart entry BEFORE persisting settings.
+	// If the LaunchAgent plist (or equivalent) fails to install, we do not
+	// want the on-disk AutoStart=true to lie about reality. Only after the
+	// system-level state matches what the user asked for do we commit the
+	// change to settings.
 	if prev == nil || prev.AutoStart != settings.AutoStart {
 		if settings.AutoStart {
 			exe, err := os.Executable()
@@ -72,6 +73,11 @@ func (s *TunnelService) SaveSettings(settings *storage.Settings) error {
 			}
 		}
 	}
+
+	if err := s.settingsStore.Save(settings); err != nil {
+		return err
+	}
+
 	if settings.LogLevel != "" {
 		if fn := getGUILogLevelSetter(); fn != nil {
 			fn(settings.LogLevel)

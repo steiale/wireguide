@@ -116,8 +116,15 @@ func installAndLoadDaemon(args Args) error {
 	// 2. Copy binary
 	// 3. Copy plist (from our validated temp file)
 	// 4. Set ownership/permissions
-	// 5. Bootout old daemon (ignore errors — may not exist)
-	// 6. Bootstrap new daemon
+	// 5. (Re)load the daemon.
+	//
+	// L2: The previous flow ran `bootout` then `bootstrap`, leaving a brief
+	// window with no helper running — long enough for an in-flight RPC to
+	// see the socket disappear. Use `launchctl kickstart -k` instead: when
+	// the service is already loaded it restarts it in-place with no gap.
+	// If the service isn't loaded yet (first install or a previous
+	// uninstall), `kickstart` fails with non-zero exit and we fall back to
+	// `bootstrap` to load it from the plist.
 	shellScript := fmt.Sprintf(
 		`mkdir -p /Library/PrivilegedHelperTools && `+
 			`cp -f %s %s && `+
@@ -126,8 +133,7 @@ func installAndLoadDaemon(args Args) error {
 			`cp -f %s %s && `+
 			`chown root:wheel %s && `+
 			`chmod 644 %s && `+
-			`launchctl bootout system/%s 2>/dev/null; `+
-			`launchctl bootstrap system %s`,
+			`(launchctl kickstart -k system/%s 2>/dev/null || launchctl bootstrap system %s)`,
 		shellQuote(exe), shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),

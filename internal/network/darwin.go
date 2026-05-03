@@ -286,7 +286,12 @@ func (m *DarwinManager) AddRoutes(ifaceName string, allowedIPs []string, fullTun
 	// configured or endpoints exist in split-tunnel mode. DNS can be disrupted
 	// by network changes even in split-tunnel mode, and endpoint bypass routes
 	// (if any) need the same gateway-change tracking.
-	needsMonitor := fullTunnel || len(m.lastDNS) > 0
+	// H1: lastDNS is mutated by SetDNS/RestoreDNS under m.mu, so the read here
+	// must happen under the lock too.
+	m.mu.Lock()
+	hasDNS := len(m.lastDNS) > 0
+	m.mu.Unlock()
+	needsMonitor := fullTunnel || hasDNS
 	if needsMonitor {
 		if m.monitor == nil {
 			m.monitor = newRouteMonitor(m.reapply)
@@ -440,8 +445,13 @@ func (m *DarwinManager) reapply() {
 
 	// Update cached state including upstream interface for bypass -ifscope.
 	// Resolve interface outside the lock to avoid blocking on netstat.
+	// H2: pinInterface is mutated by SetPinInterface under m.mu, so read it
+	// under the lock first.
+	m.mu.Lock()
+	pinIface := m.pinInterface
+	m.mu.Unlock()
 	newUpstreamIface := ""
-	if m.pinInterface {
+	if pinIface {
 		newUpstreamIface = getDefaultInterface()
 	}
 	m.mu.Lock()

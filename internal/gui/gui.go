@@ -186,8 +186,18 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 			slog.Info("shutting down GUI + helper")
 			c := clients.Get()
 			if c != nil {
-				_ = c.Call(ipc.MethodDisconnect, nil, nil)
-				_ = c.Call(ipc.MethodShutdown, nil, nil)
+				// M1: Disconnect can take 15+ s on macOS (DNS restore,
+				// networksetup calls across services, route teardown). The
+				// default 10 s Call timeout is too short — match the 60 s
+				// budget used by callLong for Connect/Disconnect everywhere
+				// else. Shutdown likewise needs a generous budget so the
+				// helper has time to flush state before exiting.
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				_ = c.CallWithContext(ctx, ipc.MethodDisconnect, nil, nil)
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+				_ = c.CallWithContext(ctx, ipc.MethodShutdown, nil, nil)
+				cancel()
 			}
 			// Close in a goroutine with a short delay so the helper has
 			// time to process the shutdown command without blocking the
