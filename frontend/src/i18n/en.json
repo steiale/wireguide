@@ -39,7 +39,10 @@
     "kill_switch": "Kill Switch",
     "dns_protection": "DNS Protection",
     "details": "Details",
-    "rename_hint": "Double-click to rename"
+    "rename_hint": "Double-click to rename",
+    "notes_label": "Tunnel Notes",
+    "notes_placeholder": "Add a note...",
+    "latency": "Latency"
   },
   "import": {
     "title": "Import Tunnel",
