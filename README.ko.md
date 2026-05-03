@@ -9,11 +9,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/korjwl1/wireguide/releases/latest"><img src="https://img.shields.io/github/v/release/korjwl1/wireguide?style=flat-square" alt="Release" /></a>
-  <a href="https://github.com/korjwl1/wireguide/stargazers"><img src="https://img.shields.io/github/stars/korjwl1/wireguide?style=flat-square" alt="Stars" /></a>
+  <a href="https://github.com/steiale/wireguide/releases/latest"><img src="https://img.shields.io/github/v/release/steiale/wireguide?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/steiale/wireguide/stargazers"><img src="https://img.shields.io/github/stars/steiale/wireguide?style=flat-square" alt="Stars" /></a>
   <a href="#설치"><img src="https://img.shields.io/badge/homebrew-tap-blue?style=flat-square" alt="Homebrew" /></a>
   <img src="https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey?style=flat-square" alt="Platform" />
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/korjwl1/wireguide?style=flat-square" alt="License" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/steiale/wireguide?style=flat-square" alt="License" /></a>
 </p>
 
 <p align="center">
@@ -65,13 +65,13 @@
 ### macOS (Homebrew) — 권장
 
 ```bash
-brew tap korjwl1/tap
+brew tap steiale/tap
 brew install --cask wireguide
 ```
 
 ### macOS (수동)
 
-[Releases](https://github.com/korjwl1/wireguide/releases)에서 다운로드 후 `/Applications`으로 이동.
+[Releases](https://github.com/steiale/wireguide/releases)에서 다운로드 후 `/Applications`으로 이동.
 
 > macOS에서 "앱이 손상되었습니다" 경고가 뜨면: `xattr -cr /Applications/WireGuide.app`
 
@@ -133,13 +133,13 @@ graph LR
 
 개발 환경 설정 및 가이드라인은 [CONTRIBUTING.md](CONTRIBUTING.md)를 참조하세요.
 
-버그를 발견하셨나요? [이슈를 등록](https://github.com/korjwl1/wireguide/issues/new/choose)해 주세요.
+버그를 발견하셨나요? [이슈를 등록](https://github.com/steiale/wireguide/issues/new/choose)해 주세요.
 
 ---
 
 ## 후원
 
-<a href="https://github.com/sponsors/korjwl1">
+<a href="https://github.com/sponsors/steiale">
   <img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?style=for-the-badge&logo=github" alt="Sponsor" />
 </a>
 
