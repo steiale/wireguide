@@ -228,16 +228,6 @@
               {/if}
             </span>
             <span class="card-flex"></span>
-            {#if isExpanded && latencies[tun.name] !== undefined}
-              {@const ms = latencies[tun.name]}
-              <span class="latency-badge"
-                class:lat-good={ms >= 0 && ms < 50}
-                class:lat-ok={ms >= 50 && ms < 150}
-                class:lat-bad={ms >= 150}
-                class:lat-none={ms < 0}>
-                {ms >= 0 ? ms + ' ms' : '—'}
-              </span>
-            {/if}
             {#if isConnected}
               <span class="card-badge">{isConnected && !hasHandshake ? $t('app.no_handshake') : $t('app.connected')}</span>
             {/if}
@@ -260,15 +250,26 @@
               {/if}
 
               <!-- Live stats pills (only when connected) -->
-              {#if isConnected && status}
+              {#if (isConnected && status) || latencies[tun.name] !== undefined}
                 <div class="stats-pills">
-                  <span class="stat-pill pill-rx">↓ {formatBytes(status.rx_bytes || 0)}</span>
-                  <span class="stat-pill pill-tx">↑ {formatBytes(status.tx_bytes || 0)}</span>
-                  {#if status.duration}
-                    <span class="stat-pill">⏱ {status.duration}</span>
+                  {#if isConnected && status}
+                    <span class="stat-pill pill-rx">↓ {formatBytes(status.rx_bytes || 0)}</span>
+                    <span class="stat-pill pill-tx">↑ {formatBytes(status.tx_bytes || 0)}</span>
+                    {#if status.duration}
+                      <span class="stat-pill">⏱ {status.duration}</span>
+                    {/if}
+                    {#if status.last_handshake}
+                      <span class="stat-pill">⇄ {status.last_handshake}</span>
+                    {/if}
                   {/if}
-                  {#if status.last_handshake}
-                    <span class="stat-pill">⇄ {status.last_handshake}</span>
+                  {#if latencies[tun.name] !== undefined}
+                    {@const ms = latencies[tun.name]}
+                    <span class="stat-pill"
+                      class:pill-lat-good={ms >= 0 && ms < 50}
+                      class:pill-lat-ok={ms >= 50 && ms < 150}
+                      class:pill-lat-bad={ms >= 150}>
+                      ~ {ms >= 0 ? ms + ' ms' : '—'}
+                    </span>
                   {/if}
                 </div>
                 {#if chartReadyNames.has(tun.name)}
@@ -505,18 +506,9 @@
   }
   .card-flex { flex: 1; }
 
-  /* Latency badge */
-  .latency-badge {
-    padding: 1px 6px;
-    border-radius: 100px;
-    font: 600 10px/14px var(--font-mono);
-    flex-shrink: 0;
-    margin-right: var(--space-1);
-  }
-  .lat-good  { background: var(--green-tint);  color: var(--green); }
-  .lat-ok    { background: var(--yellow-tint); color: var(--yellow); }
-  .lat-bad   { background: var(--error-bg);    color: var(--red); }
-  .lat-none  { background: var(--bg-secondary); color: var(--text-muted); }
+  .pill-lat-good { background: var(--green-tint);  border-color: color-mix(in srgb, var(--green) 30%, transparent);  color: var(--green); }
+  .pill-lat-ok   { background: var(--yellow-tint); border-color: color-mix(in srgb, var(--yellow) 30%, transparent); color: var(--yellow); }
+  .pill-lat-bad  { background: var(--error-bg);    border-color: color-mix(in srgb, var(--red) 30%, transparent);    color: var(--red); }
 
   .card-badge {
     padding: 2px var(--space-2);
