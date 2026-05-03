@@ -153,6 +153,8 @@ var allowedOpenURLs = map[string]struct{}{
 	"https://github.com/korjwl1/wireguide":                       {},
 	"https://github.com/korjwl1/wireguide/issues":                {},
 	"https://github.com/korjwl1/wireguide/blob/main/LICENSE":     {},
+	// Ko-fi donation page — linked from Settings About and the one-time banner.
+	"https://ko-fi.com/steiale": {},
 }
 
 // OpenURL opens a URL in the default browser. Only an explicit allowlist of
