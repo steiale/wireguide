@@ -13,7 +13,7 @@
   <a href="https://github.com/steiale/wireguide/releases/latest"><img src="https://img.shields.io/github/v/release/steiale/wireguide?style=flat-square" alt="Release" /></a>
   <a href="https://github.com/steiale/wireguide/stargazers"><img src="https://img.shields.io/github/stars/steiale/wireguide?style=flat-square" alt="Stars" /></a>
   <a href="#install"><img src="https://img.shields.io/badge/homebrew-tap-blue?style=flat-square" alt="Homebrew" /></a>
-  <img src="https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-macOS%2013%2B%20%E2%80%A2%20Apple%20Silicon-lightgrey?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/github/license/steiale/wireguide?style=flat-square" alt="License" /></a>
   <a href="https://ko-fi.com/steiale"><img src="https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Ko-fi" /></a>
 </p>
@@ -54,6 +54,10 @@
 
 ---
 
+## Requirements
+
+**Apple Silicon (M1 or later) only.** Intel Macs are not supported.
+
 ## Install
 
 ### Homebrew — recommended
@@ -69,7 +73,11 @@ To update:
 brew upgrade --cask wireguide-plus
 ```
 
-### Manual
+### DMG — direct download
+
+Download the latest `.dmg` from [Releases](https://github.com/steiale/wireguide/releases/latest), open it, and drag `WireGuide+.app` to `/Applications`. The app is signed and notarized — no Gatekeeper warnings.
+
+### ZIP — manual
 
 Download the latest `.zip` from [Releases](https://github.com/steiale/wireguide/releases/latest), unzip, and move `WireGuide+.app` to `/Applications`.
 
@@ -110,7 +118,7 @@ graph LR
     GUI <-->|"JSON-RPC over Unix socket"| Helper
 ```
 
-- **Single binary** — runs as GUI or privileged helper (`--helper` flag)
+- **Two binaries** — `wireguide-plus` (GUI, Wails/AppKit) and `wireguide-plus-helper` (daemon, IOKit only); the helper runs as a root LaunchDaemon without a window server
 - **Privilege separation** — GUI is unprivileged; helper runs as root LaunchDaemon
 - **IPC** — JSON-RPC over Unix domain socket
 
