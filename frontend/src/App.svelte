@@ -431,7 +431,7 @@
 
       {#if currentView === 'tunnels'}
         <div class="tunnels-view">
-          <KofiBanner />
+          <KofiBanner {TunnelService} />
           <TunnelCards {TunnelService}
             on:new={handleNewTunnelOpen}
             on:import={handleImportOpen}

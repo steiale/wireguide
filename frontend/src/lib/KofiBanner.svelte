@@ -1,7 +1,8 @@
 <script>
   import { t } from '../i18n/index.js';
   import { connectCount, kofiDismissed, dismissKofi } from '../stores/tunnels.js';
-  import { TunnelService } from '../../bindings/github.com/korjwl1/wireguide/internal/app/tunnelservice.js';
+
+  export let TunnelService;
 
   const THRESHOLD = 10;
 
