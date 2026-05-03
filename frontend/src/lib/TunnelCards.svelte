@@ -170,7 +170,20 @@
     <div class="header-actions">
       <button class="hdr-btn hdr-btn-primary" on:click={() => dispatch('new')}>+ {$t('tunnel.new_tunnel')}</button>
       <button class="hdr-btn hdr-btn-secondary" on:click={() => dispatch('import')}>↓ {$t('tunnel.import')}</button>
-      <button class="hdr-btn hdr-btn-secondary" on:click={() => dispatch('import-qr')} title={$t('import.qr_button')}>QR</button>
+      <button class="hdr-btn hdr-btn-secondary hdr-btn-icon" on:click={() => dispatch('import-qr')} title={$t('import.qr_button')} aria-label={$t('import.qr_button')}>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+          <rect x="0" y="0" width="5" height="5" rx="0.5"/>
+          <rect x="1.5" y="1.5" width="2" height="2" fill="var(--bg-secondary)"/>
+          <rect x="9" y="0" width="5" height="5" rx="0.5"/>
+          <rect x="10.5" y="1.5" width="2" height="2" fill="var(--bg-secondary)"/>
+          <rect x="0" y="9" width="5" height="5" rx="0.5"/>
+          <rect x="1.5" y="10.5" width="2" height="2" fill="var(--bg-secondary)"/>
+          <rect x="7" y="7" width="2" height="2"/>
+          <rect x="10" y="7" width="2" height="2"/>
+          <rect x="7" y="10" width="2" height="2"/>
+          <rect x="12" y="10" width="2" height="2"/>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -368,6 +381,7 @@
   .hdr-btn-primary:hover { filter: brightness(1.1); }
   .hdr-btn-secondary { background: var(--bg-card); color: var(--text-primary); border: 0.5px solid var(--border); }
   .hdr-btn-secondary:hover { background: var(--bg-hover); }
+  .hdr-btn-icon { width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 
   /* ---------- Search ---------- */
   .search-wrap { margin-bottom: var(--space-4); }
@@ -406,7 +420,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    max-width: 740px;
   }
 
   /* ---------- Tunnel card ---------- */

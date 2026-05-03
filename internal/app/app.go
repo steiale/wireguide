@@ -76,7 +76,7 @@ func (s *TunnelService) ResizeToFit(tunnelCount int) {
 		footer     = 84
 		minContent = 420
 		maxContent = 720
-		width      = 1100
+		width      = 680
 	)
 	sidebarH := header + search + tunnelCount*row + listPad + footer
 	contentH := sidebarH

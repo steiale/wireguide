@@ -128,7 +128,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	// 5. Main window
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:          "WireGuide",
-		Width:          1100,
+		Width:          680,
 		Height:         470,
 		EnableFileDrop: true,
 		Mac: application.MacWindow{
