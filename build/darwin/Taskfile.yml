@@ -171,14 +171,41 @@ tasks:
       - sh: '[ -n "{{.KEYCHAIN_PROFILE}}" ]'
         msg: "KEYCHAIN_PROFILE is required. Set it in the vars section at the top of build/darwin/Taskfile.yml"
 
+  create:dmg:
+    summary: Creates a signed, notarized DMG from the signed .app bundle
+    cmds:
+      - |
+        VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' build/darwin/Info.plist)
+        DMG="wireguide-plus-v${VERSION}-darwin-arm64.dmg"
+        # Rename for the DMG (same convention as the zip)
+        cp -r "{{.BIN_DIR}}/{{.APP_NAME}}.app" "WireGuide+.app"
+        create-dmg \
+          --volname "WireGuide+" \
+          --window-pos 200 120 \
+          --window-size 560 400 \
+          --icon-size 120 \
+          --icon "WireGuide+.app" 140 195 \
+          --hide-extension "WireGuide+.app" \
+          --app-drop-link 420 195 \
+          "${DMG}" \
+          "WireGuide+.app"
+        rm -rf "WireGuide+.app"
+        # Sign the DMG itself (the .app inside is already signed)
+        codesign --sign "{{.SIGN_IDENTITY}}" --force "${DMG}"
+        # Notarize + staple
+        xcrun notarytool submit "${DMG}" --keychain-profile "{{.KEYCHAIN_PROFILE}}" --wait
+        xcrun stapler staple "${DMG}"
+        shasum -a 256 "${DMG}"
+        echo "DMG ready: ${DMG}"
+
   release:
-    summary: Full release build - sign, notarize, staple, zip, sign with Ed25519, print sha256
+    summary: Full release build - sign, notarize, staple, zip + DMG, sign with Ed25519, print sha256
     desc: |
-      Builds, codesigns, notarizes, and zips the arm64 app bundle.
-      Then produces an Ed25519 detached signature next to the zip so the
-      auto-updater can verify authenticity. Set WIREGUIDE_SIGNING_KEY
-      (base64-encoded ed25519 private key) before running, OR pass
-      KEY_PATH=/path/to/key.b64 as a task variable.
+      Builds, codesigns, notarizes, and packages the arm64 app bundle as both
+      a ZIP (for Homebrew) and a DMG (for direct download). Produces an Ed25519
+      detached signature for the ZIP so the auto-updater can verify authenticity.
+      Set WIREGUIDE_SIGNING_KEY (base64-encoded ed25519 private key) before
+      running, OR pass KEY_PATH=/path/to/key.b64 as a task variable.
     cmds:
       - task: sign:notarize
       - |
@@ -205,3 +232,4 @@ tasks:
 
         echo "Release zip ready: ${ZIP}"
         [ -f "${ZIP}.sig" ] && echo "Signature: ${ZIP}.sig"
+      - task: create:dmg
