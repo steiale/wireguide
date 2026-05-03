@@ -22,13 +22,13 @@ import (
 )
 
 const (
-	githubRepo  = "korjwl1/wireguide"
+	githubRepo  = "steiale/wireguide"
 	apiEndpoint = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
 	// fallbackVersion is the build-time constant used when the running
 	// bundle's Info.plist cannot be read (e.g. unit tests, non-darwin
 	// builds, or running the bare binary without an enclosing .app).
 	// Keep this in sync with build/darwin/Info.plist on each release.
-	fallbackVersion = "1.0.26"
+	fallbackVersion = "1.0.27"
 
 	// minAssetSize is the minimum acceptable size for a release asset.
 	// A macOS .dmg/.zip containing WireGuide.app is always well over 1 MB;
