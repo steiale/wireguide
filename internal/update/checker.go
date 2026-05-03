@@ -59,7 +59,7 @@ const (
 // To rotate: run `go run ./cmd/sign --gen`, replace this value with the new
 // PUBLIC_KEY, and re-sign any release that should remain installable by
 // clients shipped after the rotation.
-var embeddedPublicKey = "0aHPGlSK9ipc/ZNocKqXZOwOw68wZx7ziAuw9DXwIQA="
+var embeddedPublicKey = "rq0nNHFzXOrC8zEmipTbresfBioQ6UTe3MldLFPk+hA="
 
 var (
 	versionOnce   sync.Once
