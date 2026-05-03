@@ -196,8 +196,8 @@ func (s *TunnelService) RunUpdate(info *update.UpdateInfo) error {
 		if out, err := exec.Command(brewBin, "update").CombinedOutput(); err != nil {
 			slog.Warn("brew update failed, continuing with upgrade", "error", err, "output", string(out))
 		}
-		slog.Info("update: running brew upgrade --cask wireguide")
-		cmd := exec.Command(brewBin, "upgrade", "--cask", "wireguide")
+		slog.Info("update: running brew upgrade --cask wireguide-plus")
+		cmd := exec.Command(brewBin, "upgrade", "--cask", "wireguide-plus")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("brew upgrade failed: %w (%s)", err, string(out))
