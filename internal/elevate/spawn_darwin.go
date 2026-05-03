@@ -128,6 +128,7 @@ func installAndLoadDaemon(args Args) error {
 	shellScript := fmt.Sprintf(
 		`mkdir -p /Library/PrivilegedHelperTools && `+
 			`cp -f %s %s && `+
+			`xattr -d com.apple.quarantine %s 2>/dev/null; `+
 			`chown root:wheel %s && `+
 			`chmod 755 %s && `+
 			`cp -f %s %s && `+
@@ -135,6 +136,7 @@ func installAndLoadDaemon(args Args) error {
 			`chmod 644 %s && `+
 			`(launchctl kickstart -k system/%s 2>/dev/null || launchctl bootstrap system %s)`,
 		shellQuote(exe), shellQuote(daemonBinary),
+		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
 		shellQuote(tmpPlist), shellQuote(daemonPlist),
