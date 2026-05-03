@@ -60,7 +60,7 @@ func SpawnHelper(args Args) error {
 // then runs a shell script as root via osascript that copies everything into
 // place and bootstraps the daemon. The user sees one password prompt.
 func installAndLoadDaemon(args Args) error {
-	exe, err := SelfPath()
+	exe, err := helperBinaryPath()
 	if err != nil {
 		return err
 	}
@@ -170,6 +170,32 @@ func installAndLoadDaemon(args Args) error {
 	// launchd throttle window.
 	slog.Info("LaunchDaemon install/restart command issued; caller will poll for socket")
 	return nil
+}
+
+// helperBinaryPath returns the path of the standalone helper binary.
+//
+// The helper binary (cmd/helper, no Wails/AppKit dependency) lives next to
+// the GUI binary inside the .app bundle at:
+//
+//	WireGuide+.app/Contents/MacOS/wireguide-plus-helper
+//
+// Keeping it separate from the GUI binary prevents AppKit/WebKit framework
+// +load methods from crashing when the daemon is launched as root without a
+// window server.
+func helperBinaryPath() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(self); err == nil {
+		self = resolved
+	}
+	candidate := filepath.Join(filepath.Dir(self), "wireguide-plus-helper")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate, nil
+	}
+	// Fallback: use the GUI binary itself (dev builds / single-binary setups).
+	return self, nil
 }
 
 // isSocketLive checks whether the helper socket accepts a connection.
