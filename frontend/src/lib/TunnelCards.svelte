@@ -311,6 +311,20 @@
                 </div>
               {/if}
 
+              <!-- Notes -->
+              <div class="notes-section">
+                <textarea
+                  class="notes-textarea"
+                  placeholder={$t('tunnel.notes_placeholder')}
+                  value={metas[tun.name]?.notes ?? ''}
+                  rows="2"
+                  on:input={e => { metas = { ...metas, [tun.name]: { ...metas[tun.name], notes: e.target.value } }; }}
+                  on:blur={async e => {
+                    try { await TunnelService.SaveTunnelMeta(tun.name, { ...metas[tun.name], notes: e.target.value }); } catch (_) {}
+                  }}
+                ></textarea>
+              </div>
+
               <!-- Footer: auto-reconnect + actions -->
               <div class="card-footer">
                 <label class="toggle-row">
@@ -586,6 +600,24 @@
   }
   .pill-rx { background: var(--stats-rx-fill); border-color: color-mix(in srgb, var(--stats-rx) 30%, transparent); color: var(--stats-rx); }
   .pill-tx { background: var(--stats-tx-fill); border-color: color-mix(in srgb, var(--stats-tx) 30%, transparent); color: var(--stats-tx); }
+
+  /* Notes */
+  .notes-section { }
+  .notes-textarea {
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    background: var(--bg-input);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font: var(--text-body);
+    outline: none;
+    resize: vertical;
+    box-sizing: border-box;
+    transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .notes-textarea::placeholder { color: var(--text-muted); }
+  .notes-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--blue-tint); }
 
   /* Info rows */
   .info-rows { display: flex; flex-direction: column; }
