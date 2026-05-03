@@ -74,8 +74,8 @@ func (s *TunnelService) ResizeToFit(tunnelCount int) {
 		row        = 29
 		listPad    = 8
 		footer     = 84
-		minContent = 420
-		maxContent = 720
+		minContent = 720  // tall enough for one expanded connected card (graph + rows + footer)
+		maxContent = 900
 		width      = 680
 	)
 	sidebarH := header + search + tunnelCount*row + listPad + footer

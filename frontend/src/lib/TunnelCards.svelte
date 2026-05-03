@@ -82,6 +82,7 @@
       chartReadyNames = chartReadyNames;
       stopLatencyPolling(name);
       selectedTunnel.set(null);
+      TunnelService.ResizeToFit(($tunnels || []).length).catch(() => {});
       return;
     }
     if (expandedName) stopLatencyPolling(expandedName);
