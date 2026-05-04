@@ -39,20 +39,25 @@
 
 | Feature | Description |
 |---------|-------------|
-| **Card-based UI** | Each tunnel is an expandable card — connect, view stats, edit, and manage in one place |
-| **Live Speed Graph** | Real-time RX/TX bandwidth chart embedded in each tunnel card |
-| **Multi-Tunnel** | Connect multiple WireGuard tunnels simultaneously with per-tunnel state |
+| **Card-based UI** | Each tunnel is an expandable card — connect, view live stats, edit config, and manage in one place |
+| **Live Speed Graph** | Real-time RX/TX bandwidth chart updates every second while connected |
+| **Latency Monitor** | Per-tunnel ping latency displayed live in the card header |
+| **Connection History** | Per-tunnel session log with timestamp, duration, and bytes transferred |
+| **Wi-Fi Auto-Connect** | Automatically connect or disconnect tunnels when joining specific Wi-Fi networks |
+| **Multi-Tunnel** | Connect multiple WireGuard tunnels simultaneously with independent per-tunnel state |
 | **Auto-Reconnect** | Per-tunnel reconnect on sleep/wake and network changes |
-| **System Tray** | Connection status indicator, 1-click connect/disconnect from the menu bar |
-| **Kill Switch** | Blocks all non-VPN traffic via macOS `pf` (optional) |
-| **DNS Protection** | Forces DNS queries through the VPN tunnel only (optional) |
-| **Config Editor** | Import, create, edit, export `.conf` files — drag-and-drop supported |
+| **System Tray** | Connection status in the menu bar, 1-click connect/disconnect without opening the window |
+| **Kill Switch** | Blocks all non-VPN traffic via macOS `pf` when the tunnel drops (optional) |
+| **DNS Protection** | Locks DNS to the active tunnel's servers to prevent leaks (optional) |
+| **Config Editor** | Create, edit, import, and export `.conf` files — drag-and-drop and QR code import supported |
+| **Per-tunnel Notes** | Attach a freeform note to any tunnel — visible in the expanded card |
 | **First-Run Wizard** | Automatically discovers existing WireGuard configs from the Mac App Store app |
-| **Conflict Detection** | Warns about route conflicts with overlapping subnets |
-| **Diagnostics** | Ping test, DNS leak test, route table visualization |
-| **Auto-Update** | Checks GitHub Releases; supports `brew upgrade` |
-| **Dark / Light / System** | Follows OS appearance with a navy/teal Jarvis-inspired theme |
-| **Signed & Notarized** | Developer ID signed and Apple-notarized — no Gatekeeper warnings |
+| **Conflict Detection** | Warns about route conflicts when multiple tunnels have overlapping subnets |
+| **Diagnostics** | Built-in ping test, DNS leak test, and route table visualization |
+| **Log Viewer** | Live log stream from both GUI and helper, filterable by level (Debug / Info / Warn / Error) |
+| **Auto-Update** | Checks GitHub Releases on launch; one-click update or `brew upgrade --cask wireguide-plus` |
+| **Dark / Light / System** | Follows macOS appearance — navy/teal theme optimized for both modes |
+| **Signed & Notarized** | Developer ID signed and Apple-notarized — no Gatekeeper warnings, no quarantine |
 
 ---
 
