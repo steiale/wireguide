@@ -35,10 +35,8 @@ build/icon/wireguide.icns
 # which caused persistent icon-cache issues during development.
 build/darwin/Assets.car
 
-# Claude Code working files — plans and local settings are per-user, not
-# repo state.
-.claude/plans/
-.claude/settings.local.json
+# Claude Code working files — dev tooling, not part of the app.
+.claude/
 .spec-mix/
 
 # Release artifacts
