@@ -22,12 +22,14 @@
 
 <table>
   <tr>
-    <td align="center"><img src="docs/screenshots/01-tunnels.png" width="420" /><br><sub>Tunnel overview</sub></td>
-    <td align="center"><img src="docs/screenshots/02-expanded.png" width="420" /><br><sub>Expanded tunnel — config details</sub></td>
+    <td align="center"><img src="docs/screenshots/01-tunnels.png" width="380" /><br><sub>Tunnel overview</sub></td>
+    <td align="center"><img src="docs/screenshots/02-expanded.png" width="380" /><br><sub>Expanded tunnel — config details</sub></td>
+    <td align="center"><img src="docs/screenshots/03-connected.png" width="380" /><br><sub>Connected — live stats &amp; speed graph</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/screenshots/03-connected.png" width="420" /><br><sub>Connected with live stats</sub></td>
-    <td align="center"><img src="docs/screenshots/04-speedgraph.png" width="420" /><br><sub>Real-time speed graph</sub></td>
+    <td align="center"><img src="docs/screenshots/05-dns-leak.png" width="380" /><br><sub>DNS leak test</sub></td>
+    <td align="center"><img src="docs/screenshots/07-history.png" width="380" /><br><sub>Connection history</sub></td>
+    <td align="center"><img src="docs/screenshots/08-settings.png" width="380" /><br><sub>Settings</sub></td>
   </tr>
 </table>
 
