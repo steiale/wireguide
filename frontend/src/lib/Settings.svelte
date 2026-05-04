@@ -437,9 +437,9 @@
   }
   h3 {
     margin: 0 0 16px;
-    font: 600 15px/20px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    font: var(--text-title-1, 700 22px/28px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));
     color: var(--text-primary);
-    letter-spacing: -0.005em;
+    letter-spacing: -0.02em;
   }
 
   /* Split layout */
@@ -461,10 +461,10 @@
   .settings-sidebar button {
     display: flex;
     align-items: center;
-    padding: 6px 8px;
+    padding: 6px 12px;
     background: none;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--radius-btn, 9999px);
     color: var(--text-secondary);
     font: 500 13px/18px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     cursor: pointer;
@@ -702,7 +702,7 @@
     background: var(--accent, #007AFF);
     color: var(--text-inverse, #fff);
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--radius-btn, 9999px);
     font: 500 13px/18px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     cursor: pointer;
   }

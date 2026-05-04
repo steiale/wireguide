@@ -138,7 +138,7 @@ graph LR
 
 ## Fork
 
-WireGuide+ is a fork of [WireGuide](https://github.com/korjwl1/wireguide) by korjwl1, extended with a redesigned UI, additional features, and macOS notarization. Improvements that may benefit upstream have been offered back.
+WireGuide+ is a fork of [WireGuide](https://github.com/korjwl1/wireguide) by korjwl1, extended with a redesigned UI, additional features, and macOS notarization.
 
 ---
 
