@@ -238,7 +238,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	//
 	// The bridge tolerates a nil client (resubscribe is a no-op until the
 	// holder has one), so we can construct it before the helper is ready.
-	bridge := newEventBridge(app, clients, trayMgr.setIconState, tunnelService.ReconcileHistoryFromStatus)
+	bridge := newEventBridge(app, clients, trayMgr.updateStatus, tunnelService.ReconcileHistoryFromStatus)
 	bridge.start()
 
 	healthDone := make(chan struct{})

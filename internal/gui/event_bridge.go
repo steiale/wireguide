@@ -16,10 +16,10 @@ import (
 type eventBridge struct {
 	app     *application.App
 	clients *ipc.ClientHolder
-	// onStatusChange is the cheap hook called for every status event — it
-	// updates the tray icon's label/tooltip without any IPC or disk work so
-	// the event loop goroutine never blocks on it.
-	onStatusChange func(activeNames []string, handshakeMap map[string]bool)
+	// onStatusUpdate is the cheap hook called for every status event — it
+	// updates the tray icon without any IPC or disk work so the event loop
+	// goroutine never blocks on it.
+	onStatusUpdate func(domain.ConnectionStatus)
 	// onStatusReconcile lets the bridge feed status snapshots to the history
 	// store so helper-driven (re)connects get recorded the same way the
 	// GUI's own Connect/Disconnect calls do.
@@ -33,11 +33,11 @@ type eventBridge struct {
 	reconnecting bool
 }
 
-func newEventBridge(app *application.App, clients *ipc.ClientHolder, onStatusChange func(activeNames []string, handshakeMap map[string]bool), onStatusReconcile func(activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string)) *eventBridge {
+func newEventBridge(app *application.App, clients *ipc.ClientHolder, onStatusUpdate func(domain.ConnectionStatus), onStatusReconcile func(activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string)) *eventBridge {
 	return &eventBridge{
 		app:               app,
 		clients:           clients,
-		onStatusChange:    onStatusChange,
+		onStatusUpdate:    onStatusUpdate,
 		onStatusReconcile: onStatusReconcile,
 	}
 }
@@ -95,15 +95,8 @@ func (b *eventBridge) handleEvent(method string, params json.RawMessage) {
 			slog.Debug("event bridge: unmarshal status failed", "error", err)
 		} else {
 			b.app.Event.Emit("status", status)
-			if b.onStatusChange != nil {
-				hsMap := make(map[string]bool)
-				for _, ts := range status.Tunnels {
-					hsMap[ts.TunnelName] = ts.LastHandshake != ""
-				}
-				if status.TunnelName != "" {
-					hsMap[status.TunnelName] = status.LastHandshake != ""
-				}
-				b.onStatusChange(status.ActiveTunnels, hsMap)
+			if b.onStatusUpdate != nil {
+				b.onStatusUpdate(status)
 			}
 			if b.onStatusReconcile != nil {
 				rxMap := make(map[string]int64)
