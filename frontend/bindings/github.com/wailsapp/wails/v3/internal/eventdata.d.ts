@@ -7,13 +7,13 @@ import type { Events } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import type * as domain$0 from "../../../../korjwl1/wireguide/internal/domain/models.js";
+import type * as domain$0 from "../../../../steiale/wireguide/internal/domain/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import type * as gui$0 from "../../../../korjwl1/wireguide/internal/gui/models.js";
+import type * as gui$0 from "../../../../steiale/wireguide/internal/gui/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import type * as ipc$0 from "../../../../korjwl1/wireguide/internal/ipc/models.js";
+import type * as ipc$0 from "../../../../steiale/wireguide/internal/ipc/models.js";
 
 declare module "@wailsio/runtime" {
     namespace Events {

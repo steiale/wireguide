@@ -19,7 +19,13 @@ import (
 // testable — `handler := &Helper{manager: mockMgr}; handler.handleConnect(...)`.
 func (h *Helper) registerHandlers() {
 	h.server.Handle(ipc.MethodPing, h.handlePing)
-	h.server.Handle(ipc.MethodShutdown, h.handleShutdown)
+	// Only honor MethodShutdown when running outside launchd. As a
+	// LaunchDaemon (KeepAlive=true) the OS owns the helper's lifecycle —
+	// obeying a GUI Shutdown causes launchd to immediately respawn us, the
+	// next GUI quit sends Shutdown again, and we end up in a crash loop.
+	if !isDaemon() {
+		h.server.Handle(ipc.MethodShutdown, h.handleShutdown)
+	}
 	h.server.Handle(ipc.MethodSetLogLevel, h.handleSetLogLevel)
 	h.server.Handle(ipc.MethodConnect, h.handleConnect)
 	h.server.Handle(ipc.MethodDisconnect, h.handleDisconnect)

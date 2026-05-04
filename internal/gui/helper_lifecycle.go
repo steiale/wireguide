@@ -25,7 +25,13 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 
 	// Try an existing helper first (survives GUI restarts).
 	if client, err := ipc.NewClient(addr); err == nil {
-		pingCtx, pingCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		// 2 s (not 500 ms): a freshly-spawned helper that's still
+		// initialising — replaying state, opening the firewall, taking
+		// the connectMu — can legitimately take more than half a second
+		// to handle its first ping. A too-tight deadline here causes
+		// ensureHelper to give up on a perfectly healthy helper and trip
+		// the fallback reinstall path.
+		pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
 		var resp ipc.PingResponse
 		pingErr := client.CallWithContext(pingCtx, ipc.MethodPing, nil, &resp)
 		pingCancel()

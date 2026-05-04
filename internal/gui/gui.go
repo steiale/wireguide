@@ -194,14 +194,20 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 				// networksetup calls across services, route teardown). The
 				// default 10 s Call timeout is too short — match the 60 s
 				// budget used by callLong for Connect/Disconnect everywhere
-				// else. Shutdown likewise needs a generous budget so the
-				// helper has time to flush state before exiting.
+				// else.
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				_ = c.CallWithContext(ctx, ipc.MethodDisconnect, nil, nil)
 				cancel()
-				ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
-				_ = c.CallWithContext(ctx, ipc.MethodShutdown, nil, nil)
-				cancel()
+				// Do NOT send MethodShutdown here. The helper installed as a
+				// LaunchDaemon (KeepAlive=true) is owned by launchd — if we
+				// tell it to shut down, launchd respawns it immediately, the
+				// next GUI quit sends Shutdown again, and we land in a
+				// helper-restart crash loop. MethodDisconnect above is enough
+				// to tear down the VPN; launchd will keep the helper alive
+				// for the next GUI launch (no admin prompt). In dev/osascript
+				// mode the helper's own grace-window shutdown timer
+				// (startShutdownTimer) handles teardown when the GUI's
+				// control connection drops.
 			}
 			// Close in a goroutine with a short delay so the helper has
 			// time to process the shutdown command without blocking the
@@ -288,7 +294,7 @@ func bootstrapHelper(app *application.App, clients *ipc.ClientHolder, bridge *ev
 	var newClient *ipc.Client
 	for attempt := 0; attempt < 3; attempt++ {
 		// Pass background context — ensureHelper manages its own internal
-		// timeouts (500ms for the initial ping, 60s fresh poll after SpawnHelper).
+		// timeouts (2s for the initial ping, 60s fresh poll after SpawnHelper).
 		// A deadline on the outer context races with SpawnHelper and cancels
 		// the poll immediately when both expire at the same time.
 		var err error

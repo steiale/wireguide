@@ -8,13 +8,13 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as domain$0 from "../../../../korjwl1/wireguide/internal/domain/models.js";
+import * as domain$0 from "../../../../steiale/wireguide/internal/domain/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as gui$0 from "../../../../korjwl1/wireguide/internal/gui/models.js";
+import * as gui$0 from "../../../../steiale/wireguide/internal/gui/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as ipc$0 from "../../../../korjwl1/wireguide/internal/ipc/models.js";
+import * as ipc$0 from "../../../../steiale/wireguide/internal/ipc/models.js";
 
 function configure() {
     Object.freeze(Object.assign($Create.Events, {

@@ -47,7 +47,7 @@ import * as $models from "./models.js";
  * @returns {$CancellablePromise<string>}
  */
 export function BaseName(path) {
-    return $Call.ByID(3469363575, path);
+    return $Call.ByID(3888008056, path);
 }
 
 /**
@@ -59,7 +59,7 @@ export function BaseName(path) {
  * @returns {$CancellablePromise<tunnel$0.ConflictInfo[]>}
  */
 export function CheckConflicts(name) {
-    return $Call.ByID(3480969502, name).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(604900757, name).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType1($result);
     }));
 }
@@ -69,7 +69,7 @@ export function CheckConflicts(name) {
  * @returns {$CancellablePromise<update$0.UpdateInfo | null>}
  */
 export function CheckForUpdate() {
-    return $Call.ByID(3781738431).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(4127090372).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType3($result);
     }));
 }
@@ -79,7 +79,7 @@ export function CheckForUpdate() {
  * @returns {$CancellablePromise<void>}
  */
 export function ClearConnectionHistory() {
-    return $Call.ByID(1952295618);
+    return $Call.ByID(3616246409);
 }
 
 /**
@@ -90,7 +90,7 @@ export function ClearConnectionHistory() {
  * @returns {$CancellablePromise<void>}
  */
 export function CloseHistorySessions(reason) {
-    return $Call.ByID(2047156944, reason);
+    return $Call.ByID(3018497415, reason);
 }
 
 /**
@@ -98,7 +98,7 @@ export function CloseHistorySessions(reason) {
  * @returns {$CancellablePromise<void>}
  */
 export function CompleteOnboarding() {
-    return $Call.ByID(4101637083);
+    return $Call.ByID(655688232);
 }
 
 /**
@@ -108,7 +108,7 @@ export function CompleteOnboarding() {
  * @returns {$CancellablePromise<void>}
  */
 export function Connect(name) {
-    return $Call.ByID(1123040453, name);
+    return $Call.ByID(3475995036, name);
 }
 
 /**
@@ -118,7 +118,7 @@ export function Connect(name) {
  * @returns {$CancellablePromise<void>}
  */
 export function DeleteTunnel(name) {
-    return $Call.ByID(3822542112, name);
+    return $Call.ByID(2920758891, name);
 }
 
 /**
@@ -128,7 +128,7 @@ export function DeleteTunnel(name) {
  * @returns {$CancellablePromise<void>}
  */
 export function Disconnect() {
-    return $Call.ByID(1171530279);
+    return $Call.ByID(3215959632);
 }
 
 /**
@@ -137,7 +137,7 @@ export function Disconnect() {
  * @returns {$CancellablePromise<void>}
  */
 export function DisconnectTunnel(name) {
-    return $Call.ByID(1584259497, name);
+    return $Call.ByID(4027842506, name);
 }
 
 /**
@@ -146,7 +146,7 @@ export function DisconnectTunnel(name) {
  * @returns {$CancellablePromise<string>}
  */
 export function ExportConfig(name) {
-    return $Call.ByID(1684823973, name);
+    return $Call.ByID(3219660626, name);
 }
 
 /**
@@ -156,7 +156,7 @@ export function ExportConfig(name) {
  * @returns {$CancellablePromise<string>}
  */
 export function ExportTunnel(name) {
-    return $Call.ByID(686002857, name);
+    return $Call.ByID(2791885822, name);
 }
 
 /**
@@ -165,7 +165,7 @@ export function ExportTunnel(name) {
  * @returns {$CancellablePromise<string>}
  */
 export function GetConfigText(name) {
-    return $Call.ByID(1065418994, name);
+    return $Call.ByID(2800041251, name);
 }
 
 /**
@@ -175,7 +175,7 @@ export function GetConfigText(name) {
  * @returns {$CancellablePromise<history$0.Session[]>}
  */
 export function GetConnectionHistory() {
-    return $Call.ByID(3062937901).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(4142379542).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType5($result);
     }));
 }
@@ -187,7 +187,7 @@ export function GetConnectionHistory() {
  * @returns {$CancellablePromise<string>}
  */
 export function GetCurrentSSID() {
-    return $Call.ByID(2005225111);
+    return $Call.ByID(1781422564);
 }
 
 /**
@@ -197,7 +197,7 @@ export function GetCurrentSSID() {
  * @returns {$CancellablePromise<number>}
  */
 export function GetEndpointLatency(endpoint) {
-    return $Call.ByID(4283154300, endpoint);
+    return $Call.ByID(2172993071, endpoint);
 }
 
 /**
@@ -205,7 +205,7 @@ export function GetEndpointLatency(endpoint) {
  * @returns {$CancellablePromise<$models.RouteEntry[]>}
  */
 export function GetRoutingTable() {
-    return $Call.ByID(3049102509).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(2660289744).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType7($result);
     }));
 }
@@ -214,7 +214,7 @@ export function GetRoutingTable() {
  * @returns {$CancellablePromise<storage$0.Settings | null>}
  */
 export function GetSettings() {
-    return $Call.ByID(2393200110).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(1159302687).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType9($result);
     }));
 }
@@ -226,7 +226,7 @@ export function GetSettings() {
  * @returns {$CancellablePromise<$models.ConnectionStatus | null>}
  */
 export function GetStatus() {
-    return $Call.ByID(3544552149).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(3347375428).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType11($result);
     }));
 }
@@ -238,7 +238,7 @@ export function GetStatus() {
  * @returns {$CancellablePromise<domain$0.WireGuardConfig | null>}
  */
 export function GetTunnelDetail(name) {
-    return $Call.ByID(3171898132, name).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(881582661, name).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType13($result);
     }));
 }
@@ -249,7 +249,7 @@ export function GetTunnelDetail(name) {
  * @returns {$CancellablePromise<storage$0.TunnelMeta | null>}
  */
 export function GetTunnelMeta(name) {
-    return $Call.ByID(4088997336, name).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(402927985, name).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType15($result);
     }));
 }
@@ -259,7 +259,7 @@ export function GetTunnelMeta(name) {
  * @returns {$CancellablePromise<string>}
  */
 export function GetVersion() {
-    return $Call.ByID(1775430717);
+    return $Call.ByID(2377345862);
 }
 
 /**
@@ -268,7 +268,7 @@ export function GetVersion() {
  * @returns {$CancellablePromise<wifi$0.Rules | null>}
  */
 export function GetWifiRules() {
-    return $Call.ByID(45284585).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(2048144510).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType17($result);
     }));
 }
@@ -281,7 +281,7 @@ export function GetWifiRules() {
  * @returns {$CancellablePromise<$models.TunnelInfo | null>}
  */
 export function ImportConfig(name, content) {
-    return $Call.ByID(2459134310, name, content).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(188679809, name, content).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType19($result);
     }));
 }
@@ -293,7 +293,7 @@ export function ImportConfig(name, content) {
  * @returns {$CancellablePromise<$models.ZipImportResult[]>}
  */
 export function ImportFoundConfigs(paths) {
-    return $Call.ByID(3040882779, paths).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(1596298812, paths).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType21($result);
     }));
 }
@@ -307,7 +307,7 @@ export function ImportFoundConfigs(paths) {
  * @returns {$CancellablePromise<void>}
  */
 export function ImportQRFromBytes(data, name) {
-    return $Call.ByID(3817928306, data, name);
+    return $Call.ByID(615179959, data, name);
 }
 
 /**
@@ -318,7 +318,7 @@ export function ImportQRFromBytes(data, name) {
  * @returns {$CancellablePromise<void>}
  */
 export function ImportQRFromPath(path, name) {
-    return $Call.ByID(2544386800, path, name);
+    return $Call.ByID(2642035939, path, name);
 }
 
 /**
@@ -328,7 +328,7 @@ export function ImportQRFromPath(path, name) {
  * @returns {$CancellablePromise<$models.ZipImportResult[]>}
  */
 export function ImportZip(path) {
-    return $Call.ByID(976469479, path).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(2515408722, path).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType21($result);
     }));
 }
@@ -340,7 +340,7 @@ export function ImportZip(path) {
  * @returns {$CancellablePromise<$models.ZipImportResult[]>}
  */
 export function ImportZipData(data) {
-    return $Call.ByID(2432663343, data).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(368497186, data).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType21($result);
     }));
 }
@@ -358,7 +358,7 @@ export function ImportZipData(data) {
  * @returns {$CancellablePromise<$models.TunnelInfo[]>}
  */
 export function ListTunnels() {
-    return $Call.ByID(3587038916).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(3011645541).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType22($result);
     }));
 }
@@ -373,7 +373,7 @@ export function ListTunnels() {
  * @returns {$CancellablePromise<$models.TunnelInfo[]>}
  */
 export function ListTunnelsLocal() {
-    return $Call.ByID(3031176175).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(3553304200).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType22($result);
     }));
 }
@@ -386,7 +386,7 @@ export function ListTunnelsLocal() {
  * @returns {$CancellablePromise<void>}
  */
 export function OpenURL(url) {
-    return $Call.ByID(1649174774, url);
+    return $Call.ByID(4258619583, url);
 }
 
 /**
@@ -396,7 +396,7 @@ export function OpenURL(url) {
  * @returns {$CancellablePromise<string>}
  */
 export function ReadFile(path) {
-    return $Call.ByID(1950850135, path);
+    return $Call.ByID(2692059968, path);
 }
 
 /**
@@ -418,7 +418,7 @@ export function ReadFile(path) {
  * @returns {$CancellablePromise<void>}
  */
 export function ReconcileHistoryFromStatus(activeNames, rxByTunnel, txByTunnel, disappearReason) {
-    return $Call.ByID(1482043575, activeNames, rxByTunnel, txByTunnel, disappearReason);
+    return $Call.ByID(345336368, activeNames, rxByTunnel, txByTunnel, disappearReason);
 }
 
 /**
@@ -429,7 +429,7 @@ export function ReconcileHistoryFromStatus(activeNames, rxByTunnel, txByTunnel, 
  * @returns {$CancellablePromise<void>}
  */
 export function RenameTunnel(oldName, newName) {
-    return $Call.ByID(576069505, oldName, newName);
+    return $Call.ByID(2410860754, oldName, newName);
 }
 
 /**
@@ -447,7 +447,7 @@ export function RenameTunnel(oldName, newName) {
  * @returns {$CancellablePromise<void>}
  */
 export function ResizeToFit(tunnelCount) {
-    return $Call.ByID(2004804483, tunnelCount);
+    return $Call.ByID(3811485246, tunnelCount);
 }
 
 /**
@@ -457,7 +457,7 @@ export function ResizeToFit(tunnelCount) {
  * @returns {$CancellablePromise<$models.DNSLeakResult | null>}
  */
 export function RunDNSLeakTest() {
-    return $Call.ByID(2469114850).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(2844578013).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType24($result);
     }));
 }
@@ -469,7 +469,7 @@ export function RunDNSLeakTest() {
  * @returns {$CancellablePromise<void>}
  */
 export function RunUpdate(info) {
-    return $Call.ByID(2959589127, info);
+    return $Call.ByID(2979792246, info);
 }
 
 /**
@@ -482,7 +482,7 @@ export function RunUpdate(info) {
  * @returns {$CancellablePromise<void>}
  */
 export function SaveSettings(settings) {
-    return $Call.ByID(3676285513, settings);
+    return $Call.ByID(4282610742, settings);
 }
 
 /**
@@ -492,7 +492,7 @@ export function SaveSettings(settings) {
  * @returns {$CancellablePromise<void>}
  */
 export function SaveTunnelMeta(name, meta) {
-    return $Call.ByID(185268851, name, meta);
+    return $Call.ByID(3363409440, name, meta);
 }
 
 /**
@@ -502,7 +502,7 @@ export function SaveTunnelMeta(name, meta) {
  * @returns {$CancellablePromise<void>}
  */
 export function SaveWifiRules(rules) {
-    return $Call.ByID(156452812, rules);
+    return $Call.ByID(3250439057, rules);
 }
 
 /**
@@ -511,7 +511,7 @@ export function SaveWifiRules(rules) {
  * @returns {$CancellablePromise<$models.FoundConfig[]>}
  */
 export function ScanForWireGuardConfigs() {
-    return $Call.ByID(1549830634).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(2588850719).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType26($result);
     }));
 }
@@ -522,7 +522,7 @@ export function ScanForWireGuardConfigs() {
  * @returns {$CancellablePromise<void>}
  */
 export function SetApp(app) {
-    return $Call.ByID(1760917394, app);
+    return $Call.ByID(1847627805, app);
 }
 
 /**
@@ -533,7 +533,7 @@ export function SetApp(app) {
  * @returns {$CancellablePromise<void>}
  */
 export function SetDNSProtection(enabled) {
-    return $Call.ByID(472068929, enabled);
+    return $Call.ByID(4043511030, enabled);
 }
 
 /**
@@ -542,7 +542,7 @@ export function SetDNSProtection(enabled) {
  * @returns {$CancellablePromise<void>}
  */
 export function SetHealthCheck(enabled) {
-    return $Call.ByID(1079240195, enabled);
+    return $Call.ByID(1651406124, enabled);
 }
 
 /**
@@ -551,7 +551,7 @@ export function SetHealthCheck(enabled) {
  * @returns {$CancellablePromise<void>}
  */
 export function SetKillSwitch(enabled) {
-    return $Call.ByID(1469047591, enabled);
+    return $Call.ByID(353876962, enabled);
 }
 
 /**
@@ -562,7 +562,7 @@ export function SetKillSwitch(enabled) {
  * @returns {$CancellablePromise<void>}
  */
 export function SetLogLevel(level) {
-    return $Call.ByID(537242663, level);
+    return $Call.ByID(2960530306, level);
 }
 
 /**
@@ -571,7 +571,7 @@ export function SetLogLevel(level) {
  * @returns {$CancellablePromise<void>}
  */
 export function SetPinInterface(enabled) {
-    return $Call.ByID(1245113173, enabled);
+    return $Call.ByID(2423150392, enabled);
 }
 
 /**
@@ -580,7 +580,7 @@ export function SetPinInterface(enabled) {
  * @returns {$CancellablePromise<void>}
  */
 export function SetWindow(win) {
-    return $Call.ByID(87278631, win);
+    return $Call.ByID(3841803210, win);
 }
 
 /**
@@ -589,7 +589,7 @@ export function SetWindow(win) {
  * @returns {$CancellablePromise<boolean>}
  */
 export function TunnelExists(name) {
-    return $Call.ByID(1252108931, name);
+    return $Call.ByID(1886151096, name);
 }
 
 /**
@@ -600,7 +600,7 @@ export function TunnelExists(name) {
  * @returns {$CancellablePromise<void>}
  */
 export function UpdateConfig(name, content) {
-    return $Call.ByID(660046974, name, content);
+    return $Call.ByID(3520953781, name, content);
 }
 
 /**
@@ -610,7 +610,7 @@ export function UpdateConfig(name, content) {
  * @returns {$CancellablePromise<string[]>}
  */
 export function ValidateConfig(content) {
-    return $Call.ByID(592398029, content).then(/** @type {($result: any) => any} */(($result) => {
+    return $Call.ByID(3943944654, content).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType27($result);
     }));
 }
