@@ -76,32 +76,35 @@ func buildWPlusIcon(plusColor color.NRGBA) []byte {
 		}
 	}
 
+	// Canvas: W at its natural wSide×wSide (full height = correct menu bar size),
+	// plus a 28px gutter to the right for the + indicator.
+	// macOS scales the icon to fit the menu bar height — the HEIGHT of the canvas
+	// drives the display scale, so the W must fill the full canvas height.
+	// A 4px gap separates the W from the + area.
 	const (
-		iconSize = 64
-		wDst     = 40 // W fits in a 40×40 square, centred vertically
-		wOffY    = (iconSize - wDst) / 2
-		// + drawn in x=[44..63] (20 px wide), centred at y=32
-		plusCX  = 54 // centre x
-		plusCY  = 32 // centre y
-		armLen  = 7  // extends ±armLen from centre
-		barHalf = 1  // half bar-thickness → 3 px total
+		gap     = 4
+		plusW   = 28
+		barHalf = 2 // half bar-thickness → 5px total, visible at retina
 	)
+	canvasW := wSide + gap + plusW
+	canvasH := wSide
+	plusCX := wSide + gap + plusW/2
+	plusCY := wSide / 2
+	armLen := plusW/3 + 1 // ~10px, proportional to the + area width
 
-	dst := image.NewNRGBA(image.Rect(0, 0, iconSize, iconSize))
+	dst := image.NewNRGBA(image.Rect(0, 0, canvasW, canvasH))
 
-	// Scale W (wSide×wSide) into the left 40×40 region.
-	for dy := 0; dy < wDst; dy++ {
-		for dx := 0; dx < wDst; dx++ {
-			srcX := dx * wSide / wDst
-			srcY := dy * wSide / wDst
-			dst.SetNRGBA(dx, wOffY+dy, trimmed.NRGBAAt(srcX, srcY))
+	// Copy W at full native size (1:1, no scaling).
+	for y := 0; y < wSide; y++ {
+		for x := 0; x < wSide; x++ {
+			dst.SetNRGBA(x, y, trimmed.NRGBAAt(x, y))
 		}
 	}
 
 	// Horizontal bar of +.
 	for x := plusCX - armLen; x <= plusCX+armLen; x++ {
 		for y := plusCY - barHalf; y <= plusCY+barHalf; y++ {
-			if x >= 0 && x < iconSize && y >= 0 && y < iconSize {
+			if x >= 0 && x < canvasW && y >= 0 && y < canvasH {
 				dst.SetNRGBA(x, y, plusColor)
 			}
 		}
@@ -109,7 +112,7 @@ func buildWPlusIcon(plusColor color.NRGBA) []byte {
 	// Vertical bar of +.
 	for y := plusCY - armLen; y <= plusCY+armLen; y++ {
 		for x := plusCX - barHalf; x <= plusCX+barHalf; x++ {
-			if x >= 0 && x < iconSize && y >= 0 && y < iconSize {
+			if x >= 0 && x < canvasW && y >= 0 && y < canvasH {
 				dst.SetNRGBA(x, y, plusColor)
 			}
 		}
@@ -361,9 +364,12 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 
 	if runtime.GOOS == "darwin" {
 		// SetLabel renders text to the right of the icon in the menu bar.
-		// Always set it (including the empty string when disconnected) so a
-		// stale label from a prior connection is cleared.
-		t.tray.SetLabel(speedLabel)
+		// Unlike SetIcon (which Wails dispatches internally), SetLabel calls
+		// Cocoa directly without main-thread dispatch — calling it from the
+		// event goroutine causes AppKit to crash. Wrap in InvokeAsync so the
+		// Cocoa call lands on the correct thread.
+		label := speedLabel
+		application.InvokeAsync(func() { t.tray.SetLabel(label) })
 	} else {
 		if anyConnected {
 			t.tray.SetLabel("WireGuide+ ●")
