@@ -92,6 +92,13 @@ export class Settings {
              */
             this["onboarding_complete"] = false;
         }
+        if (!("kofi_dismissed" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["kofi_dismissed"] = false;
+        }
 
         Object.assign(this, $$source);
     }

@@ -51,6 +51,11 @@
   let helperEverConnected = false;
 
   onMount(async () => {
+    // Check helper state immediately — bootstrapHelper may have already
+    // completed before our Events.On listener was registered.
+    helperReady = await TunnelService.IsHelperReady().catch(() => false);
+    if (helperReady) helperEverConnected = true;
+
     // Load and apply saved theme before loading other data.
     // applyTheme sets the data-theme attribute AND the resolvedTheme store
     // that CodeMirror subscribes to for its own light/dark swap.

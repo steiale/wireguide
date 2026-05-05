@@ -366,6 +366,13 @@ func isClientClosed(err error) bool {
 	return errors.Is(err, ipc.ErrClientClosed)
 }
 
+// IsHelperReady reports whether the helper IPC client is connected.
+// Used by the frontend on mount to avoid relying on events that may have
+// fired before the listener was registered.
+func (s *TunnelService) IsHelperReady() bool {
+	return s.clients.Get() != nil
+}
+
 // GetStatus queries the helper for the current connection status. IPC errors
 // are surfaced to the caller — the frontend needs to distinguish "helper says
 // disconnected" from "helper unreachable".

@@ -346,6 +346,16 @@ export function ImportZipData(data) {
 }
 
 /**
+ * IsHelperReady reports whether the helper IPC client is connected.
+ * Used by the frontend on mount to avoid relying on events that may have
+ * fired before the listener was registered.
+ * @returns {$CancellablePromise<boolean>}
+ */
+export function IsHelperReady() {
+    return $Call.ByID(3400283157);
+}
+
+/**
  * ListTunnels returns every stored tunnel with its summary info.
  * 
  * The active-tunnel marker used to come from an IPC round-trip on every call.
