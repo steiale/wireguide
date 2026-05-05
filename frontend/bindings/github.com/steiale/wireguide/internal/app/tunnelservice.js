@@ -191,16 +191,6 @@ export function GetCurrentSSID() {
 }
 
 /**
- * GetEndpointLatency returns round-trip latency in ms to a WireGuard endpoint
- * (host:port). Returns -1 if unreachable or the endpoint is empty.
- * @param {string} endpoint
- * @returns {$CancellablePromise<number>}
- */
-export function GetEndpointLatency(endpoint) {
-    return $Call.ByID(2172993071, endpoint);
-}
-
-/**
  * GetRoutingTable returns the current OS routing table.
  * @returns {$CancellablePromise<$models.RouteEntry[]>}
  */
@@ -241,6 +231,20 @@ export function GetTunnelDetail(name) {
     return $Call.ByID(881582661, name).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType13($result);
     }));
+}
+
+/**
+ * GetTunnelLatency returns round-trip latency in ms for the named tunnel.
+ * Pings the tunnel's DNS servers (inner gateway) first — more reliable than
+ * pinging the public endpoint, which is often blocked by firewalls or loops
+ * back through the tunnel itself on full-tunnel (0.0.0.0/0) setups.
+ * Falls back to the peer endpoint if no DNS servers respond.
+ * Returns -1 if all targets are unreachable.
+ * @param {string} name
+ * @returns {$CancellablePromise<number>}
+ */
+export function GetTunnelLatency(name) {
+    return $Call.ByID(3473741598, name);
 }
 
 /**

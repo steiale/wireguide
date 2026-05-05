@@ -20,18 +20,17 @@
   let latencies = {}; // name → ms (-1 = unreachable)
   let latencyIntervals = {}; // name → intervalId
 
-  async function pollLatency(name, endpoint) {
-    if (!endpoint) return;
+  async function pollLatency(name) {
     try {
-      const ms = await TunnelService.GetEndpointLatency(endpoint);
+      const ms = await TunnelService.GetTunnelLatency(name);
       latencies = { ...latencies, [name]: ms };
     } catch (e) {}
   }
 
-  function startLatencyPolling(name, endpoint) {
-    if (!endpoint || latencyIntervals[name]) return;
-    pollLatency(name, endpoint);
-    latencyIntervals[name] = setInterval(() => pollLatency(name, endpoint), 10000);
+  function startLatencyPolling(name) {
+    if (latencyIntervals[name]) return;
+    pollLatency(name);
+    latencyIntervals[name] = setInterval(() => pollLatency(name), 10000);
   }
 
   function stopLatencyPolling(name) {
@@ -101,7 +100,7 @@
     if (expandedName) stopLatencyPolling(expandedName);
     expandedName = name;
     const tun = ($tunnels || []).find(t => t.name === name);
-    if (tun?.endpoint) startLatencyPolling(name, tun.endpoint);
+    startLatencyPolling(name);
     if (tun) selectedTunnel.set(tun);
     // Delay chart mount until after the 180ms slide animation so the canvas
     // can read non-zero offsetWidth/offsetHeight on its first draw tick.

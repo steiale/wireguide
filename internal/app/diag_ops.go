@@ -1,7 +1,11 @@
 package app
 
 import (
+	"net"
+	"strings"
+
 	"github.com/steiale/wireguide/internal/diag"
+	"github.com/steiale/wireguide/internal/ipc"
 )
 
 // DNSLeakResult mirrors diag.DNSLeakResult for Wails JSON serialisation.
@@ -57,17 +61,47 @@ func (s *TunnelService) RunDNSLeakTest() (*DNSLeakResult, error) {
 	return out, nil
 }
 
-// GetEndpointLatency returns round-trip latency in ms to a WireGuard endpoint
-// (host:port). Returns -1 if unreachable or the endpoint is empty.
-func (s *TunnelService) GetEndpointLatency(endpoint string) int {
-	if endpoint == "" {
+// GetTunnelLatency returns round-trip latency in ms for the named tunnel.
+//
+// When connected: pings the tunnel's DNS servers (inner VPN gateway) — avoids
+// the full-tunnel loop where pinging the public endpoint routes back through
+// the tunnel itself and never gets a reply.
+//
+// When disconnected: pings the public endpoint directly, which gives a useful
+// pre-connection latency estimate even without an active tunnel.
+//
+// Returns -1 if unreachable.
+func (s *TunnelService) GetTunnelLatency(name string) int {
+	cfg, err := s.tunnelStore.Load(name)
+	if err != nil {
 		return -1
 	}
-	result := diag.PingEndpoint(endpoint)
-	if !result.Reachable {
-		return -1
+
+	// Check whether this tunnel is currently active.
+	var active ipc.StringResponse
+	connected := s.call(ipc.MethodActiveName, nil, &active) == nil && active.Value == name
+
+	if connected {
+		// Ping each DNS server IP (skip search domains).
+		for _, entry := range cfg.Interface.DNS {
+			entry = strings.TrimSpace(entry)
+			if net.ParseIP(entry) == nil {
+				continue
+			}
+			if r := diag.PingEndpoint(entry); r.Reachable {
+				return int(r.LatencyMs)
+			}
+		}
 	}
-	return int(result.LatencyMs)
+
+	// Disconnected (or no DNS configured): ping the public endpoint.
+	if len(cfg.Peers) > 0 && cfg.Peers[0].Endpoint != "" {
+		if r := diag.PingEndpoint(cfg.Peers[0].Endpoint); r.Reachable {
+			return int(r.LatencyMs)
+		}
+	}
+
+	return -1
 }
 
 // GetRoutingTable returns the current OS routing table.
