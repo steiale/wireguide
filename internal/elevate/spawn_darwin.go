@@ -126,10 +126,13 @@ func installAndLoadDaemon(args Args) error {
 	// uninstall), `kickstart` fails with non-zero exit and we fall back to
 	// `bootstrap` to load it from the plist.
 	shellScript := fmt.Sprintf(
-		// Idempotently uninstall the legacy v1.0.x daemon (label
-		// com.wireguide.helper) before installing the current one.
+		// Idempotently stop and remove both the legacy v1.0.x daemon (label
+		// com.wireguide.helper) and the current one before reinstalling.
+		// `kickstart -k` later handles the managed restart; bootout here
+		// ensures any manually-unloaded or orphaned service is cleaned up.
 		// Errors suppressed: missing files / unloaded service are fine.
-		`launchctl bootout system/com.wireguide.helper 2>/dev/null; `+
+		`launchctl bootout system/`+daemonLabel+` 2>/dev/null; `+
+			`launchctl bootout system/com.wireguide.helper 2>/dev/null; `+
 			`rm -f /Library/LaunchDaemons/com.wireguide.helper.plist; `+
 			`rm -f /Library/PrivilegedHelperTools/com.wireguide.helper; `+
 			`mkdir -p /Library/PrivilegedHelperTools && `+

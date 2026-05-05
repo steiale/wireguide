@@ -51,8 +51,22 @@
   let helperEverConnected = false;
 
   onMount(async () => {
-    // Check helper state immediately — bootstrapHelper may have already
-    // completed before our Events.On listener was registered.
+    // Register the helper event listener FIRST so we never miss the
+    // alive:true event — even if bootstrapHelper finishes between the
+    // IsHelperReady() poll and the listener registration.
+    helperUnsub = Events.On('helper', (event) => {
+      const { alive } = event.data || {};
+      if (alive) {
+        helperReady = true;
+        if (helperEverConnected) showToast('Helper reconnected');
+        helperEverConnected = true;
+      } else {
+        helperReady = false;
+      }
+    });
+
+    // Now poll current state — covers the case where bootstrap completed
+    // before the WebView finished loading (event already fired and missed).
     helperReady = await TunnelService.IsHelperReady().catch(() => false);
     if (helperReady) helperEverConnected = true;
 
@@ -119,17 +133,7 @@
       }
     });
 
-    // Helper health events (crash detection)
-    helperUnsub = Events.On('helper', (event) => {
-      const { alive } = event.data || {};
-      if (alive) {
-        helperReady = true;
-        if (helperEverConnected) showToast('Helper reconnected');
-        helperEverConnected = true;
-      } else {
-        helperReady = false;
-      }
-    });
+    // (helper event listener registered at top of onMount)
 
     // Helper reset — the GUI's IPC client was swapped after a helper
     // restart. Local caches may be stale; re-fetch everything.
