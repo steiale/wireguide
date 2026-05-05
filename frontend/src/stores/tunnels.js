@@ -7,12 +7,6 @@ export const connectionStatus = writable({ state: 'disconnected' });
 
 const _stored = parseInt(localStorage.getItem('wg_connect_count') || '0');
 export const connectCount = writable(_stored);
-export const kofiDismissed = writable(localStorage.getItem('wg_kofi_dismissed') === '1');
-
-export function dismissKofi() {
-  localStorage.setItem('wg_kofi_dismissed', '1');
-  kofiDismissed.set(true);
-}
 
 let statusUnsub = null;
 let _prevActiveCount = 0;

@@ -22,6 +22,7 @@ type Settings struct {
 	PinInterface  bool   `json:"pin_interface"`  // pin bypass routes to upstream interface (-ifscope)
 	LogLevel      string `json:"log_level"`      // "debug", "info", "warn", "error"
 	OnboardingComplete bool `json:"onboarding_complete"`
+	KofiDismissed      bool `json:"kofi_dismissed"`
 }
 
 // DefaultSettings returns settings with sensible defaults.

@@ -1,37 +1,44 @@
 <script>
   import { t } from '../i18n/index.js';
-  import { connectCount, kofiDismissed, dismissKofi } from '../stores/tunnels.js';
+  import { connectCount } from '../stores/tunnels.js';
 
   export let TunnelService;
+  export let dismissed = false;
+  export let onDismiss = () => {};
 
   const THRESHOLD = 10;
 
-  $: show = $connectCount >= THRESHOLD && !$kofiDismissed;
+  $: show = $connectCount >= THRESHOLD && !dismissed;
 </script>
 
 {#if show}
-  <div class="kofi-banner">
+  <div class="kofi-toast">
     <span class="kofi-text">{$t('kofi.banner_text')}</span>
     <button class="kofi-cta" on:click={() => TunnelService.OpenURL('https://ko-fi.com/steiale')}>
       ☕ {$t('kofi.buy_coffee')}
     </button>
-    <button class="kofi-dismiss" on:click={dismissKofi} title={$t('kofi.dismiss')}>✕</button>
+    <button class="kofi-dismiss" on:click={onDismiss} title={$t('kofi.dismiss')}>✕</button>
   </div>
 {/if}
 
 <style>
-  .kofi-banner {
+  .kofi-toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 14px;
-    margin: 8px 12px;
-    border-radius: 8px;
-    background: #FF5E5B14;
-    border: 1px solid #FF5E5B33;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: var(--bg-card);
+    border: 0.5px solid var(--border);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    z-index: 200;
+    white-space: nowrap;
   }
   .kofi-text {
-    flex: 1;
     font: 400 12px/16px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     color: var(--text-secondary);
   }
@@ -49,16 +56,19 @@
   .kofi-cta:hover { background: #FF5E5B33; }
   .kofi-dismiss {
     flex-shrink: 0;
-    width: 18px;
-    height: 18px;
+    width: 24px;
+    height: 24px;
     border: none;
     background: none;
     color: var(--text-secondary);
-    font-size: 10px;
+    font-size: 12px;
     cursor: pointer;
     opacity: 0.6;
     padding: 0;
     line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   .kofi-dismiss:hover { opacity: 1; }
 </style>

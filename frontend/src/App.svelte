@@ -32,6 +32,8 @@
   let showConflictWarning = false;
   let showZipResult = false;
   let showOnboarding = false;
+  let kofiDismissed = false;
+  let currentSettings = null;
   let zipResults = [];
   let conflictList = [];
   let pendingConnectName = '';
@@ -53,6 +55,8 @@
     let s = null;
     try {
       s = await TunnelService.GetSettings();
+      currentSettings = s;
+      kofiDismissed = s?.kofi_dismissed || false;
       applyTheme(s?.theme || 'system');
       // Apply persisted language. 'auto' means "follow OS locale" — we
       // resolve that via detectLanguage(). Without this, launching the
@@ -386,6 +390,16 @@
     }
   }
 
+  async function handleDismissKofi() {
+    kofiDismissed = true;
+    try {
+      const s = currentSettings || await TunnelService.GetSettings();
+      await TunnelService.SaveSettings({ ...s, kofi_dismissed: true });
+    } catch (e) {
+      console.warn('failed to persist kofi dismissed state:', e);
+    }
+  }
+
   // Check for routing conflicts before connecting. If conflicts exist, show
   // the ConflictWarning dialog; otherwise proceed directly.
   async function doConnect(name) {
@@ -489,9 +503,10 @@
     <div class="main-content">
       <UpdateNotice {updateInfo} onInstall={handleUpdate} />
 
+      <KofiBanner {TunnelService} dismissed={kofiDismissed} onDismiss={handleDismissKofi} />
+
       {#if currentView === 'tunnels'}
         <div class="tunnels-view">
-          <KofiBanner {TunnelService} />
           <TunnelCards {TunnelService}
             on:new={handleNewTunnelOpen}
             on:import={handleImportOpen}
