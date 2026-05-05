@@ -19,14 +19,9 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/icons"
 )
 
-// Tray icon variants.
+// Tray icon variants — always SetIcon (non-template) to avoid a Wails v3 bug
+// where SetTemplateIcon makes all future SetIcon calls render monochrome.
 //
-// We always use SetIcon (non-template) to avoid a Wails v3 bug where
-// SetTemplateIcon sets isTemplateIcon=true on the macosSystemTray struct and
-// the subsequent SetIcon never clears it — causing all future icons to render
-// monochrome.
-//
-// The icon is "W+" where the W is white and the + acts as the status indicator:
 //   - trayGreenIcon  — + is green  (connected, handshake confirmed)
 //   - trayAmberIcon  — + is amber  (connected, no handshake yet)
 //   - trayOffIcon    — + is dim    (disconnected)
@@ -37,8 +32,6 @@ var (
 )
 
 func init() {
-	// Defensive: if buildWPlusIcon panics on a corrupt embedded asset, fall
-	// back to the raw template so the app still launches with a usable tray.
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Warn("tray icon init panicked, using fallback", "panic", r)
@@ -52,10 +45,15 @@ func init() {
 	trayOffIcon = buildWPlusIcon(color.NRGBA{255, 255, 255, 110})   // dim white
 }
 
-// buildWPlusIcon renders the "W+" menu bar icon as a non-template 64×64 PNG.
-// The W glyph (from Wails's built-in template) is tinted white and placed in
-// the left portion; a "+" is drawn on the right with the given plusColor so
-// it never gets auto-converted to monochrome by macOS.
+// trayCanvasH is 44 px — the exact @2x height of the macOS menu bar (22 pt × 2).
+// Using this precise value avoids the non-integer downscale macOS would apply
+// to a taller canvas, which caused the + bars to render with different effective
+// widths (vertical thinner than horizontal) due to rounding.
+const trayCanvasH = 44
+
+// buildWPlusIcon renders the W+ menu bar icon as a non-template PNG.
+// Canvas is exactly 44 px tall for pixel-perfect @2x Retina rendering.
+// The W glyph is tinted white; the + is drawn in plusColor as the status indicator.
 func buildWPlusIcon(plusColor color.NRGBA) []byte {
 	base, err := png.Decode(bytes.NewReader(icons.SystrayMacTemplate))
 	if err != nil {
@@ -65,6 +63,9 @@ func buildWPlusIcon(plusColor color.NRGBA) []byte {
 
 	trimmed := trimAndSquare(base)
 	wSide := trimmed.Bounds().Dx()
+	if wSide == 0 {
+		return icons.SystrayMacTemplate
+	}
 
 	// Re-tint W to white, preserving alpha.
 	for y := 0; y < wSide; y++ {
@@ -76,28 +77,36 @@ func buildWPlusIcon(plusColor color.NRGBA) []byte {
 		}
 	}
 
-	// Canvas: W at its natural wSide×wSide (full height = correct menu bar size),
-	// plus a 28px gutter to the right for the + indicator.
-	// macOS scales the icon to fit the menu bar height — the HEIGHT of the canvas
-	// drives the display scale, so the W must fill the full canvas height.
-	// A 4px gap separates the W from the + area.
+	// Layout (all in @2x pixels, canvas exactly 44 px tall):
+	//
+	//   ┌────────────┬─────┬────────────┐
+	//   │     W      │ gap │     +      │
+	//   │  (49 × 33) │  4  │  (44 × 44) │
+	//   └────────────┴─────┴────────────┘
+	//
+	// The + lives in a square 44×44 sub-region so both bars scale uniformly.
 	const (
-		gap     = 4
-		plusW   = 28
-		barHalf = 2 // half bar-thickness → 5px total, visible at retina
+		gap     = 0
+		plusW   = 24          // tight section: armLen*2+barHalf*2 = 28, minus dead space
+		barHalf = 3           // 7-px-thick bars
+		armLen  = 11          // arms extend 11 px each side of centre (22 px cross)
 	)
-	canvasW := wSide + gap + plusW
-	canvasH := wSide
-	plusCX := wSide + gap + plusW/2
-	plusCY := wSide / 2
-	armLen := plusW/3 + 1 // ~10px, proportional to the + area width
+	wDstH := trayCanvasH * 75 / 100    // 33 — breathing room top/bottom
+	wDstW := wDstH * 150 / 100         // 49 — 1.5× wider than tall
+	wOffY := (trayCanvasH - wDstH) / 2 // 5 — centre W vertically
+	canvasW := wDstW + gap + plusW
+	canvasH := trayCanvasH
+	plusCX := wDstW + gap + plusW/2
+	plusCY := trayCanvasH / 2
 
 	dst := image.NewNRGBA(image.Rect(0, 0, canvasW, canvasH))
 
-	// Copy W at full native size (1:1, no scaling).
-	for y := 0; y < wSide; y++ {
-		for x := 0; x < wSide; x++ {
-			dst.SetNRGBA(x, y, trimmed.NRGBAAt(x, y))
+	// W: nearest-neighbour scale from wSide×wSide into wDstW×wDstH, centred.
+	for y := 0; y < wDstH; y++ {
+		for x := 0; x < wDstW; x++ {
+			srcX := x * wSide / wDstW
+			srcY := y * wSide / wDstH
+			dst.SetNRGBA(x, y+wOffY, trimmed.NRGBAAt(srcX, srcY))
 		}
 	}
 
@@ -127,9 +136,7 @@ func buildWPlusIcon(plusColor color.NRGBA) []byte {
 }
 
 // trimAndSquare finds the bounding box of non-transparent pixels, crops,
-// then centres in a square canvas (max of width/height). Wails forces the
-// tray icon to a thickness×thickness square, so providing a square image
-// avoids distortion and gives us control over the padding.
+// then centres in a square canvas (max of width/height).
 func trimAndSquare(src image.Image) *image.NRGBA {
 	b := src.Bounds()
 	minX, minY, maxX, maxY := b.Max.X, b.Max.Y, b.Min.X, b.Min.Y
@@ -172,13 +179,10 @@ func trimAndSquare(src image.Image) *image.NRGBA {
 	return out
 }
 
-// formatSpeed renders a bytes-per-second rate in a compact form suitable for
-// the menu bar: "2.1M", "512K", or "0" when the rate is negligible. Negative
-// inputs (possible if cumulative byte counters reset across helper restarts)
-// are clamped to zero so the UI never shows a "-" prefix.
+
+// formatSpeed renders bytes/sec in compact form for tunnel menu items.
 func formatSpeed(bps float64) string {
 	if bps < 0 || bps < 1024 {
-		// Below 1 KB/s — not worth showing a number.
 		return "0"
 	}
 	if bps >= 1024*1024 {
@@ -187,16 +191,30 @@ func formatSpeed(bps float64) string {
 	return fmt.Sprintf("%dK", int(bps/1024))
 }
 
+// formatSpeedFixed renders bytes/sec as exactly 4 chars + "K", padded with
+// U+2007 FIGURE SPACE (digit-width in SF Pro) so the string always renders
+// at the same pixel width regardless of value. Cap at 9999 K.
+func formatSpeedFixed(bps float64) string {
+	const fig = " " // figure space = digit width
+	if bps < 0 {
+		bps = 0
+	}
+	n := int(bps / 1024)
+	if n > 9999 {
+		n = 9999
+	}
+	s := fmt.Sprintf("%d", n)
+	for len([]rune(s)) < 4 {
+		s = fig + s
+	}
+	return s + "K"
+}
+
 // trayManager owns the system tray menu and its visual state.
 //
-// There are TWO update paths, intentionally separate:
-//
-//  1. updateStatus(status) — cheap, called from the status event stream every
-//     second. Swaps the icon and tooltip, recomputes per-tunnel speeds. NO
-//     IPC, NO disk I/O.
-//
-//  2. rebuildMenu() — expensive, reconstructs the full menu. Called only when
-//     the active tunnel set or handshake state changes.
+// Two update paths:
+//  1. updateStatus(status) — cheap, ≈1 Hz. Swaps icon + label, recomputes speeds. No IPC/disk.
+//  2. rebuildMenu() — expensive, only on connect/disconnect/handshake transitions.
 type trayManager struct {
 	app        *application.App
 	win        *application.WebviewWindow
@@ -207,18 +225,17 @@ type trayManager struct {
 	mu            sync.Mutex
 	activeTunnels map[string]bool
 	hasHandshake  map[string]bool
-	tunnelStatus  map[string]domain.ConnectionStatus // duration, bytes per tunnel
+	tunnelStatus  map[string]domain.ConnectionStatus
 	rebuildTimer  *time.Timer
 	rebuilding    atomic.Bool
 
-	// Bandwidth tracking (all guarded by mu).
-	prevRx         map[string]int64   // last seen cumulative RX bytes per tunnel
-	prevTx         map[string]int64   // last seen cumulative TX bytes per tunnel
-	prevStatTime   time.Time          // wall-clock of last speed computation
-	speedRx        float64            // aggregate RX bytes/sec across active tunnels
-	speedTx        float64            // aggregate TX bytes/sec across active tunnels
-	tunnelSpeedRx  map[string]float64 // per-tunnel RX bytes/sec
-	tunnelSpeedTx  map[string]float64 // per-tunnel TX bytes/sec
+	prevRx        map[string]int64
+	prevTx        map[string]int64
+	prevStatTime  time.Time
+	speedRx       float64
+	speedTx       float64
+	tunnelSpeedRx map[string]float64
+	tunnelSpeedTx map[string]float64
 }
 
 func newTrayManager(app *application.App, win *application.WebviewWindow, tray *application.SystemTray, svc *wgapp.TunnelService, doShutdown func()) *trayManager {
@@ -236,14 +253,12 @@ func newTrayManager(app *application.App, win *application.WebviewWindow, tray *
 	}
 }
 
-// initialBuild draws the menu once at startup.
 func (t *trayManager) initialBuild() {
 	t.rebuildMenu()
 }
 
-// updateStatus is called for every status event from the helper (≈1 Hz).
-// It swaps the tray icon and tooltip, and recomputes per-tunnel speeds —
-// O(n) over active tunnels, no IPC, no disk I/O.
+// updateStatus is called for every status event (≈1 Hz).
+// Swaps icon, updates two-line speed label via SetLabel, no IPC or disk I/O.
 func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 	newActive := make(map[string]bool, len(status.ActiveTunnels))
 	for _, n := range status.ActiveTunnels {
@@ -256,7 +271,6 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 		newHS[ts.TunnelName] = ts.HasHandshake
 		newCache[ts.TunnelName] = ts
 	}
-	// Single-tunnel path: Tunnels[] may be absent; TunnelName carries the data.
 	if status.TunnelName != "" {
 		newHS[status.TunnelName] = status.HasHandshake
 		if _, ok := newCache[status.TunnelName]; !ok {
@@ -273,9 +287,6 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 	t.hasHandshake = newHS
 	t.tunnelStatus = newCache
 
-	// Compute per-tunnel and aggregate speeds. Use wall-clock delta with a
-	// 500 ms minimum so the first event after a long idle (or near-duplicate
-	// events) doesn't divide by ~zero and produce nonsense.
 	var dt float64
 	if !t.prevStatTime.IsZero() {
 		dt = now.Sub(t.prevStatTime).Seconds()
@@ -295,12 +306,11 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 		}
 		newPrevRx[name] = ts.RxBytes
 		newPrevTx[name] = ts.TxBytes
-
 		if canCompute {
 			if pRx, hadRx := t.prevRx[name]; hadRx {
 				dRx := float64(ts.RxBytes - pRx)
 				if dRx < 0 {
-					dRx = 0 // counter reset (helper restart, tunnel re-up)
+					dRx = 0
 				}
 				rate := dRx / dt
 				newTunSpeedRx[name] = rate
@@ -325,18 +335,13 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 		t.tunnelSpeedTx = newTunSpeedTx
 		t.prevStatTime = now
 	} else if t.prevStatTime.IsZero() {
-		// First sample — seed the timestamp so the next event has a delta.
 		t.prevStatTime = now
 	}
-	// Always advance the byte snapshot, even when we skip rate computation,
-	// so the next-but-one sample uses a fresh baseline.
 	t.prevRx = newPrevRx
 	t.prevTx = newPrevTx
 
-	speedLabel := ""
-	if len(newActive) > 0 {
-		speedLabel = "↓" + formatSpeed(t.speedRx) + " ↑" + formatSpeed(t.speedTx)
-	}
+	speedRx := t.speedRx
+	speedTx := t.speedTx
 	t.mu.Unlock()
 
 	anyConnected := len(newActive) > 0
@@ -363,12 +368,10 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 	}
 
 	if runtime.GOOS == "darwin" {
-		// SetLabel renders text to the right of the icon in the menu bar.
-		// Unlike SetIcon (which Wails dispatches internally), SetLabel calls
-		// Cocoa directly without main-thread dispatch — calling it from the
-		// event goroutine causes AppKit to crash. Wrap in InvokeAsync so the
-		// Cocoa call lands on the correct thread.
-		label := speedLabel
+		var label string
+		if anyConnected {
+			label = "↓" + formatSpeedFixed(speedRx) + " ↑" + formatSpeedFixed(speedTx)
+		}
 		application.InvokeAsync(func() { t.tray.SetLabel(label) })
 	} else {
 		if anyConnected {
@@ -378,10 +381,6 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 		}
 	}
 
-	// Rebuild menu if active set OR handshake state changed. Speed updates
-	// alone do NOT trigger a rebuild — the menu stays static between
-	// connect/disconnect/handshake transitions to avoid flicker (the user
-	// sees the live numbers via the menu bar label instead).
 	changed := len(prevActive) != len(newActive)
 	if !changed {
 		for k := range prevActive {
@@ -404,8 +403,6 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 	}
 }
 
-// scheduleRebuild debounces rebuildMenu calls — multiple triggers within 100 ms
-// are coalesced into a single rebuild.
 func (t *trayManager) scheduleRebuild() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -415,8 +412,6 @@ func (t *trayManager) scheduleRebuild() {
 	t.rebuildTimer = time.AfterFunc(100*time.Millisecond, t.rebuildMenu)
 }
 
-// rebuildMenu reconstructs the full tray menu. Uses ListTunnelsLocal (disk,
-// no IPC) plus the cached activeTunnels / tunnelStatus maps.
 func (t *trayManager) rebuildMenu() {
 	if !t.rebuilding.CompareAndSwap(false, true) {
 		return
@@ -441,7 +436,6 @@ func (t *trayManager) rebuildMenu() {
 	m.Add("WireGuide+").SetEnabled(false)
 	m.AddSeparator()
 
-	// Connected tunnels first, then disconnected.
 	var connected, disconnected []wgapp.TunnelInfo
 	for _, tun := range tunnels {
 		if activeSet[tun.Name] {
@@ -461,9 +455,6 @@ func (t *trayManager) rebuildMenu() {
 		}
 		label := glyph + " " + tun.Name
 		if isConnected {
-			// Speed first, then duration: "↓2.1M · 1h 23m". Skip the speed
-			// segment if we don't have a sample yet (first second of a
-			// freshly connected tunnel).
 			ts, hasStatus := statusCache[tun.Name]
 			rate, hasRate := tunSpeedRx[tun.Name]
 			parts := make([]string, 0, 2)
@@ -506,7 +497,6 @@ func (t *trayManager) rebuildMenu() {
 
 	m.AddSeparator()
 
-	// Kill switch toggle — local settings read, no IPC needed to render the label.
 	if settings != nil {
 		ks := settings.KillSwitch
 		ksLabel := "  Kill Switch"
