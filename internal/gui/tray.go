@@ -180,17 +180,6 @@ func trimAndSquare(src image.Image) *image.NRGBA {
 }
 
 
-// formatSpeed renders bytes/sec in compact form for tunnel menu items.
-func formatSpeed(bps float64) string {
-	if bps < 0 || bps < 1024 {
-		return "0"
-	}
-	if bps >= 1024*1024 {
-		return fmt.Sprintf("%.1fM", bps/(1024*1024))
-	}
-	return fmt.Sprintf("%dK", int(bps/1024))
-}
-
 // formatSpeedFixed renders bytes/sec as exactly 4 chars + "K", padded with
 // U+2007 FIGURE SPACE (digit-width in SF Pro) so the string always renders
 // at the same pixel width regardless of value. Cap at 9999 K.
@@ -255,6 +244,14 @@ func newTrayManager(app *application.App, win *application.WebviewWindow, tray *
 
 func (t *trayManager) initialBuild() {
 	t.rebuildMenu()
+	// Rebuild on every left-click so the duration counter and speeds are
+	// always fresh when the menu appears.
+	t.tray.OnClick(func() {
+		go func() {
+			t.rebuildMenu()
+			t.tray.OpenMenu()
+		}()
+	})
 }
 
 // updateStatus is called for every status event (≈1 Hz).
@@ -271,11 +268,11 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 		newHS[ts.TunnelName] = ts.HasHandshake
 		newCache[ts.TunnelName] = ts
 	}
+	// Always overwrite with the primary status so full fields (Duration, rx/tx)
+	// take precedence over the lightweight per-tunnel entries in status.Tunnels.
 	if status.TunnelName != "" {
 		newHS[status.TunnelName] = status.HasHandshake
-		if _, ok := newCache[status.TunnelName]; !ok {
-			newCache[status.TunnelName] = status
-		}
+		newCache[status.TunnelName] = status
 	}
 
 	now := time.Now()
@@ -429,7 +426,6 @@ func (t *trayManager) rebuildMenu() {
 	activeSet := t.activeTunnels
 	hsMap := t.hasHandshake
 	statusCache := t.tunnelStatus
-	tunSpeedRx := t.tunnelSpeedRx
 	t.mu.Unlock()
 
 	m := t.app.NewMenu()
@@ -456,16 +452,8 @@ func (t *trayManager) rebuildMenu() {
 		label := glyph + " " + tun.Name
 		if isConnected {
 			ts, hasStatus := statusCache[tun.Name]
-			rate, hasRate := tunSpeedRx[tun.Name]
-			parts := make([]string, 0, 2)
-			if hasRate {
-				parts = append(parts, "↓"+formatSpeed(rate))
-			}
 			if hasStatus && ts.Duration != "" {
-				parts = append(parts, ts.Duration)
-			}
-			if len(parts) > 0 {
-				label += "   " + strings.Join(parts, " · ")
+				label += "   " + ts.Duration
 			}
 		}
 		tunName := tun.Name
