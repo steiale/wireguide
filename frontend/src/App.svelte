@@ -47,6 +47,8 @@
   let filesDroppedUnsub = null;
   let helperUnsub = null;
   let helperResetUnsub = null;
+  let helperReady = false;
+  let helperEverConnected = false;
 
   onMount(async () => {
     // Load and apply saved theme before loading other data.
@@ -114,11 +116,13 @@
 
     // Helper health events (crash detection)
     helperUnsub = Events.On('helper', (event) => {
-      const { alive, message } = event.data || {};
-      if (!alive) {
-        showToast('⚠ ' + (message || 'Helper process disconnected'));
+      const { alive } = event.data || {};
+      if (alive) {
+        helperReady = true;
+        if (helperEverConnected) showToast('Helper reconnected');
+        helperEverConnected = true;
       } else {
-        showToast('Helper reconnected');
+        helperReady = false;
       }
     });
 
@@ -386,7 +390,11 @@
         console.warn('auto-apply firewall settings failed:', e);
       }
     } catch (e) {
-      showToast("Connect failed: " + errText(e));
+      if (!helperReady) {
+        showToast("Helper is still starting up — please wait a moment");
+      } else {
+        showToast("Connect failed: " + errText(e));
+      }
     }
   }
 
@@ -504,6 +512,13 @@
       <UpdateNotice {updateInfo} onInstall={handleUpdate} />
 
       <KofiBanner {TunnelService} dismissed={kofiDismissed} onDismiss={handleDismissKofi} />
+
+      {#if !helperReady}
+        <div class="helper-connecting">
+          <span class="helper-spinner"></span>
+          Starting helper service…
+        </div>
+      {/if}
 
       {#if currentView === 'tunnels'}
         <div class="tunnels-view">
@@ -787,6 +802,36 @@
   .rail-icon svg {
     display: block;
   }
+
+  /* ---------- Helper connecting bar ---------- */
+  .helper-connecting {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    background: var(--bg-card);
+    border: 0.5px solid var(--border);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    z-index: 199;
+    font: 400 12px/16px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  .helper-spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ---------- Toast (bottom-centre) ---------- */
   .toast {
