@@ -255,7 +255,10 @@
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
+    input.style.display = 'none';
+    document.body.appendChild(input);
     input.onchange = (e) => {
+      document.body.removeChild(input);
       const file = e.target.files[0];
       if (file) importQRFromFile(file);
     };
@@ -287,7 +290,11 @@
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.conf,.zip';
+    input.style.display = 'none';
+    // Attach to DOM so the GC doesn't collect it before onchange fires.
+    document.body.appendChild(input);
     input.onchange = async (e) => {
+      document.body.removeChild(input);
       const file = e.target.files[0];
       if (!file) return;
       if (file.name.toLowerCase().endsWith('.zip')) {

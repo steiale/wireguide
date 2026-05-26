@@ -2,7 +2,10 @@ package gui
 
 import (
 	"bytes"
+	_ "embed"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -18,6 +21,9 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/icons"
 )
+
+//go:embed assets/wplus.png
+var trayWPlusPNG []byte
 
 // Tray icon variants — always SetIcon (non-template) to avoid a Wails v3 bug
 // where SetTemplateIcon makes all future SetIcon calls render monochrome.
@@ -40,89 +46,31 @@ func init() {
 			trayOffIcon = icons.SystrayMacTemplate
 		}
 	}()
-	trayGreenIcon = buildWPlusIcon(color.NRGBA{52, 199, 89, 255})   // macOS systemGreen
-	trayAmberIcon = buildWPlusIcon(color.NRGBA{255, 159, 10, 255})  // macOS systemOrange
-	trayOffIcon = buildWPlusIcon(color.NRGBA{255, 255, 255, 110})   // dim white
+	trayGreenIcon = buildWPlusIcon(color.NRGBA{52, 199, 89, 255})  // macOS systemGreen
+	trayAmberIcon = buildWPlusIcon(color.NRGBA{255, 159, 10, 255}) // macOS systemOrange
+	trayOffIcon = buildWPlusIcon(color.NRGBA{255, 255, 255, 140})  // dim white
 }
 
-// trayCanvasH is 44 px — the exact @2x height of the macOS menu bar (22 pt × 2).
-// Using this precise value avoids the non-integer downscale macOS would apply
-// to a taller canvas, which caused the + bars to render with different effective
-// widths (vertical thinner than horizontal) due to rounding.
-const trayCanvasH = 44
-
-// buildWPlusIcon renders the W+ menu bar icon as a non-template PNG.
-// Canvas is exactly 44 px tall for pixel-perfect @2x Retina rendering.
-// The W glyph is tinted white; the + is drawn in plusColor as the status indicator.
-func buildWPlusIcon(plusColor color.NRGBA) []byte {
-	base, err := png.Decode(bytes.NewReader(icons.SystrayMacTemplate))
+// buildWPlusIcon tints the embedded @2x W+ glyph with tintColor and returns
+// a PNG with an embedded pHYs chunk declaring 144 DPI. When NSImage(data:)
+// loads this PNG it reads the resolution metadata and sets the display size to
+// pixelWidth/2 × pixelHeight/2 points — so a 44×44 px PNG renders at 22×22 pt
+// with full @2x Retina sharpness, no CGo fixup required.
+func buildWPlusIcon(tintColor color.NRGBA) []byte {
+	src, err := png.Decode(bytes.NewReader(trayWPlusPNG))
 	if err != nil {
-		slog.Warn("failed to decode base tray icon", "error", err)
+		slog.Warn("failed to decode wplus.png", "error", err)
 		return icons.SystrayMacTemplate
 	}
 
-	trimmed := trimAndSquare(base)
-	wSide := trimmed.Bounds().Dx()
-	if wSide == 0 {
-		return icons.SystrayMacTemplate
-	}
-
-	// Re-tint W to white, preserving alpha.
-	for y := 0; y < wSide; y++ {
-		for x := 0; x < wSide; x++ {
-			_, _, _, a := trimmed.At(x, y).RGBA()
-			if a > 0 {
-				trimmed.SetNRGBA(x, y, color.NRGBA{255, 255, 255, uint8(a >> 8)})
-			}
-		}
-	}
-
-	// Layout (all in @2x pixels, canvas exactly 44 px tall):
-	//
-	//   ┌────────────┬─────┬────────────┐
-	//   │     W      │ gap │     +      │
-	//   │  (49 × 33) │  4  │  (44 × 44) │
-	//   └────────────┴─────┴────────────┘
-	//
-	// The + lives in a square 44×44 sub-region so both bars scale uniformly.
-	const (
-		gap     = 0
-		plusW   = 24          // tight section: armLen*2+barHalf*2 = 28, minus dead space
-		barHalf = 3           // 7-px-thick bars
-		armLen  = 11          // arms extend 11 px each side of centre (22 px cross)
-	)
-	wDstH := trayCanvasH * 75 / 100    // 33 — breathing room top/bottom
-	wDstW := wDstH * 150 / 100         // 49 — 1.5× wider than tall
-	wOffY := (trayCanvasH - wDstH) / 2 // 5 — centre W vertically
-	canvasW := wDstW + gap + plusW
-	canvasH := trayCanvasH
-	plusCX := wDstW + gap + plusW/2
-	plusCY := trayCanvasH / 2
-
-	dst := image.NewNRGBA(image.Rect(0, 0, canvasW, canvasH))
-
-	// W: nearest-neighbour scale from wSide×wSide into wDstW×wDstH, centred.
-	for y := 0; y < wDstH; y++ {
-		for x := 0; x < wDstW; x++ {
-			srcX := x * wSide / wDstW
-			srcY := y * wSide / wDstH
-			dst.SetNRGBA(x, y+wOffY, trimmed.NRGBAAt(srcX, srcY))
-		}
-	}
-
-	// Horizontal bar of +.
-	for x := plusCX - armLen; x <= plusCX+armLen; x++ {
-		for y := plusCY - barHalf; y <= plusCY+barHalf; y++ {
-			if x >= 0 && x < canvasW && y >= 0 && y < canvasH {
-				dst.SetNRGBA(x, y, plusColor)
-			}
-		}
-	}
-	// Vertical bar of +.
-	for y := plusCY - armLen; y <= plusCY+armLen; y++ {
-		for x := plusCX - barHalf; x <= plusCX+barHalf; x++ {
-			if x >= 0 && x < canvasW && y >= 0 && y < canvasH {
-				dst.SetNRGBA(x, y, plusColor)
+	sb := src.Bounds()
+	dst := image.NewNRGBA(sb)
+	for y := sb.Min.Y; y < sb.Max.Y; y++ {
+		for x := sb.Min.X; x < sb.Max.X; x++ {
+			_, _, _, a := src.At(x, y).RGBA()
+			alpha := uint8(a >> 8)
+			if alpha > 0 {
+				dst.SetNRGBA(x, y, color.NRGBA{tintColor.R, tintColor.G, tintColor.B, alpha})
 			}
 		}
 	}
@@ -132,50 +80,33 @@ func buildWPlusIcon(plusColor color.NRGBA) []byte {
 		slog.Warn("failed to encode W+ tray icon", "error", err)
 		return icons.SystrayMacTemplate
 	}
-	return buf.Bytes()
+	return pngWith144DPI(buf.Bytes())
 }
 
-// trimAndSquare finds the bounding box of non-transparent pixels, crops,
-// then centres in a square canvas (max of width/height).
-func trimAndSquare(src image.Image) *image.NRGBA {
-	b := src.Bounds()
-	minX, minY, maxX, maxY := b.Max.X, b.Max.Y, b.Min.X, b.Min.Y
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			_, _, _, a := src.At(x, y).RGBA()
-			if a > 0 {
-				if x < minX {
-					minX = x
-				}
-				if y < minY {
-					minY = y
-				}
-				if x > maxX {
-					maxX = x
-				}
-				if y > maxY {
-					maxY = y
-				}
-			}
-		}
+// pngWith144DPI splices a pHYs chunk (144 DPI = 5669 pixels/metre) into a PNG
+// immediately after its IHDR chunk. NSImage uses this metadata to determine
+// the image's point size, enabling correct @2x Retina rendering without any
+// explicit setSize call.
+func pngWith144DPI(data []byte) []byte {
+	const ppm = 5669     // pixels per metre ≈ 144 DPI
+	const insertAt = 33  // byte offset right after PNG sig (8) + IHDR (25)
+	if len(data) < insertAt {
+		return data
 	}
-	if maxX < minX {
-		return image.NewNRGBA(image.Rect(0, 0, 1, 1))
-	}
-	cropW := maxX - minX + 1
-	cropH := maxY - minY + 1
-	side := cropW
-	if cropH > side {
-		side = cropH
-	}
-	out := image.NewNRGBA(image.Rect(0, 0, side, side))
-	offX := (side - cropW) / 2
-	offY := (side - cropH) / 2
-	for y := 0; y < cropH; y++ {
-		for x := 0; x < cropW; x++ {
-			out.Set(x+offX, y+offY, src.At(x+minX, y+minY))
-		}
-	}
+	chunk := make([]byte, 21) // 4 len + 4 type + 4 x + 4 y + 1 unit + 4 crc
+	binary.BigEndian.PutUint32(chunk[0:], 9) // data length
+	copy(chunk[4:], "pHYs")
+	binary.BigEndian.PutUint32(chunk[8:], ppm)
+	binary.BigEndian.PutUint32(chunk[12:], ppm)
+	chunk[16] = 1 // unit: metre
+	h := crc32.NewIEEE()
+	h.Write(chunk[4:17])
+	binary.BigEndian.PutUint32(chunk[17:], h.Sum32())
+
+	out := make([]byte, 0, len(data)+len(chunk))
+	out = append(out, data[:insertAt]...)
+	out = append(out, chunk...)
+	out = append(out, data[insertAt:]...)
 	return out
 }
 

@@ -82,6 +82,18 @@
     return map;
   })();
 
+  // When the tunnel list refreshes (e.g. after an edit), re-fetch the detail
+  // for the currently expanded tunnel if its endpoint changed on disk.
+  $: if (expandedName && $tunnels) {
+    const tun = ($tunnels || []).find(t => t.name === expandedName);
+    if (tun && details[expandedName] &&
+        details[expandedName].peers?.[0]?.endpoint !== tun.endpoint) {
+      TunnelService.GetTunnelDetail(expandedName)
+        .then(d => { details = { ...details, [expandedName]: d }; })
+        .catch(() => {});
+    }
+  }
+
   function getStatus(name) {
     if ($connectionStatus?.tunnel_name === name) return $connectionStatus;
     return ($connectionStatus?.tunnels || []).find(t => t.tunnel_name === name) || null;
@@ -108,7 +120,8 @@
       chartReadyNames = new Set([...chartReadyNames, name]);
     }, 220);
 
-    if (!details[name]) {
+    const cachedEndpoint = details[name]?.peers?.[0]?.endpoint;
+    if (!details[name] || cachedEndpoint !== tun?.endpoint) {
       try {
         const d = await TunnelService.GetTunnelDetail(name);
         details = { ...details, [name]: d };

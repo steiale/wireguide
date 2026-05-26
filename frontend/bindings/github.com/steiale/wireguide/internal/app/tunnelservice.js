@@ -235,11 +235,15 @@ export function GetTunnelDetail(name) {
 
 /**
  * GetTunnelLatency returns round-trip latency in ms for the named tunnel.
- * Pings the tunnel's DNS servers (inner gateway) first — more reliable than
- * pinging the public endpoint, which is often blocked by firewalls or loops
- * back through the tunnel itself on full-tunnel (0.0.0.0/0) setups.
- * Falls back to the peer endpoint if no DNS servers respond.
- * Returns -1 if all targets are unreachable.
+ * 
+ * When connected: pings the tunnel's DNS servers (inner VPN gateway) — avoids
+ * the full-tunnel loop where pinging the public endpoint routes back through
+ * the tunnel itself and never gets a reply.
+ * 
+ * When disconnected: pings the public endpoint directly, which gives a useful
+ * pre-connection latency estimate even without an active tunnel.
+ * 
+ * Returns -1 if unreachable.
  * @param {string} name
  * @returns {$CancellablePromise<number>}
  */
