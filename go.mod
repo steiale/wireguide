@@ -2,6 +2,8 @@ module github.com/steiale/wireguide
 
 go 1.25.0
 
+replace github.com/wailsapp/wails/v3 => /Volumes/Data/Code/wails-patched
+
 require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/makiuchi-d/gozxing v0.1.1
