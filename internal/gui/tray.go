@@ -148,6 +148,7 @@ type trayManager struct {
 	tunnelStatus  map[string]domain.ConnectionStatus
 	rebuildTimer  *time.Timer
 	rebuilding    atomic.Bool
+	lastMenuRebuild time.Time
 
 	prevRx        map[string]int64
 	prevTx        map[string]int64
@@ -175,14 +176,10 @@ func newTrayManager(app *application.App, win *application.WebviewWindow, tray *
 
 func (t *trayManager) initialBuild() {
 	t.rebuildMenu()
-	// Rebuild on every left-click so the duration counter and speeds are
-	// always fresh when the menu appears.
-	t.tray.OnClick(func() {
-		go func() {
-			t.rebuildMenu()
-			t.tray.OpenMenu()
-		}()
-	})
+	// No OnClick: Wails' event monitor sets statusItem.menu before the click
+	// is processed, so macOS shows the menu via native tracking. The synthetic
+	// mouseDown path (OpenMenu) breaks on macOS 27+.
+	// Duration in menu items stays fresh via the 30s periodic rebuild below.
 }
 
 // updateStatus is called for every status event (≈1 Hz).
@@ -328,6 +325,16 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 	}
 	if changed {
 		t.scheduleRebuild()
+	} else if anyConnected {
+		t.mu.Lock()
+		periodicDue := now.Sub(t.lastMenuRebuild) >= 30*time.Second
+		if periodicDue {
+			t.lastMenuRebuild = now
+		}
+		t.mu.Unlock()
+		if periodicDue {
+			t.scheduleRebuild()
+		}
 	}
 }
 
