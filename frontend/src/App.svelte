@@ -45,10 +45,24 @@
   let toastTimer = null;
   let updateInfo = null;
   let filesDroppedUnsub = null;
+  let authPromptUnsub = null;
   let helperUnsub = null;
   let helperResetUnsub = null;
   let helperReady = false;
   let helperEverConnected = false;
+
+  // OpenVPN auth modal state. The backend emits an "auth_prompt" event when an
+  // OpenVPN tunnel needs credentials (and none are cached). We show a modal that
+  // collects username + base password + a 6-digit TOTP code, then feed the
+  // combined password (basePassword + totpCode) back to the helper.
+  let showAuth = false;
+  let authTunnelName = '';
+  let authUsername = '';
+  let authPassword = '';
+  let authTotp = '';
+  let authSave = true;
+  let authBusy = false;
+  let authError = '';
 
   onMount(async () => {
     // Register the helper event listener FIRST so we never miss the
@@ -121,14 +135,14 @@
       const paths = payload.files || [];
       for (const path of paths) {
         const lower = path.toLowerCase();
-        if (lower.endsWith('.conf')) {
+        if (lower.endsWith('.conf') || lower.endsWith('.ovpn')) {
           await importFromPath(path);
         } else if (lower.endsWith('.zip')) {
           await importZipFromPath(path);
         } else if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.gif')) {
           await importQRFromPath(path);
         } else {
-          showToast('Only .conf, .zip, and QR image files are supported');
+          showToast('Only .conf, .ovpn, .zip, and QR image files are supported');
         }
       }
     });
@@ -141,12 +155,37 @@
       await initialLoad(TunnelService);
       await refreshStatus(TunnelService);
     });
+
+    // OpenVPN auth prompt — the helper needs credentials (e.g. a TOTP code) to
+    // continue connecting. Payload: { tunnel_name: string }.
+    authPromptUnsub = Events.On('auth_prompt', async (event) => {
+      const name = event.data?.tunnel_name || '';
+      if (!name) return;
+      authTunnelName = name;
+      authTotp = '';
+      authError = '';
+      authBusy = false;
+      // Pre-fill saved credentials so the user only has to type the TOTP code.
+      try {
+        const saved = await TunnelService.GetSavedCredentials(name);
+        if (saved) {
+          authUsername = saved.username || '';
+          authPassword = saved.base_password || '';
+        } else {
+          authPassword = '';
+        }
+      } catch (_) {
+        authPassword = '';
+      }
+      showAuth = true;
+    });
   });
 
   onDestroy(() => {
     unsubscribe();
     stopLogListener();
     if (filesDroppedUnsub) filesDroppedUnsub();
+    if (authPromptUnsub) authPromptUnsub();
     if (helperUnsub) helperUnsub();
     if (helperResetUnsub) helperResetUnsub();
     if (toastTimer) clearTimeout(toastTimer);
@@ -202,18 +241,30 @@
     }
   }
 
-  // Import from a file path (used by native file drop).
+  // Sanitize a filename-derived tunnel name to match ValidateTunnelName rules:
+  // letters, digits, '-', '_' and spaces only. Replaces other chars (e.g. '@',
+  // '.') with '-' and collapses/trims runs of '-'.
+  function sanitizeTunnelName(raw) {
+    return raw.replace(/[^a-zA-Z0-9_\- ]/g, '-').replace(/-+/g, '-').replace(/^[-\s]+|[-\s]+$/g, '') || 'tunnel';
+  }
+
+  // Import from a file path (used by native file drop). Routes .ovpn through
+  // the backend's extension-dispatching ImportFile and skips WireGuard-specific
+  // validation for it.
   async function importFromPath(path) {
     try {
+      const isOvpn = path.toLowerCase().endsWith('.ovpn');
       const content = await TunnelService.ReadFile(path);
-      const errors = await TunnelService.ValidateConfig(content);
-      if (errors && errors.length > 0) {
-        showToast('Invalid config: ' + errors[0]);
-        return;
+      if (!isOvpn) {
+        const errors = await TunnelService.ValidateConfig(content);
+        if (errors && errors.length > 0) {
+          showToast('Invalid config: ' + errors[0]);
+          return;
+        }
       }
-      const baseName = await TunnelService.BaseName(path);
+      const baseName = sanitizeTunnelName(await TunnelService.BaseName(path));
       const name = await uniqueName(baseName);
-      await TunnelService.ImportConfig(name, content);
+      await TunnelService.ImportFile(name, content, path);
       showToast(`Imported "${name}"`);
       await refreshTunnels(TunnelService);
     } catch (e) {
@@ -266,18 +317,24 @@
   }
 
   // Import from a browser File object (used by file picker button).
+  // Handles both WireGuard (.conf) and OpenVPN (.ovpn): the .ovpn path skips
+  // WireGuard validation (which is WG-specific and would reject .ovpn content)
+  // and lets the backend ImportFile dispatch on the filename extension.
   async function importFile(file) {
     if (!file) return;
-    const baseName = file.name.replace(/\.conf$/i, '');
+    const isOvpn = file.name.toLowerCase().endsWith('.ovpn');
+    const baseName = sanitizeTunnelName(file.name.replace(/\.(conf|ovpn)$/i, ''));
     const content = await file.text();
     try {
-      const errors = await TunnelService.ValidateConfig(content);
-      if (errors && errors.length > 0) {
-        showToast('Invalid config: ' + errors[0]);
-        return;
+      if (!isOvpn) {
+        const errors = await TunnelService.ValidateConfig(content);
+        if (errors && errors.length > 0) {
+          showToast('Invalid config: ' + errors[0]);
+          return;
+        }
       }
       const name = await uniqueName(baseName);
-      await TunnelService.ImportConfig(name, content);
+      await TunnelService.ImportFile(name, content, file.name);
       showToast(`Imported "${name}"`);
       await refreshTunnels(TunnelService);
     } catch (e) {
@@ -289,7 +346,7 @@
     // Directly open the native file picker — no modal needed.
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.conf,.zip';
+    input.accept = '.conf,.ovpn,.zip';
     input.style.display = 'none';
     // Attach to DOM so the GC doesn't collect it before onchange fires.
     document.body.appendChild(input);
@@ -300,6 +357,8 @@
       if (file.name.toLowerCase().endsWith('.zip')) {
         await importZipFromFile(file);
       } else {
+        // Both .conf (WireGuard) and .ovpn (OpenVPN) go through importFile;
+        // the backend's ImportConfig detects the protocol from the content.
         await importFile(file);
       }
     };
@@ -316,9 +375,13 @@
     showEditor = true;
   }
 
+  let editorIsOvpn = false;
+
   async function handleEdit(e) {
     editName = e.detail;
     editorOriginalName = editName; // snapshot before bind can mutate it
+    // Check protocol so the save handler can skip WireGuard-only validation.
+    editorIsOvpn = ($tunnels || []).find(t => t.name === editName)?.protocol === 'openvpn';
     try {
       editorContent = await TunnelService.GetConfigText(editName);
       editorErrors = [];
@@ -339,10 +402,14 @@
     }
 
     try {
-      const errors = await TunnelService.ValidateConfig(saveContent);
-      if (errors && errors.length > 0) {
-        editorErrors = errors;
-        return;
+      // Skip WireGuard-specific validation for OpenVPN configs — the backend
+      // runs ovpn.ValidateOVPN inside UpdateConfig / ImportOVPN instead.
+      if (!editorIsOvpn) {
+        const errors = await TunnelService.ValidateConfig(saveContent);
+        if (errors && errors.length > 0) {
+          editorErrors = errors;
+          return;
+        }
       }
       if (editorIsNew) {
         await TunnelService.ImportConfig(saveName, saveContent);
@@ -464,6 +531,63 @@
       showToast('Update failed: ' + errText(e));
     }
   }
+
+  // Auto-close the auth modal once the tunnel it was opened for is fully
+  // connected (not just connecting — active_tunnels includes connecting tunnels,
+  // so checking it would close the modal before the user can submit credentials).
+  $: if (showAuth && authTunnelName) {
+    const tunnelStatus = ($connectionStatus?.tunnels || []).find(t => t.tunnel_name === authTunnelName);
+    if (tunnelStatus?.state === 'connected') {
+      // Success — close silently.
+      showAuth = false;
+    } else if (tunnelStatus?.state === 'error') {
+      // Tunnel errored out (e.g. credential timeout) — close with a hint.
+      showAuth = false;
+      showToast('OpenVPN connection lost — please try again');
+    } else if (!tunnelStatus && helperReady) {
+      // Tunnel disappeared from the status list after the helper was ready,
+      // meaning the entry we were waiting on was cleaned up (timeout/death).
+      showAuth = false;
+      showToast('OpenVPN connection lost — please try again');
+    }
+  }
+
+  async function submitAuth() {
+    if (authBusy) return;
+    authError = '';
+    if (!authUsername) {
+      authError = $t('auth.username_required');
+      return;
+    }
+    const fullPassword = authPassword + (authTotp || '');
+    authBusy = true;
+    try {
+      // Optionally persist the static base password (never the TOTP code).
+      if (authSave) {
+        try {
+          await TunnelService.SaveCredentials(authTunnelName, authUsername, authPassword);
+        } catch (e) {
+          // Non-fatal — failing to cache shouldn't block this connect.
+          console.warn('SaveCredentials failed:', e);
+        }
+      }
+      await TunnelService.FeedCredentials(authTunnelName, authUsername, fullPassword);
+      showAuth = false;
+      authPassword = '';
+      authTotp = '';
+    } catch (e) {
+      authError = errText(e);
+    } finally {
+      authBusy = false;
+    }
+  }
+
+  function cancelAuth() {
+    showAuth = false;
+    authPassword = '';
+    authTotp = '';
+    authError = '';
+  }
 </script>
 
 <!-- The `$: $locale` subscription in the script block lets every `$t(...)`
@@ -471,14 +595,14 @@
      separate components mounted conditionally below; they pick up the new
      language on their next open (deliberate — otherwise changing language
      mid-interaction would destroy the modal). -->
-<div class="app" class:modal-open={showSettings || showEditor || showConflictWarning || showZipResult} data-file-drop-target={!(showSettings || showEditor || showConflictWarning || showZipResult) && currentView === 'tunnels' ? true : undefined}>
+<div class="app" class:modal-open={showSettings || showEditor || showConflictWarning || showZipResult || showAuth} data-file-drop-target={!(showSettings || showEditor || showConflictWarning || showZipResult || showAuth) && currentView === 'tunnels' ? true : undefined}>
   <!-- Wails adds .file-drop-target-active class to .app when dragging files.
        We only render the overlay when drop-target is actually active — i.e.
        on the tunnels view with no modal open — so it can never steal clicks
        from modals. The data-file-drop-target attribute above also removes
        the drop affordance entirely in those states so Wails doesn't even
        detect the drag. -->
-  {#if currentView === 'tunnels' && !(showSettings || showEditor || showConflictWarning || showZipResult)}
+  {#if currentView === 'tunnels' && !(showSettings || showEditor || showConflictWarning || showZipResult || showAuth)}
     <div class="drop-overlay">
       <div class="drop-overlay-content">
         <div class="drop-icon">↓</div>
@@ -619,6 +743,48 @@
           </span>
           <button class="btn-primary" on:click={() => showZipResult = false}>{$t('import.zip_ok')}</button>
         </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showAuth}
+    <div class="modal-backdrop" on:click={cancelAuth}>
+      <div class="modal modal-auth" on:click|stopPropagation>
+        <h3>{$t('auth.title')}</h3>
+        <p class="hint">{$t('auth.subtitle', { name: authTunnelName })}</p>
+
+        {#if authError}
+          <div class="errors"><p>{authError}</p></div>
+        {/if}
+
+        <form on:submit|preventDefault={submitAuth}>
+          <label for="auth-user">{$t('auth.username')}</label>
+          <input id="auth-user" type="text" autocomplete="username"
+            bind:value={authUsername} disabled={authBusy} />
+
+          <label for="auth-pass">{$t('auth.password')}</label>
+          <input id="auth-pass" type="password" autocomplete="current-password"
+            bind:value={authPassword} disabled={authBusy} />
+
+          <label for="auth-totp">{$t('auth.totp')}</label>
+          <input id="auth-totp" type="text" inputmode="numeric" pattern="[0-9]*"
+            maxlength="6" placeholder="123456" autocomplete="one-time-code"
+            bind:value={authTotp} disabled={authBusy} />
+
+          <label class="auth-save-row">
+            <input type="checkbox" bind:checked={authSave} disabled={authBusy} />
+            <span>{$t('auth.save')}</span>
+          </label>
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" on:click={cancelAuth} disabled={authBusy}>
+              {$t('auth.cancel')}
+            </button>
+            <button type="submit" class="btn btn-connect" disabled={authBusy}>
+              {authBusy ? $t('app.connecting') : $t('auth.submit')}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   {/if}
@@ -965,6 +1131,37 @@
     font-size: 12px;
     color: var(--text-secondary);
   }
+
+  /* ---------- Auth modal ---------- */
+  .modal-auth { width: 380px; }
+  .modal input[type="password"],
+  .modal input[type="number"] {
+    width: 100%;
+    height: 24px;
+    padding: 0 var(--space-2);
+    background: var(--bg-input);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font: var(--text-body);
+    box-sizing: border-box;
+    outline: none;
+  }
+  .modal input[type="password"]:focus,
+  .modal input[type="number"]:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--blue-tint);
+  }
+  .auth-save-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: var(--space-4) 0 0;
+    font: var(--text-body);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .auth-save-row input[type="checkbox"] { cursor: pointer; }
 
   .modal h3 {
     margin: 0 0 var(--space-4);

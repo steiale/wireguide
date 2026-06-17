@@ -230,5 +230,16 @@
     "add_trusted": "追加",
     "ssid_placeholder": "ネットワーク名 (SSID)",
     "select_tunnel": "トンネルを選択…"
+  },
+  "auth": {
+    "title": "OpenVPN 認証",
+    "subtitle": "「{name}」の認証情報を入力してください。",
+    "username": "ユーザー名",
+    "password": "パスワード",
+    "totp": "2FA コード（6 桁）",
+    "save": "認証情報を保存",
+    "submit": "接続",
+    "cancel": "キャンセル",
+    "username_required": "ユーザー名が必要です"
   }
 }

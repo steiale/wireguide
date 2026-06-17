@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/steiale/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/domain"
 )
 
 // TunnelStore manages .conf files on disk.
@@ -97,8 +98,17 @@ func (s *TunnelStore) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// A tunnel is stored as either a .conf (WireGuard) or a .ovpn (OpenVPN)
+	// file. Try the WireGuard path first; if it doesn't exist, remove the
+	// OpenVPN file instead.
 	path := s.path(name)
 	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		err = os.Remove(s.ovpnPath(name))
+	} else {
+		// Also clean up an .ovpn file if one somehow coexists (best-effort).
+		os.Remove(s.ovpnPath(name))
+	}
 	// Best-effort meta cleanup — never block tunnel deletion on a missing or
 	// unwritable sidecar file.
 	os.Remove(s.metaPath(name))
@@ -156,7 +166,23 @@ func (s *TunnelStore) Rename(oldName, newName string) error {
 	if s.exists(newName) {
 		return fmt.Errorf("tunnel %q already exists", newName)
 	}
-	return os.Rename(oldPath, s.path(newName))
+
+	// Rename the config file — .ovpn for OpenVPN tunnels, .conf for WireGuard.
+	var srcCfg, dstCfg string
+	if _, err := os.Stat(s.ovpnPath(oldName)); err == nil {
+		srcCfg = s.ovpnPath(oldName)
+		dstCfg = s.ovpnPath(newName)
+	} else {
+		srcCfg = oldPath
+		dstCfg = s.path(newName)
+	}
+	if err := os.Rename(srcCfg, dstCfg); err != nil {
+		return err
+	}
+
+	// Best-effort: rename the .meta.json sidecar as well.
+	_ = os.Rename(s.metaPath(oldName), s.metaPath(newName))
+	return nil
 }
 
 // List returns all tunnel names (without .conf extension).
@@ -177,8 +203,11 @@ func (s *TunnelStore) List() ([]string, error) {
 			continue
 		}
 		name := e.Name()
-		if strings.HasSuffix(name, ".conf") {
+		switch {
+		case strings.HasSuffix(name, ".conf"):
 			names = append(names, strings.TrimSuffix(name, ".conf"))
+		case strings.HasSuffix(name, ".ovpn"):
+			names = append(names, strings.TrimSuffix(name, ".ovpn"))
 		}
 	}
 	return names, nil
@@ -197,9 +226,15 @@ func (s *TunnelStore) Exists(name string) bool {
 }
 
 // exists is the internal lock-free version for use within already-locked methods.
+// A tunnel exists if either its .conf (WireGuard) or .ovpn (OpenVPN) file is present.
 func (s *TunnelStore) exists(name string) bool {
-	_, err := os.Stat(s.path(name))
-	return err == nil
+	if _, err := os.Stat(s.path(name)); err == nil {
+		return true
+	}
+	if _, err := os.Stat(s.ovpnPath(name)); err == nil {
+		return true
+	}
+	return false
 }
 
 // ImportFromContent parses content, assigns a name, and saves.
@@ -225,10 +260,80 @@ func (s *TunnelStore) path(name string) string {
 	return filepath.Join(s.dir, name+".conf")
 }
 
+// ovpnPath returns the on-disk path for a tunnel's raw .ovpn file.
+func (s *TunnelStore) ovpnPath(name string) string {
+	return filepath.Join(s.dir, name+".ovpn")
+}
+
+// SaveOVPN writes raw OpenVPN config content to disk with 0600 permissions,
+// using the same atomic temp-file + rename pattern as Save().
+func (s *TunnelStore) SaveOVPN(name, content string) error {
+	if err := ValidateTunnelName(name); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.ovpnPath(name)
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), ".wireguide-ovpn-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write([]byte(content)); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := atomicRename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+// LoadOVPN reads a tunnel's raw .ovpn content from disk.
+func (s *TunnelStore) LoadOVPN(name string) (string, error) {
+	if err := ValidateTunnelName(name); err != nil {
+		return "", err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	data, err := os.ReadFile(s.ovpnPath(name))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// IsOVPN reports whether the stored tunnel is an OpenVPN tunnel (an .ovpn file
+// exists for it).
+func (s *TunnelStore) IsOVPN(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, err := os.Stat(s.ovpnPath(name))
+	return err == nil
+}
+
 // TunnelMeta holds per-tunnel settings that live alongside the .conf file.
 type TunnelMeta struct {
-	AutoReconnect bool   `json:"auto_reconnect"`
-	Notes         string `json:"notes,omitempty"`
+	AutoReconnect bool            `json:"auto_reconnect"`
+	Notes         string          `json:"notes,omitempty"`
+	Protocol      domain.Protocol `json:"protocol,omitempty"`
 }
 
 // metaPath returns the path for the tunnel's sidecar metadata file.
@@ -241,14 +346,17 @@ func (s *TunnelStore) LoadMeta(name string) (*TunnelMeta, error) {
 	data, err := os.ReadFile(s.metaPath(name))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &TunnelMeta{}, nil
+			return &TunnelMeta{Protocol: domain.ProtocolWireGuard}, nil
 		}
 		return nil, err
 	}
 	var m TunnelMeta
 	if err := json.Unmarshal(data, &m); err != nil {
-		return &TunnelMeta{}, nil
+		return &TunnelMeta{Protocol: domain.ProtocolWireGuard}, nil
 	}
+	// Backward compat: meta files written before the protocol field existed have
+	// an empty value — treat those as WireGuard.
+	m.Protocol = domain.NormalizeProtocol(m.Protocol)
 	return &m, nil
 }
 

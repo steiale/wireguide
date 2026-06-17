@@ -103,7 +103,8 @@ export function CompleteOnboarding() {
 
 /**
  * Connect loads a tunnel config from local storage and asks the helper to
- * bring it up. The helper re-validates server-side.
+ * bring it up. The helper re-validates server-side. OpenVPN tunnels are routed
+ * to the OpenVPN connect path.
  * @param {string} name
  * @returns {$CancellablePromise<void>}
  */
@@ -160,7 +161,21 @@ export function ExportTunnel(name) {
 }
 
 /**
- * GetConfigText returns the serialized form of a stored tunnel's config.
+ * FeedCredentials delivers credentials to an OpenVPN tunnel waiting on an auth
+ * prompt. fullPassword must already be basePassword + the 6-digit TOTP code,
+ * combined by the caller (the GUI prompts for the code on every connect).
+ * @param {string} tunnelName
+ * @param {string} username
+ * @param {string} fullPassword
+ * @returns {$CancellablePromise<void>}
+ */
+export function FeedCredentials(tunnelName, username, fullPassword) {
+    return $Call.ByID(549903296, tunnelName, username, fullPassword);
+}
+
+/**
+ * GetConfigText returns the stored tunnel config as text. For OpenVPN tunnels
+ * the raw .ovpn content is returned; for WireGuard the serialized INI form.
  * @param {string} name
  * @returns {$CancellablePromise<string>}
  */
@@ -201,11 +216,24 @@ export function GetRoutingTable() {
 }
 
 /**
+ * GetSavedCredentials loads the cached OpenVPN credentials for tunnelName from
+ * the Keychain (if any). Returns nil without error when nothing is stored — the
+ * caller should treat a nil result as "no saved creds, show empty fields".
+ * @param {string} tunnelName
+ * @returns {$CancellablePromise<$models.SavedCredentials | null>}
+ */
+export function GetSavedCredentials(tunnelName) {
+    return $Call.ByID(1122228093, tunnelName).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType9($result);
+    }));
+}
+
+/**
  * @returns {$CancellablePromise<storage$0.Settings | null>}
  */
 export function GetSettings() {
     return $Call.ByID(1159302687).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
+        return $$createType11($result);
     }));
 }
 
@@ -217,7 +245,7 @@ export function GetSettings() {
  */
 export function GetStatus() {
     return $Call.ByID(3347375428).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType11($result);
+        return $$createType13($result);
     }));
 }
 
@@ -229,7 +257,7 @@ export function GetStatus() {
  */
 export function GetTunnelDetail(name) {
     return $Call.ByID(881582661, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType13($result);
+        return $$createType15($result);
     }));
 }
 
@@ -258,7 +286,7 @@ export function GetTunnelLatency(name) {
  */
 export function GetTunnelMeta(name) {
     return $Call.ByID(402927985, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType17($result);
     }));
 }
 
@@ -277,7 +305,7 @@ export function GetVersion() {
  */
 export function GetWifiRules() {
     return $Call.ByID(2048144510).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType19($result);
     }));
 }
 
@@ -290,7 +318,22 @@ export function GetWifiRules() {
  */
 export function ImportConfig(name, content) {
     return $Call.ByID(188679809, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType19($result);
+        return $$createType21($result);
+    }));
+}
+
+/**
+ * ImportFile dispatches to the correct importer based on the source filename's
+ * extension: .ovpn → OpenVPN, everything else → WireGuard. Used by the native
+ * file-drop / picker paths which know the original filename.
+ * @param {string} name
+ * @param {string} content
+ * @param {string} filename
+ * @returns {$CancellablePromise<$models.TunnelInfo | null>}
+ */
+export function ImportFile(name, content, filename) {
+    return $Call.ByID(2721946621, name, content, filename).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType21($result);
     }));
 }
 
@@ -302,6 +345,19 @@ export function ImportConfig(name, content) {
  */
 export function ImportFoundConfigs(paths) {
     return $Call.ByID(1596298812, paths).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType23($result);
+    }));
+}
+
+/**
+ * ImportOVPN validates and stores a raw OpenVPN config under the given name,
+ * writing the .ovpn file plus a .meta.json marking the tunnel as OpenVPN.
+ * @param {string} name
+ * @param {string} content
+ * @returns {$CancellablePromise<$models.TunnelInfo | null>}
+ */
+export function ImportOVPN(name, content) {
+    return $Call.ByID(3345483956, name, content).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType21($result);
     }));
 }
@@ -337,7 +393,7 @@ export function ImportQRFromPath(path, name) {
  */
 export function ImportZip(path) {
     return $Call.ByID(2515408722, path).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
+        return $$createType23($result);
     }));
 }
 
@@ -349,7 +405,7 @@ export function ImportZip(path) {
  */
 export function ImportZipData(data) {
     return $Call.ByID(368497186, data).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
+        return $$createType23($result);
     }));
 }
 
@@ -377,7 +433,7 @@ export function IsHelperReady() {
  */
 export function ListTunnels() {
     return $Call.ByID(3011645541).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType24($result);
     }));
 }
 
@@ -392,7 +448,7 @@ export function ListTunnels() {
  */
 export function ListTunnelsLocal() {
     return $Call.ByID(3553304200).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType24($result);
     }));
 }
 
@@ -476,7 +532,7 @@ export function ResizeToFit(tunnelCount) {
  */
 export function RunDNSLeakTest() {
     return $Call.ByID(2844578013).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType24($result);
+        return $$createType26($result);
     }));
 }
 
@@ -488,6 +544,19 @@ export function RunDNSLeakTest() {
  */
 export function RunUpdate(info) {
     return $Call.ByID(2979792246, info);
+}
+
+/**
+ * SaveCredentials stores OpenVPN credentials (username + base password) in the
+ * helper-side Keychain. The TOTP code is never stored — only the static base
+ * password the user enters once.
+ * @param {string} tunnelName
+ * @param {string} username
+ * @param {string} basePassword
+ * @returns {$CancellablePromise<void>}
+ */
+export function SaveCredentials(tunnelName, username, basePassword) {
+    return $Call.ByID(654559795, tunnelName, username, basePassword);
 }
 
 /**
@@ -504,7 +573,11 @@ export function SaveSettings(settings) {
 }
 
 /**
- * SaveTunnelMeta persists per-tunnel metadata.
+ * SaveTunnelMeta persists per-tunnel metadata. The frontend only sends the
+ * fields it knows about (auto_reconnect, notes), so we read the existing meta
+ * first and preserve any fields the caller didn't set — in particular Protocol,
+ * which would otherwise be blanked out and cause an OpenVPN tunnel to be
+ * treated as WireGuard on the next load.
  * @param {string} name
  * @param {storage$0.TunnelMeta} meta
  * @returns {$CancellablePromise<void>}
@@ -530,7 +603,7 @@ export function SaveWifiRules(rules) {
  */
 export function ScanForWireGuardConfigs() {
     return $Call.ByID(2588850719).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType26($result);
+        return $$createType28($result);
     }));
 }
 
@@ -612,7 +685,8 @@ export function TunnelExists(name) {
 
 /**
  * UpdateConfig parses, validates, and overwrites an existing tunnel's config.
- * Rejects edits of the connected tunnel.
+ * Rejects edits of the connected tunnel. Routes to the OpenVPN path for .ovpn
+ * tunnels so the raw config is saved without WireGuard parsing.
  * @param {string} name
  * @param {string} content
  * @returns {$CancellablePromise<void>}
@@ -629,7 +703,7 @@ export function UpdateConfig(name, content) {
  */
 export function ValidateConfig(content) {
     return $Call.ByID(3943944654, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType27($result);
+        return $$createType29($result);
     }));
 }
 
@@ -642,23 +716,25 @@ const $$createType4 = history$0.Session.createFrom;
 const $$createType5 = $Create.Array($$createType4);
 const $$createType6 = $models.RouteEntry.createFrom;
 const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = storage$0.Settings.createFrom;
+const $$createType8 = $models.SavedCredentials.createFrom;
 const $$createType9 = $Create.Nullable($$createType8);
-const $$createType10 = domain$0.ConnectionStatus.createFrom;
+const $$createType10 = storage$0.Settings.createFrom;
 const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = domain$0.WireGuardConfig.createFrom;
+const $$createType12 = domain$0.ConnectionStatus.createFrom;
 const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = storage$0.TunnelMeta.createFrom;
+const $$createType14 = domain$0.WireGuardConfig.createFrom;
 const $$createType15 = $Create.Nullable($$createType14);
-const $$createType16 = wifi$0.Rules.createFrom;
+const $$createType16 = storage$0.TunnelMeta.createFrom;
 const $$createType17 = $Create.Nullable($$createType16);
-const $$createType18 = $models.TunnelInfo.createFrom;
+const $$createType18 = wifi$0.Rules.createFrom;
 const $$createType19 = $Create.Nullable($$createType18);
-const $$createType20 = $models.ZipImportResult.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = $Create.Array($$createType18);
-const $$createType23 = $models.DNSLeakResult.createFrom;
-const $$createType24 = $Create.Nullable($$createType23);
-const $$createType25 = $models.FoundConfig.createFrom;
-const $$createType26 = $Create.Array($$createType25);
-const $$createType27 = $Create.Array($Create.Any);
+const $$createType20 = $models.TunnelInfo.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);
+const $$createType22 = $models.ZipImportResult.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = $Create.Array($$createType20);
+const $$createType25 = $models.DNSLeakResult.createFrom;
+const $$createType26 = $Create.Nullable($$createType25);
+const $$createType27 = $models.FoundConfig.createFrom;
+const $$createType28 = $Create.Array($$createType27);
+const $$createType29 = $Create.Array($Create.Any);

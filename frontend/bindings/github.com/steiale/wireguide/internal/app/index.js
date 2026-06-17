@@ -13,6 +13,7 @@ export {
     DNSServer,
     FoundConfig,
     RouteEntry,
+    SavedCredentials,
     TunnelInfo,
     ZipImportResult
 } from "./models.js";

@@ -122,7 +122,24 @@ tasks:
       # from app bundle".
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}-helper" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - cp build/darwin/Info.plist "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents"
+      # Bundle the signed openvpn binary (if it has been built). This must run
+      # before codesign so the binary is included in the ad-hoc/Developer ID
+      # signature. No-op when build/openvpn/bin/openvpn is absent.
+      - task: copy:openvpn
       - task: '{{if eq OS "darwin"}}codesign:adhoc{{else}}codesign:skip{{end}}'
+
+  copy:openvpn:
+    summary: Copy signed openvpn binary into app bundle (no-op if not built yet)
+    desc: Copy signed openvpn binary into app bundle (no-op if not built yet)
+    internal: true
+    cmds:
+      - |
+        if [ -f "build/openvpn/bin/openvpn" ]; then
+          cp "build/openvpn/bin/openvpn" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/openvpn"
+          echo "openvpn bundled"
+        else
+          echo "WARNING: build/openvpn/bin/openvpn not found — OpenVPN unavailable in this build"
+        fi
 
   codesign:adhoc:
     summary: Ad-hoc signs the app bundle (macOS only)

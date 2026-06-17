@@ -15,10 +15,26 @@ import (
 // field translation.
 func (h *Helper) statusDTO() ipc.ConnectionStatus {
 	s := h.manager.Status()
-	if s == nil {
+
+	// Gather OpenVPN tunnel statuses (managed separately from WireGuard).
+	var ovpnStatuses []domain.ConnectionStatus
+	if h.ovpnManager != nil {
+		ovpnStatuses = h.ovpnManager.AllStatuses()
+	}
+
+	var result ipc.ConnectionStatus
+	switch {
+	case s != nil && s.State != domain.StateDisconnected:
+		// WireGuard has an active tunnel — use it as primary.
+		result = *s
+	case len(ovpnStatuses) > 0:
+		// No WireGuard tunnel — promote the first OpenVPN tunnel to primary so
+		// single-OpenVPN-tunnel UIs work without consulting result.Tunnels.
+		result = ovpnStatuses[0]
+	default:
 		return ipc.ConnectionStatus{}
 	}
-	result := *s
+
 	// Include lightweight per-tunnel info (name + state + handshake presence)
 	// so the frontend can show correct badges. Full stats (rx/tx/duration)
 	// are only in the primary status to avoid sending redundant data every second.
@@ -30,11 +46,36 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 					TunnelName:    ts.TunnelName,
 					LastHandshake: ts.LastHandshake,
 					HasHandshake:  ts.HasHandshake,
+					Protocol:      domain.ProtocolWireGuard,
 				})
 			}
 		}
 	}
+	// Append OpenVPN tunnels to the per-tunnel list (and to ActiveTunnels).
+	for _, ts := range ovpnStatuses {
+		result.Tunnels = append(result.Tunnels, domain.ConnectionStatus{
+			State:         ts.State,
+			TunnelName:    ts.TunnelName,
+			RxBytes:       ts.RxBytes,
+			TxBytes:       ts.TxBytes,
+			Duration:      ts.Duration,
+			LastHandshake: ts.LastHandshake,
+			HasHandshake:  ts.HasHandshake,
+			Protocol:      domain.ProtocolOpenVPN,
+		})
+		result.ActiveTunnels = appendUnique(result.ActiveTunnels, ts.TunnelName)
+	}
 	return result
+}
+
+// appendUnique appends name to names only if not already present.
+func appendUnique(names []string, name string) []string {
+	for _, n := range names {
+		if n == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 // eventLoop broadcasts status updates to subscribed GUIs on change. Change

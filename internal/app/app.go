@@ -137,10 +137,11 @@ func (s *TunnelService) callLong(method string, params interface{}, result inter
 
 // TunnelInfo is the summary shown in the tunnel list.
 type TunnelInfo struct {
-	Name        string `json:"name"`
-	IsConnected bool   `json:"is_connected"`
-	Endpoint    string `json:"endpoint"`
-	Notes       string `json:"notes,omitempty"`
+	Name        string          `json:"name"`
+	IsConnected bool            `json:"is_connected"`
+	Endpoint    string          `json:"endpoint"`
+	Notes       string          `json:"notes,omitempty"`
+	Protocol    domain.Protocol `json:"protocol"`
 }
 
 // ConnectionStatus is re-exported from the domain package so Wails bindings

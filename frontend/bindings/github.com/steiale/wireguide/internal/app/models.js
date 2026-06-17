@@ -216,6 +216,45 @@ export class RouteEntry {
 }
 
 /**
+ * SavedCredentials holds the stored username + base password for an OpenVPN
+ * tunnel. Returned by GetSavedCredentials so the auth modal can pre-fill fields.
+ */
+export class SavedCredentials {
+    /**
+     * Creates a new SavedCredentials instance.
+     * @param {Partial<SavedCredentials>} [$$source = {}] - The source object to create the SavedCredentials.
+     */
+    constructor($$source = {}) {
+        if (!("username" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["username"] = "";
+        }
+        if (!("base_password" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["base_password"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SavedCredentials instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SavedCredentials}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SavedCredentials(/** @type {Partial<SavedCredentials>} */($$parsedSource));
+    }
+}
+
+/**
  * TunnelInfo is the summary shown in the tunnel list.
  */
 export class TunnelInfo {
@@ -251,6 +290,13 @@ export class TunnelInfo {
              * @type {string | undefined}
              */
             this["notes"] = undefined;
+        }
+        if (!("protocol" in $$source)) {
+            /**
+             * @member
+             * @type {domain$0.Protocol}
+             */
+            this["protocol"] = domain$0.Protocol.$zero;
         }
 
         Object.assign(this, $$source);

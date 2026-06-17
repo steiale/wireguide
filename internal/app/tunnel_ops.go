@@ -7,6 +7,7 @@ import (
 
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/ovpn"
 	"github.com/steiale/wireguide/internal/storage"
 	"github.com/steiale/wireguide/internal/tunnel"
 )
@@ -24,33 +25,58 @@ func (s *TunnelService) ListTunnelsLocal() ([]TunnelInfo, error) {
 	}
 	var result []TunnelInfo
 	for _, name := range names {
+		info, ok := s.tunnelInfoFor(name, "")
+		if !ok {
+			continue
+		}
+		result = append(result, info)
+	}
+	return result, nil
+}
+
+// tunnelInfoFor builds a TunnelInfo for one stored tunnel, dispatching on
+// protocol. activeName, when non-empty, marks IsConnected on a name match. The
+// bool return is false when the tunnel could not be loaded (skip it).
+func (s *TunnelService) tunnelInfoFor(name, activeName string) (TunnelInfo, bool) {
+	// M6: Surface real LoadMeta errors at warn level instead of dropping them
+	// silently. A missing meta file is normal and returns nil err from LoadMeta.
+	meta, err := s.tunnelStore.LoadMeta(name)
+	if err != nil {
+		slog.Warn("loading tunnel meta failed; treating as empty", "name", name, "error", err)
+	}
+	notes := ""
+	protocol := domain.ProtocolWireGuard
+	if meta != nil {
+		notes = meta.Notes
+		protocol = domain.NormalizeProtocol(meta.Protocol)
+	}
+
+	endpoint := ""
+	if protocol == domain.ProtocolOpenVPN {
+		if content, err := s.tunnelStore.LoadOVPN(name); err != nil {
+			slog.Warn("skipping broken openvpn tunnel", "name", name, "error", err)
+			return TunnelInfo{}, false
+		} else if cfg, perr := ovpn.ParseOVPN([]byte(content)); perr == nil {
+			endpoint = cfg.Remote
+		}
+	} else {
 		cfg, err := s.tunnelStore.Load(name)
 		if err != nil {
 			slog.Warn("skipping broken tunnel config", "name", name, "error", err)
-			continue
+			return TunnelInfo{}, false
 		}
-		endpoint := ""
 		if len(cfg.Peers) > 0 {
 			endpoint = cfg.Peers[0].Endpoint
 		}
-		// M6: Surface real LoadMeta errors at warn level instead of dropping
-		// them silently. A missing meta file is normal and returns nil err
-		// from LoadMeta; only true filesystem errors land here.
-		meta, err := s.tunnelStore.LoadMeta(name)
-		if err != nil {
-			slog.Warn("loading tunnel meta failed; treating as empty", "name", name, "error", err)
-		}
-		notes := ""
-		if meta != nil {
-			notes = meta.Notes
-		}
-		result = append(result, TunnelInfo{
-			Name:     name,
-			Endpoint: endpoint,
-			Notes:    notes,
-		})
 	}
-	return result, nil
+
+	return TunnelInfo{
+		Name:        name,
+		IsConnected: activeName != "" && name == activeName,
+		Endpoint:    endpoint,
+		Notes:       notes,
+		Protocol:    protocol,
+	}, true
 }
 
 // ListTunnels returns every stored tunnel with its summary info.
@@ -76,31 +102,11 @@ func (s *TunnelService) ListTunnels() ([]TunnelInfo, error) {
 
 	var result []TunnelInfo
 	for _, name := range names {
-		cfg, err := s.tunnelStore.Load(name)
-		if err != nil {
-			slog.Warn("skipping broken tunnel config", "name", name, "error", err)
+		info, ok := s.tunnelInfoFor(name, active.Value)
+		if !ok {
 			continue
 		}
-		endpoint := ""
-		if len(cfg.Peers) > 0 {
-			endpoint = cfg.Peers[0].Endpoint
-		}
-		// M6: Same as above — log real LoadMeta errors so they show up in
-		// the diagnostics log instead of vanishing.
-		meta, err := s.tunnelStore.LoadMeta(name)
-		if err != nil {
-			slog.Warn("loading tunnel meta failed; treating as empty", "name", name, "error", err)
-		}
-		notes := ""
-		if meta != nil {
-			notes = meta.Notes
-		}
-		result = append(result, TunnelInfo{
-			Name:        name,
-			IsConnected: name == active.Value,
-			Endpoint:    endpoint,
-			Notes:       notes,
-		})
+		result = append(result, info)
 	}
 	return result, nil
 }
@@ -128,17 +134,42 @@ func (s *TunnelService) CheckConflicts(name string) ([]tunnel.ConflictInfo, erro
 }
 
 // Connect loads a tunnel config from local storage and asks the helper to
-// bring it up. The helper re-validates server-side.
+// bring it up. The helper re-validates server-side. OpenVPN tunnels are routed
+// to the OpenVPN connect path.
 func (s *TunnelService) Connect(name string) error {
+	// Read per-tunnel auto-reconnect + protocol preference.
+	meta, _ := s.tunnelStore.LoadMeta(name)
+	autoReconnect := meta != nil && meta.AutoReconnect
+	protocol := domain.ProtocolWireGuard
+	if meta != nil {
+		protocol = domain.NormalizeProtocol(meta.Protocol)
+	}
+
+	// OpenVPN: send the raw .ovpn content to the helper. Credentials (and any
+	// TOTP code) are handled asynchronously via the auth-prompt event.
+	if protocol == domain.ProtocolOpenVPN {
+		content, err := s.tunnelStore.LoadOVPN(name)
+		if err != nil {
+			return fmt.Errorf("loading openvpn tunnel %s: %w", name, err)
+		}
+		s.clients.MarkInflight()
+		defer s.clients.UnmarkInflight()
+		if err := s.callLong(ipc.MethodConnect, ipc.ConnectRequest{
+			Protocol:      domain.ProtocolOpenVPN,
+			TunnelName:    name,
+			OVPNConfig:    content,
+			AutoReconnect: autoReconnect,
+		}, nil); err != nil {
+			return err
+		}
+		s.recordConnectStart(name)
+		return nil
+	}
+
 	cfg, err := s.tunnelStore.Load(name)
 	if err != nil {
 		return fmt.Errorf("loading tunnel %s: %w", name, err)
 	}
-
-	// Read per-tunnel auto-reconnect preference so the helper can decide
-	// whether to bring this tunnel back up on wake / network change.
-	meta, _ := s.tunnelStore.LoadMeta(name)
-	autoReconnect := meta != nil && meta.AutoReconnect
 
 	// Mark the RPC as in-flight so the health monitor doesn't falsely
 	// detect helper death while the server is busy processing Connect
@@ -180,6 +211,50 @@ func (s *TunnelService) Disconnect() error {
 		s.recordDisconnectEnd(name, rx, tx, "user")
 	}
 	return err
+}
+
+// SaveCredentials stores OpenVPN credentials (username + base password) in the
+// helper-side Keychain. The TOTP code is never stored — only the static base
+// password the user enters once.
+func (s *TunnelService) SaveCredentials(tunnelName, username, basePassword string) error {
+	return s.call(ipc.MethodSaveCredentials, ipc.SaveCredentialsRequest{
+		TunnelName:   tunnelName,
+		Username:     username,
+		BasePassword: basePassword,
+	}, nil)
+}
+
+// SavedCredentials holds the stored username + base password for an OpenVPN
+// tunnel. Returned by GetSavedCredentials so the auth modal can pre-fill fields.
+type SavedCredentials struct {
+	Username     string `json:"username"`
+	BasePassword string `json:"base_password"`
+}
+
+// GetSavedCredentials loads the cached OpenVPN credentials for tunnelName from
+// the Keychain (if any). Returns nil without error when nothing is stored — the
+// caller should treat a nil result as "no saved creds, show empty fields".
+func (s *TunnelService) GetSavedCredentials(tunnelName string) (*SavedCredentials, error) {
+	creds, err := ovpn.LoadCredentials(tunnelName)
+	if err != nil {
+		// "could not be found" is not an error condition for the modal.
+		return nil, nil //nolint:nilerr
+	}
+	return &SavedCredentials{
+		Username:     creds.Username,
+		BasePassword: creds.BasePassword,
+	}, nil
+}
+
+// FeedCredentials delivers credentials to an OpenVPN tunnel waiting on an auth
+// prompt. fullPassword must already be basePassword + the 6-digit TOTP code,
+// combined by the caller (the GUI prompts for the code on every connect).
+func (s *TunnelService) FeedCredentials(tunnelName, username, fullPassword string) error {
+	return s.call(ipc.MethodFeedCredentials, ipc.FeedCredentialsRequest{
+		TunnelName:   tunnelName,
+		Username:     username,
+		FullPassword: fullPassword,
+	}, nil)
 }
 
 // DisconnectTunnel disconnects a specific tunnel by name.
@@ -399,6 +474,14 @@ func (s *TunnelService) DeleteTunnel(name string) error {
 	}
 	if active.Value == name {
 		return fmt.Errorf("cannot delete connected tunnel %q — disconnect first", name)
+	}
+	// Best-effort: remove any stored OpenVPN credentials for this tunnel. Done
+	// directly (not via IPC) since Keychain access works from the GUI process
+	// and a missing item is treated as success.
+	if s.tunnelStore.IsOVPN(name) {
+		if err := ovpn.DeleteCredentials(name); err != nil {
+			slog.Warn("failed to delete openvpn credentials", "name", name, "error", err)
+		}
 	}
 	return s.tunnelStore.Delete(name)
 }

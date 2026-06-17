@@ -47,6 +47,7 @@ func init() {
 	application.RegisterEvent[map[string]any]("files-dropped")
 	application.RegisterEvent[HelperEvent]("helper")
 	application.RegisterEvent[struct{}]("helper_reset")
+	application.RegisterEvent[ipc.AuthPromptEventPayload]("auth_prompt")
 }
 
 // Run starts the GUI process. Blocks until the Wails app exits.

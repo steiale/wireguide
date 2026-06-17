@@ -100,6 +100,15 @@ export class ConnectionStatus {
         }
         if (/** @type {any} */(false)) {
             /**
+             * Protocol identifies the VPN backend (WireGuard or OpenVPN). Empty for
+             * legacy/WireGuard statuses; the frontend treats empty as WireGuard.
+             * @member
+             * @type {Protocol | undefined}
+             */
+            this["protocol"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * ActiveTunnels lists the names of all currently connected (or connecting)
              * tunnels. Populated by the multi-tunnel manager so the frontend can show
              * which tunnels are active.
@@ -127,14 +136,14 @@ export class ConnectionStatus {
      * @returns {ConnectionStatus}
      */
     static createFrom($$source = {}) {
-        const $$createField10_0 = $$createType0;
-        const $$createField11_0 = $$createType2;
+        const $$createField11_0 = $$createType0;
+        const $$createField12_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("active_tunnels" in $$parsedSource) {
-            $$parsedSource["active_tunnels"] = $$createField10_0($$parsedSource["active_tunnels"]);
+            $$parsedSource["active_tunnels"] = $$createField11_0($$parsedSource["active_tunnels"]);
         }
         if ("tunnels" in $$parsedSource) {
-            $$parsedSource["tunnels"] = $$createField11_0($$parsedSource["tunnels"]);
+            $$parsedSource["tunnels"] = $$createField12_0($$parsedSource["tunnels"]);
         }
         return new ConnectionStatus(/** @type {Partial<ConnectionStatus>} */($$parsedSource));
     }
@@ -351,6 +360,24 @@ export class PeerConfig {
         return new PeerConfig(/** @type {Partial<PeerConfig>} */($$parsedSource));
     }
 }
+
+/**
+ * Protocol identifies which VPN backend a tunnel uses. WireGuide+ started as a
+ * WireGuard-only client; OpenVPN support was added later. Tunnels created before
+ * the protocol field existed have no value in their .meta.json — callers MUST
+ * treat the empty string as ProtocolWireGuard for backward compatibility.
+ * @readonly
+ * @enum {string}
+ */
+export const Protocol = {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero: "",
+
+    ProtocolWireGuard: "wireguard",
+    ProtocolOpenVPN: "openvpn",
+};
 
 /**
  * State represents the tunnel connection state.

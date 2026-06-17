@@ -125,6 +125,18 @@ func installAndLoadDaemon(args Args) error {
 	// If the service isn't loaded yet (first install or a previous
 	// uninstall), `kickstart` fails with non-zero exit and we fall back to
 	// `bootstrap` to load it from the plist.
+	// If the app bundle ships an openvpn binary (Contents/MacOS/openvpn), copy
+	// it to /Library/PrivilegedHelperTools/openvpn so the helper can find it
+	// via filepath.Dir(os.Args[0]). The copy is conditional — dev builds that
+	// lack the binary still install the helper successfully.
+	ovpnExe := filepath.Join(filepath.Dir(exe), "openvpn")
+	ovpnDst := "/Library/PrivilegedHelperTools/openvpn"
+	ovpnSnippet := fmt.Sprintf(
+		`if [ -f %s ]; then cp -f %s %s && chown root:wheel %s && chmod 755 %s; fi; `,
+		shellQuote(ovpnExe), shellQuote(ovpnExe), shellQuote(ovpnDst),
+		shellQuote(ovpnDst), shellQuote(ovpnDst),
+	)
+
 	shellScript := fmt.Sprintf(
 		// Idempotently stop and remove both the legacy v1.0.x daemon (label
 		// com.wireguide.helper) and the current one before reinstalling.
@@ -143,6 +155,7 @@ func installAndLoadDaemon(args Args) error {
 			`cp -f %s %s && `+
 			`chown root:wheel %s && `+
 			`chmod 644 %s && `+
+			ovpnSnippet+
 			`(launchctl kickstart -k system/%s 2>/dev/null || launchctl bootstrap system %s)`,
 		shellQuote(exe), shellQuote(daemonBinary),
 		shellQuote(daemonBinary),

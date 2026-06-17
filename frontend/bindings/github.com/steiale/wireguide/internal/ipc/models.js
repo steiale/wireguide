@@ -7,6 +7,38 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * AuthPromptEventPayload is broadcast (helper → GUI) when an OpenVPN tunnel is
+ * waiting for the user to enter credentials.
+ */
+export class AuthPromptEventPayload {
+    /**
+     * Creates a new AuthPromptEventPayload instance.
+     * @param {Partial<AuthPromptEventPayload>} [$$source = {}] - The source object to create the AuthPromptEventPayload.
+     */
+    constructor($$source = {}) {
+        if (!("tunnel_name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["tunnel_name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AuthPromptEventPayload instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {AuthPromptEventPayload}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AuthPromptEventPayload(/** @type {Partial<AuthPromptEventPayload>} */($$parsedSource));
+    }
+}
+
+/**
  * LogEntry is a single structured log record forwarded from the helper
  * to the GUI (and from the GUI to the frontend LogViewer). We keep it flat
  * — no nested attrs — because the viewer just renders a one-line per entry.

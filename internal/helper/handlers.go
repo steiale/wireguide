@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/steiale/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/ovpn"
 	"github.com/steiale/wireguide/internal/tunnel"
 	"github.com/steiale/wireguide/internal/update"
 )
@@ -37,6 +39,8 @@ func (h *Helper) registerHandlers() {
 	h.server.Handle(ipc.MethodSetDNSProtection, h.handleSetDNSProtection)
 	h.server.Handle(ipc.MethodSetHealthCheck, h.handleSetHealthCheck)
 	h.server.Handle(ipc.MethodSetPinInterface, h.handleSetPinInterface)
+	h.server.Handle(ipc.MethodSaveCredentials, h.handleSaveCredentials)
+	h.server.Handle(ipc.MethodFeedCredentials, h.handleFeedCredentials)
 }
 
 func (h *Helper) handleSetLogLevel(params json.RawMessage) (interface{}, error) {
@@ -80,6 +84,14 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
+
+	// OpenVPN path: route to the OpenVPN manager. WireGuard logic below is
+	// unchanged. NormalizeProtocol treats an empty protocol as WireGuard so
+	// legacy GUI builds keep working.
+	if domain.NormalizeProtocol(req.Protocol) == domain.ProtocolOpenVPN {
+		return h.connectOpenVPN(&req)
+	}
+
 	if req.Config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -179,6 +191,16 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 		h.monitor.CancelRetry()
 	}
 
+	// OpenVPN tunnels are tracked separately. If the named tunnel is an active
+	// OpenVPN tunnel, route the disconnect there and return.
+	if tunnelName != "" && h.ovpnManager != nil {
+		for _, n := range h.ovpnManager.ActiveTunnelNames() {
+			if n == tunnelName {
+				return ipc.Empty{}, h.ovpnManager.Disconnect(tunnelName)
+			}
+		}
+	}
+
 	if tunnelName != "" {
 		if err := h.manager.DisconnectTunnel(tunnelName); err != nil {
 			return nil, err
@@ -188,8 +210,15 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 		delete(h.autoReconnect, tunnelName)
 		h.mu.Unlock()
 	} else {
-		// No name specified — disconnect first tunnel (backward compat).
-		// Snapshot active tunnel name before disconnect so we can clear it.
+		// No name specified — disconnect first active OpenVPN tunnel if there
+		// is no WireGuard tunnel active, then fall through to WireGuard.
+		// MiniMode's Disconnect() call lands here.
+		if h.ovpnManager != nil && !h.manager.IsConnected() {
+			if ovpnNames := h.ovpnManager.ActiveTunnelNames(); len(ovpnNames) > 0 {
+				return ipc.Empty{}, h.ovpnManager.Disconnect(ovpnNames[0])
+			}
+		}
+		// Disconnect first WireGuard tunnel (backward compat).
 		activeName := h.manager.ActiveTunnel()
 		if err := h.manager.Disconnect(); err != nil {
 			return nil, err
@@ -213,11 +242,24 @@ func (h *Helper) handleIsConnected(params json.RawMessage) (interface{}, error) 
 }
 
 func (h *Helper) handleActiveName(params json.RawMessage) (interface{}, error) {
-	return ipc.StringResponse{Value: h.manager.ActiveTunnel()}, nil
+	name := h.manager.ActiveTunnel()
+	// Fall back to the first active OpenVPN tunnel when no WireGuard tunnel is up.
+	if name == "" && h.ovpnManager != nil {
+		if ovpnNames := h.ovpnManager.ActiveTunnelNames(); len(ovpnNames) > 0 {
+			name = ovpnNames[0]
+		}
+	}
+	return ipc.StringResponse{Value: name}, nil
 }
 
 func (h *Helper) handleActiveTunnels(params json.RawMessage) (interface{}, error) {
-	return ipc.ActiveTunnelsResponse{Names: h.manager.ActiveTunnels()}, nil
+	names := h.manager.ActiveTunnels()
+	if h.ovpnManager != nil {
+		for _, n := range h.ovpnManager.ActiveTunnelNames() {
+			names = append(names, n)
+		}
+	}
+	return ipc.ActiveTunnelsResponse{Names: names}, nil
 }
 
 func (h *Helper) handleSetKillSwitch(params json.RawMessage) (interface{}, error) {
@@ -303,5 +345,72 @@ func (h *Helper) handleSetPinInterface(params json.RawMessage) (interface{}, err
 		return nil, err
 	}
 	h.manager.SetPinInterface(req.Enabled)
+	return ipc.Empty{}, nil
+}
+
+// connectOpenVPN brings up an OpenVPN tunnel. Called from handleConnect (which
+// already holds connectMu) when the request protocol is OpenVPN. The raw .ovpn
+// content is validated server-side and handed to the OpenVPN manager.
+func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
+	if h.ovpnManager == nil {
+		return nil, fmt.Errorf("openvpn support not available")
+	}
+	if req.TunnelName == "" {
+		return nil, fmt.Errorf("tunnel_name is required for OpenVPN")
+	}
+	if req.OVPNConfig == "" {
+		return nil, fmt.Errorf("ovpn_config is required for OpenVPN")
+	}
+	// Re-validate server-side (don't trust client).
+	if err := ovpn.ValidateOVPN([]byte(req.OVPNConfig)); err != nil {
+		return nil, fmt.Errorf("invalid openvpn config: %w", err)
+	}
+
+	// Already active? Treat as a no-op via the typed code (matches WireGuard).
+	for _, n := range h.ovpnManager.ActiveTunnelNames() {
+		if n == req.TunnelName {
+			return nil, &ipc.CodedError{
+				Code:    ipc.ErrCodeAlreadyConnected,
+				Message: fmt.Sprintf("tunnel %q is already connected", req.TunnelName),
+			}
+		}
+	}
+
+	if err := h.ovpnManager.Connect(req.TunnelName, []byte(req.OVPNConfig)); err != nil {
+		return nil, err
+	}
+	return ipc.Empty{}, nil
+}
+
+// handleSaveCredentials persists OpenVPN credentials (username + base password)
+// to the Keychain. The TOTP code is never stored.
+func (h *Helper) handleSaveCredentials(params json.RawMessage) (interface{}, error) {
+	var req ipc.SaveCredentialsRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+	if req.TunnelName == "" {
+		return nil, fmt.Errorf("tunnel_name is required")
+	}
+	if err := ovpn.StoreCredentials(req.TunnelName, req.Username, req.BasePassword); err != nil {
+		return nil, err
+	}
+	return ipc.Empty{}, nil
+}
+
+// handleFeedCredentials delivers credentials to an OpenVPN tunnel that is
+// blocked on an auth prompt. FullPassword = basePassword + TOTP code, combined
+// by the GUI.
+func (h *Helper) handleFeedCredentials(params json.RawMessage) (interface{}, error) {
+	var req ipc.FeedCredentialsRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+	if h.ovpnManager == nil {
+		return nil, fmt.Errorf("openvpn support not available")
+	}
+	if err := h.ovpnManager.FeedCredentials(req.TunnelName, req.Username, req.FullPassword); err != nil {
+		return nil, err
+	}
 	return ipc.Empty{}, nil
 }

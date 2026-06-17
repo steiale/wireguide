@@ -143,5 +143,15 @@ func (b *eventBridge) handleEvent(method string, params json.RawMessage) {
 		} else {
 			b.app.Event.Emit("log", entry)
 		}
+	case ipc.EventAuthPrompt:
+		// OpenVPN credential request: forward to the frontend so it can show
+		// the auth modal. The frontend listens for the "auth_prompt" Wails
+		// event and reads { tunnel_name } from the payload.
+		var payload ipc.AuthPromptEventPayload
+		if err := json.Unmarshal(params, &payload); err != nil {
+			slog.Debug("event bridge: unmarshal auth prompt failed", "error", err)
+		} else {
+			b.app.Event.Emit("auth_prompt", payload)
+		}
 	}
 }

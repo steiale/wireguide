@@ -60,6 +60,9 @@ const (
 	MethodSetDNSProtection = "Firewall.SetDNSProtection"
 	MethodSetHealthCheck   = "Monitor.SetHealthCheck"
 	MethodSetPinInterface  = "Network.SetPinInterface"
+	// OpenVPN credential methods (GUI → helper).
+	MethodSaveCredentials = "Ovpn.SaveCredentials"
+	MethodFeedCredentials = "Ovpn.FeedCredentials"
 )
 
 // Event names (server → client notifications)
@@ -67,6 +70,9 @@ const (
 	EventStatus    = "event.status"
 	EventReconnect = "event.reconnect"
 	EventLog       = "event.log"
+	// EventAuthPrompt is pushed helper → GUI when an OpenVPN tunnel needs the
+	// user to supply credentials (e.g. a TOTP code) to continue connecting.
+	EventAuthPrompt = "event.auth_prompt"
 )
 
 // CodedError is an error that carries a specific JSON-RPC error code.

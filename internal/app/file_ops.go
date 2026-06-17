@@ -15,7 +15,10 @@ import (
 	"time"
 
 	"github.com/steiale/wireguide/internal/config"
+	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/ovpn"
+	"github.com/steiale/wireguide/internal/storage"
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
 )
@@ -107,7 +110,53 @@ func (s *TunnelService) ImportConfig(name, content string) (*TunnelInfo, error) 
 	return &TunnelInfo{
 		Name:     cfg.Name,
 		Endpoint: endpoint,
+		Protocol: domain.ProtocolWireGuard,
 	}, nil
+}
+
+// ImportOVPN validates and stores a raw OpenVPN config under the given name,
+// writing the .ovpn file plus a .meta.json marking the tunnel as OpenVPN.
+func (s *TunnelService) ImportOVPN(name, content string) (*TunnelInfo, error) {
+	if err := storage.ValidateTunnelName(name); err != nil {
+		return nil, err
+	}
+	if err := ovpn.ValidateOVPN([]byte(content)); err != nil {
+		return nil, err
+	}
+	if err := s.tunnelStore.SaveOVPN(name, content); err != nil {
+		return nil, err
+	}
+	// Persist the protocol marker so ListTunnels / Connect route correctly.
+	meta, _ := s.tunnelStore.LoadMeta(name)
+	if meta == nil {
+		meta = &storage.TunnelMeta{}
+	}
+	meta.Protocol = domain.ProtocolOpenVPN
+	if err := s.tunnelStore.SaveMeta(name, meta); err != nil {
+		// Roll back the .ovpn file so we don't leave a tunnel with no protocol marker.
+		_ = s.tunnelStore.Delete(name)
+		return nil, fmt.Errorf("saving openvpn metadata: %w", err)
+	}
+
+	endpoint := ""
+	if cfg, err := ovpn.ParseOVPN([]byte(content)); err == nil {
+		endpoint = cfg.Remote
+	}
+	return &TunnelInfo{
+		Name:     name,
+		Endpoint: endpoint,
+		Protocol: domain.ProtocolOpenVPN,
+	}, nil
+}
+
+// ImportFile dispatches to the correct importer based on the source filename's
+// extension: .ovpn → OpenVPN, everything else → WireGuard. Used by the native
+// file-drop / picker paths which know the original filename.
+func (s *TunnelService) ImportFile(name, content, filename string) (*TunnelInfo, error) {
+	if strings.HasSuffix(strings.ToLower(filename), ".ovpn") {
+		return s.ImportOVPN(name, content)
+	}
+	return s.ImportConfig(name, content)
 }
 
 // maxReadFileSize is the largest file ReadFile will accept (10 MB).
@@ -151,8 +200,12 @@ func (s *TunnelService) ValidateConfig(content string) ([]string, error) {
 	return result.ErrorMessages(), nil
 }
 
-// GetConfigText returns the serialized form of a stored tunnel's config.
+// GetConfigText returns the stored tunnel config as text. For OpenVPN tunnels
+// the raw .ovpn content is returned; for WireGuard the serialized INI form.
 func (s *TunnelService) GetConfigText(name string) (string, error) {
+	if s.tunnelStore.IsOVPN(name) {
+		return s.tunnelStore.LoadOVPN(name)
+	}
 	cfg, err := s.tunnelStore.Load(name)
 	if err != nil {
 		return "", err
@@ -161,7 +214,8 @@ func (s *TunnelService) GetConfigText(name string) (string, error) {
 }
 
 // UpdateConfig parses, validates, and overwrites an existing tunnel's config.
-// Rejects edits of the connected tunnel.
+// Rejects edits of the connected tunnel. Routes to the OpenVPN path for .ovpn
+// tunnels so the raw config is saved without WireGuard parsing.
 func (s *TunnelService) UpdateConfig(name, content string) error {
 	var active ipc.StringResponse
 	if err := s.call(ipc.MethodActiveName, nil, &active); err != nil {
@@ -169,6 +223,12 @@ func (s *TunnelService) UpdateConfig(name, content string) error {
 	}
 	if active.Value == name {
 		return fmt.Errorf("cannot edit connected tunnel %q — disconnect first", name)
+	}
+	if s.tunnelStore.IsOVPN(name) {
+		if err := ovpn.ValidateOVPN([]byte(content)); err != nil {
+			return fmt.Errorf("invalid .ovpn config: %w", err)
+		}
+		return s.tunnelStore.SaveOVPN(name, content)
 	}
 	cfg, err := config.Parse(content)
 	if err != nil {
@@ -240,10 +300,14 @@ func (s *TunnelService) ExportTunnel(name string) (string, error) {
 		return "", fmt.Errorf("app not initialized")
 	}
 
-	path, err := s.app.Dialog.SaveFile().
-		SetFilename(name+".conf").
-		AddFilter("WireGuard Config", "*.conf").
-		PromptForSingleSelection()
+	isOvpn := s.tunnelStore.IsOVPN(name)
+	dlg := s.app.Dialog.SaveFile()
+	if isOvpn {
+		dlg = dlg.SetFilename(name + ".ovpn").AddFilter("OpenVPN Config", "*.ovpn")
+	} else {
+		dlg = dlg.SetFilename(name + ".conf").AddFilter("WireGuard Config", "*.conf")
+	}
+	path, err := dlg.PromptForSingleSelection()
 	if err != nil {
 		return "", err
 	}

@@ -280,7 +280,16 @@ func (t *TunnelService) GetTunnelMeta(name string) (*storage.TunnelMeta, error) 
 	return t.tunnelStore.LoadMeta(name)
 }
 
-// SaveTunnelMeta persists per-tunnel metadata.
+// SaveTunnelMeta persists per-tunnel metadata. The frontend only sends the
+// fields it knows about (auto_reconnect, notes), so we read the existing meta
+// first and preserve any fields the caller didn't set — in particular Protocol,
+// which would otherwise be blanked out and cause an OpenVPN tunnel to be
+// treated as WireGuard on the next load.
 func (t *TunnelService) SaveTunnelMeta(name string, meta storage.TunnelMeta) error {
+	if existing, err := t.tunnelStore.LoadMeta(name); err == nil && existing != nil {
+		if meta.Protocol == "" {
+			meta.Protocol = existing.Protocol
+		}
+	}
 	return t.tunnelStore.SaveMeta(name, &meta)
 }

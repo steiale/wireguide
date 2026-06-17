@@ -20,9 +20,42 @@ type PingResponse struct {
 }
 
 // ConnectRequest is the parameter for Tunnel.Connect.
+//
+// For WireGuard tunnels (the default), Config carries the parsed config and
+// Protocol is empty or "wireguard". For OpenVPN tunnels, Protocol is "openvpn",
+// Config is nil, TunnelName names the tunnel, and OVPNConfig carries the raw
+// .ovpn file content (the helper writes it to its runtime dir and spawns
+// openvpn). This keeps the WireGuard path byte-for-byte unchanged.
 type ConnectRequest struct {
 	Config        *domain.WireGuardConfig `json:"config"`
 	AutoReconnect bool                    `json:"auto_reconnect"`
+
+	Protocol   domain.Protocol `json:"protocol,omitempty"`
+	TunnelName string          `json:"tunnel_name,omitempty"`
+	OVPNConfig string          `json:"ovpn_config,omitempty"`
+}
+
+// AuthPromptEventPayload is broadcast (helper → GUI) when an OpenVPN tunnel is
+// waiting for the user to enter credentials.
+type AuthPromptEventPayload struct {
+	TunnelName string `json:"tunnel_name"`
+}
+
+// SaveCredentialsRequest is the parameter for Ovpn.SaveCredentials. The helper
+// persists username + base password (never the TOTP code) in the Keychain.
+type SaveCredentialsRequest struct {
+	TunnelName   string `json:"tunnel_name"`
+	Username     string `json:"username"`
+	BasePassword string `json:"base_password"`
+}
+
+// FeedCredentialsRequest is the parameter for Ovpn.FeedCredentials. FullPassword
+// is basePassword + the 6-digit TOTP code, combined by the GUI just before the
+// call so the helper forwards it verbatim to openvpn.
+type FeedCredentialsRequest struct {
+	TunnelName   string `json:"tunnel_name"`
+	Username     string `json:"username"`
+	FullPassword string `json:"full_password"`
 }
 
 // ConnectionStatus is the wire representation of the tunnel connection state.

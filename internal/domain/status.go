@@ -43,6 +43,10 @@ type ConnectionStatus struct {
 	Endpoint     string `json:"endpoint,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 
+	// Protocol identifies the VPN backend (WireGuard or OpenVPN). Empty for
+	// legacy/WireGuard statuses; the frontend treats empty as WireGuard.
+	Protocol Protocol `json:"protocol,omitempty"`
+
 	// ActiveTunnels lists the names of all currently connected (or connecting)
 	// tunnels. Populated by the multi-tunnel manager so the frontend can show
 	// which tunnels are active.

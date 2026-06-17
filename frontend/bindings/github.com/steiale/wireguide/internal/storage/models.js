@@ -6,6 +6,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as domain$0 from "../domain/models.js";
+
 /**
  * Settings holds application-wide settings.
  */
@@ -136,6 +140,13 @@ export class TunnelMeta {
              * @type {string | undefined}
              */
             this["notes"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {domain$0.Protocol | undefined}
+             */
+            this["protocol"] = undefined;
         }
 
         Object.assign(this, $$source);

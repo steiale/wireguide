@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/firewall"
 	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/ovpn"
 	"github.com/steiale/wireguide/internal/reconnect"
 	"github.com/steiale/wireguide/internal/tunnel"
 )
@@ -68,10 +70,11 @@ const shutdownGrace = 10 * time.Second
 
 // Helper holds the helper process state.
 type Helper struct {
-	server   *ipc.Server
-	manager  *tunnel.Manager
-	firewall firewall.FirewallManager
-	monitor  *reconnect.Monitor
+	server      *ipc.Server
+	manager     *tunnel.Manager
+	ovpnManager *ovpn.Manager
+	firewall    firewall.FirewallManager
+	monitor     *reconnect.Monitor
 
 	// connectMu serializes Connect/Disconnect calls. Without this, two
 	// concurrent GUI connections could race on activeCfg, with the loser's
@@ -134,6 +137,18 @@ func Run(addr string, ownerUID int, dataDir string) error {
 		}
 		return h.server.Broadcast
 	})))
+
+	// OpenVPN manager: resolve the bundled openvpn binary next to the helper
+	// executable, and supervise OpenVPN tunnels in a runtime dir under the
+	// system data dir. onStatus broadcasts an EventStatus the same way the
+	// WireGuard diff loop does; onAuthNeeded pushes an AuthPrompt event so the
+	// GUI can prompt for the TOTP code.
+	ovpnBinary := filepath.Join(filepath.Dir(os.Args[0]), "openvpn")
+	ovpnRuntimeDir := filepath.Join(dataDir, "ovpn-run")
+	h.ovpnManager = ovpn.NewManager(ovpnBinary, ovpnRuntimeDir,
+		h.broadcastOvpnStatus,
+		h.broadcastAuthPrompt,
+	)
 
 	// Crash recovery (now logs via broadcast handler)
 	if recovered := tunnel.RecoverFromCrash(dataDir); len(recovered) > 0 {
@@ -232,6 +247,27 @@ func (h *Helper) copyActiveCfgs() map[string]*domain.WireGuardConfig {
 		cp[k] = v
 	}
 	return cp
+}
+
+// broadcastOvpnStatus is the onStatus callback for the OpenVPN manager. It
+// pushes an EventStatus carrying the merged status so the GUI updates the same
+// way it does for WireGuard. The eventLoop's diff is WireGuard-only, so OpenVPN
+// state changes are broadcast here directly (the event is idempotent on the
+// GUI side).
+func (h *Helper) broadcastOvpnStatus(status domain.ConnectionStatus) {
+	if h.server == nil {
+		return
+	}
+	h.server.Broadcast(ipc.EventStatus, h.statusDTO())
+}
+
+// broadcastAuthPrompt notifies the GUI that an OpenVPN tunnel is waiting for
+// credentials (e.g. a TOTP code).
+func (h *Helper) broadcastAuthPrompt(tunnelName string) {
+	if h.server == nil {
+		return
+	}
+	h.server.Broadcast(ipc.EventAuthPrompt, ipc.AuthPromptEventPayload{TunnelName: tunnelName})
 }
 
 // onReconnectState forwards reconnection state changes to any subscribed GUI.
@@ -443,6 +479,9 @@ func (h *Helper) cleanup() {
 		h.firewall.Cleanup()
 		if h.manager.IsConnected() {
 			h.manager.DisconnectAll()
+		}
+		if h.ovpnManager != nil {
+			h.ovpnManager.Stop()
 		}
 		slog.Info("helper shutdown complete")
 	})

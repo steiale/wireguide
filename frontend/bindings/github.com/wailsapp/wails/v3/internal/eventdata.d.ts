@@ -18,6 +18,7 @@ import type * as ipc$0 from "../../../../steiale/wireguide/internal/ipc/models.j
 declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
+            "auth_prompt": ipc$0.AuthPromptEventPayload;
             "files-dropped": { [_ in string]?: any };
             "helper": gui$0.HelperEvent;
             "helper_reset": {};

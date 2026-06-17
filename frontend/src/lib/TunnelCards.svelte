@@ -247,7 +247,14 @@
               class:dot-warn={isConnected && !hasHandshake}></span>
             <span class="card-chevron" class:open={isExpanded}>›</span>
             <span class="card-name-wrap">
-              <span class="card-name">{tun.name}</span>
+              <span class="card-name-row">
+                <span class="card-name">{tun.name}</span>
+                {#if tun.protocol === 'openvpn'}
+                  <span class="proto-badge proto-ovpn">OVPN</span>
+                {:else}
+                  <span class="proto-badge proto-wg">WG</span>
+                {/if}
+              </span>
               {#if notesMap[tun.name]}
                 <span class="card-notes">{notesMap[tun.name]}</span>
               {/if}
@@ -526,12 +533,34 @@
     min-width: 0;
     gap: 1px;
   }
+  .card-name-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
   .card-name {
     font: 500 14px/20px var(--font-sans);
     color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Protocol badge — subtle, muted pill next to the tunnel name. */
+  .proto-badge {
+    flex-shrink: 0;
+    padding: 1px 5px;
+    border-radius: var(--radius-xs);
+    font: 600 9px/13px var(--font-sans);
+    letter-spacing: 0.04em;
+    border: 0.5px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+  }
+  .proto-ovpn {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+    background: var(--blue-tint, color-mix(in srgb, var(--accent) 12%, transparent));
   }
   .card-notes {
     font: var(--text-footnote);

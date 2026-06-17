@@ -267,5 +267,16 @@
     "select_tunnel": "Tunnel auswählen...",
     "current_ssid": "Aktuell verbunden mit",
     "no_ssid": "Kein WLAN verbunden"
+  },
+  "auth": {
+    "title": "OpenVPN-Authentifizierung",
+    "subtitle": "Zugangsdaten für \"{name}\" eingeben.",
+    "username": "Benutzername",
+    "password": "Passwort",
+    "totp": "2FA-Code (6 Ziffern)",
+    "save": "Zugangsdaten speichern",
+    "submit": "Verbinden",
+    "cancel": "Abbrechen",
+    "username_required": "Benutzername ist erforderlich"
   }
 }
