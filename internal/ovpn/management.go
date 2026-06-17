@@ -3,6 +3,7 @@ package ovpn
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -137,6 +138,8 @@ func (c *mgmtClient) readLoop(
 			payload := strings.TrimPrefix(line, ">PASSWORD:")
 			if strings.HasPrefix(payload, "Need 'Auth'") && onAuthPrompt != nil {
 				onAuthPrompt()
+			} else if strings.HasPrefix(payload, "Verification Failed") {
+				slog.Warn("ovpn: server rejected credentials", "detail", payload)
 			}
 		}
 	}

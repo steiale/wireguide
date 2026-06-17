@@ -25,7 +25,6 @@ type entry struct {
 	mgmt   *mgmtClient
 	status domain.ConnectionStatus
 	authCh chan authReply // buffered(1); FeedCredentials sends here
-	logPath string
 }
 
 // Manager supervises OpenVPN subprocesses, one per active tunnel. It mirrors
@@ -87,7 +86,6 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 
 	sockPath := m.sockPath(name)
 	cfgPath := m.configPath(name)
-	logFile := m.logPath(name)
 
 	// 2. Remove any stale socket left by a previous crashed run.
 	_ = os.Remove(sockPath)
@@ -102,23 +100,28 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 	// 4. Start the openvpn subprocess. Management flags as CLI args take
 	// precedence over any conflicting directives in the config file.
 	// --script-security 0 prevents execution of up/down/plugin scripts.
+	// Stdout/stderr go to the helper's stderr (which launchd routes to
+	// /var/log/wireguide-plus-helper.log) for easy debugging; we also keep
+	// a file copy via --log for persistent post-mortem access.
 	cmd := exec.Command(m.binaryPath,
 		"--config", cfgPath,
 		"--management", sockPath, "unix",
 		"--management-hold",
 		"--management-query-passwords",
 		"--script-security", "0",
-		"--log", logFile,
 	)
 	cmd.Dir = m.runtimeDir
+	// Pipe OpenVPN output to the helper's stderr so it appears in
+	// /var/log/wireguide-plus-helper.log alongside the Go logs.
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting openvpn: %w", err)
 	}
 
 	e := &entry{
-		cmd:     cmd,
-		authCh:  make(chan authReply, 1),
-		logPath: logFile,
+		cmd:    cmd,
+		authCh: make(chan authReply, 1),
 		status: domain.ConnectionStatus{
 			State:      domain.StateConnecting,
 			TunnelName: name,
@@ -249,6 +252,7 @@ func (m *Manager) onMgmtAuthPrompt(name string, e *entry) {
 			slog.Warn("ovpn: management gone before credentials arrived", "tunnel", name)
 			return
 		}
+		slog.Info("ovpn: sending credentials to management socket", "tunnel", name, "username", reply.username)
 		if err := mgmt.sendCredentials(reply.username, reply.password); err != nil {
 			slog.Error("ovpn: sending credentials failed", "tunnel", name, "error", err)
 			m.setError(name, fmt.Sprintf("sending credentials failed: %v", err))
