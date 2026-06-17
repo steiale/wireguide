@@ -273,8 +273,7 @@
     "subtitle": "Zugangsdaten für \"{name}\" eingeben.",
     "username": "Benutzername",
     "password": "Passwort",
-    "totp": "2FA-Code (6 Ziffern)",
-    "save": "Zugangsdaten speichern",
+    "save": "Benutzernamen speichern",
     "submit": "Verbinden",
     "cancel": "Abbrechen",
     "username_required": "Benutzername ist erforderlich"

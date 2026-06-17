@@ -236,8 +236,7 @@
     "subtitle": "「{name}」の認証情報を入力してください。",
     "username": "ユーザー名",
     "password": "パスワード",
-    "totp": "2FA コード（6 桁）",
-    "save": "認証情報を保存",
+    "save": "ユーザー名を保存",
     "submit": "接続",
     "cancel": "キャンセル",
     "username_required": "ユーザー名が必要です"

@@ -273,8 +273,7 @@
     "subtitle": "Enter credentials for \"{name}\".",
     "username": "Username",
     "password": "Password",
-    "totp": "2FA Code (6 digits)",
-    "save": "Save credentials",
+    "save": "Save username",
     "submit": "Connect",
     "cancel": "Cancel",
     "username_required": "Username is required"

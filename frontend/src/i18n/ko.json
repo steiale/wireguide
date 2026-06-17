@@ -236,8 +236,7 @@
     "subtitle": "\"{name}\"의 자격 증명을 입력하세요.",
     "username": "사용자 이름",
     "password": "비밀번호",
-    "totp": "2FA 코드 (6자리)",
-    "save": "자격 증명 저장",
+    "save": "사용자 이름 저장",
     "submit": "연결",
     "cancel": "취소",
     "username_required": "사용자 이름이 필요합니다"

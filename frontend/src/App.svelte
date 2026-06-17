@@ -53,13 +53,12 @@
 
   // OpenVPN auth modal state. The backend emits an "auth_prompt" event when an
   // OpenVPN tunnel needs credentials (and none are cached). We show a modal that
-  // collects username + base password + a 6-digit TOTP code, then feed the
-  // combined password (basePassword + totpCode) back to the helper.
+  // collects username + password (which may include a TOTP token as part of
+  // the password string — the user types everything as one combined field).
   let showAuth = false;
   let authTunnelName = '';
   let authUsername = '';
   let authPassword = '';
-  let authTotp = '';
   let authSave = true;
   let authBusy = false;
   let authError = '';
@@ -156,27 +155,23 @@
       await refreshStatus(TunnelService);
     });
 
-    // OpenVPN auth prompt — the helper needs credentials (e.g. a TOTP code) to
-    // continue connecting. Payload: { tunnel_name: string }.
+    // OpenVPN auth prompt — the helper needs credentials to continue connecting.
+    // Payload: { tunnel_name: string }.
     authPromptUnsub = Events.On('auth_prompt', async (event) => {
       const name = event.data?.tunnel_name || '';
       if (!name) return;
       authTunnelName = name;
-      authTotp = '';
       authError = '';
       authBusy = false;
-      // Pre-fill saved credentials so the user only has to type the TOTP code.
+      // Pre-fill saved username; leave password empty so the user types the
+      // full combined password (including any TOTP token) fresh each time.
       try {
         const saved = await TunnelService.GetSavedCredentials(name);
-        if (saved) {
-          authUsername = saved.username || '';
-          authPassword = saved.base_password || '';
-        } else {
-          authPassword = '';
-        }
+        authUsername = saved?.username || '';
       } catch (_) {
-        authPassword = '';
+        authUsername = '';
       }
+      authPassword = '';
       showAuth = true;
     });
   });
@@ -559,22 +554,20 @@
       authError = $t('auth.username_required');
       return;
     }
-    const fullPassword = authPassword + (authTotp || '');
     authBusy = true;
     try {
-      // Optionally persist the static base password (never the TOTP code).
+      // Optionally save the username for next time (never the password — it
+      // includes a one-time token and is meaningless after 30 s).
       if (authSave) {
         try {
-          await TunnelService.SaveCredentials(authTunnelName, authUsername, authPassword);
+          await TunnelService.SaveCredentials(authTunnelName, authUsername, '');
         } catch (e) {
-          // Non-fatal — failing to cache shouldn't block this connect.
           console.warn('SaveCredentials failed:', e);
         }
       }
-      await TunnelService.FeedCredentials(authTunnelName, authUsername, fullPassword);
+      await TunnelService.FeedCredentials(authTunnelName, authUsername, authPassword);
       showAuth = false;
       authPassword = '';
-      authTotp = '';
     } catch (e) {
       authError = errText(e);
     } finally {
@@ -585,7 +578,6 @@
   function cancelAuth() {
     showAuth = false;
     authPassword = '';
-    authTotp = '';
     authError = '';
   }
 </script>
@@ -765,11 +757,6 @@
           <label for="auth-pass">{$t('auth.password')}</label>
           <input id="auth-pass" type="password" autocomplete="current-password"
             bind:value={authPassword} disabled={authBusy} />
-
-          <label for="auth-totp">{$t('auth.totp')}</label>
-          <input id="auth-totp" type="text" inputmode="numeric" pattern="[0-9]*"
-            maxlength="6" placeholder="123456" autocomplete="one-time-code"
-            bind:value={authTotp} disabled={authBusy} />
 
           <label class="auth-save-row">
             <input type="checkbox" bind:checked={authSave} disabled={authBusy} />
