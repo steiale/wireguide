@@ -120,12 +120,14 @@
       chartReadyNames = new Set([...chartReadyNames, name]);
     }, 220);
 
-    const cachedEndpoint = details[name]?.peers?.[0]?.endpoint;
-    if (!details[name] || cachedEndpoint !== tun?.endpoint) {
-      try {
-        const d = await TunnelService.GetTunnelDetail(name);
-        details = { ...details, [name]: d };
-      } catch (e) {}
+    if (tun?.protocol !== 'openvpn') {
+      const cachedEndpoint = details[name]?.peers?.[0]?.endpoint;
+      if (!details[name] || cachedEndpoint !== tun?.endpoint) {
+        try {
+          const d = await TunnelService.GetTunnelDetail(name);
+          details = { ...details, [name]: d };
+        } catch (e) {}
+      }
     }
     if (!metas[name]) {
       try {
@@ -320,7 +322,22 @@
               {/if}
 
               <!-- Config info rows -->
-              {#if details[tun.name]}
+              {#if tun.protocol === 'openvpn'}
+                <div class="info-rows">
+                  {#if tun.endpoint}
+                    <div class="info-row">
+                      <span class="info-label">{$t('tunnel.endpoint')}</span>
+                      <span class="info-value">{tun.endpoint}</span>
+                    </div>
+                  {/if}
+                  {#if tun.proto}
+                    <div class="info-row">
+                      <span class="info-label">{$t('tunnel.proto')}</span>
+                      <span class="info-value">{tun.proto.toUpperCase()}</span>
+                    </div>
+                  {/if}
+                </div>
+              {:else if details[tun.name]}
                 {@const d = details[tun.name]}
                 <div class="info-rows">
                   {#if d.interface?.address?.length}

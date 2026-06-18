@@ -142,6 +142,7 @@ type TunnelInfo struct {
 	Endpoint    string          `json:"endpoint"`
 	Notes       string          `json:"notes,omitempty"`
 	Protocol    domain.Protocol `json:"protocol"`
+	Proto       string          `json:"proto,omitempty"` // OpenVPN transport proto (udp/tcp)
 }
 
 // ConnectionStatus is re-exported from the domain package so Wails bindings

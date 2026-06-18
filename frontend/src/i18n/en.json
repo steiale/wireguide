@@ -30,6 +30,7 @@
     "export": "Export",
     "status": "Status",
     "endpoint": "Endpoint",
+    "proto": "Protocol",
     "address": "Address",
     "allowed_ips": "Allowed IPs",
     "public_key": "Public Key",

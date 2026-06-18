@@ -29,6 +29,7 @@
     "export": "エクスポート",
     "status": "ステータス",
     "endpoint": "エンドポイント",
+    "proto": "プロトコル",
     "address": "アドレス",
     "allowed_ips": "許可 IP",
     "public_key": "公開鍵",

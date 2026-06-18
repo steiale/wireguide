@@ -52,12 +52,14 @@ func (s *TunnelService) tunnelInfoFor(name, activeName string) (TunnelInfo, bool
 	}
 
 	endpoint := ""
+	proto := ""
 	if protocol == domain.ProtocolOpenVPN {
 		if content, err := s.tunnelStore.LoadOVPN(name); err != nil {
 			slog.Warn("skipping broken openvpn tunnel", "name", name, "error", err)
 			return TunnelInfo{}, false
 		} else if cfg, perr := ovpn.ParseOVPN([]byte(content)); perr == nil {
 			endpoint = cfg.Remote
+			proto = cfg.Proto
 		}
 	} else {
 		cfg, err := s.tunnelStore.Load(name)
@@ -76,6 +78,7 @@ func (s *TunnelService) tunnelInfoFor(name, activeName string) (TunnelInfo, bool
 		Endpoint:    endpoint,
 		Notes:       notes,
 		Protocol:    protocol,
+		Proto:       proto,
 	}, true
 }
 

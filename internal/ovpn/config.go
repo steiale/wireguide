@@ -63,7 +63,11 @@ func ParseOVPN(data []byte) (*OVPNConfig, error) {
 		switch strings.ToLower(fields[0]) {
 		case "remote":
 			if cfg.Remote == "" && len(fields) >= 2 {
-				cfg.Remote = fields[1]
+				if len(fields) >= 3 {
+					cfg.Remote = fields[1] + ":" + fields[2]
+				} else {
+					cfg.Remote = fields[1]
+				}
 			}
 		case "proto":
 			if len(fields) >= 2 {

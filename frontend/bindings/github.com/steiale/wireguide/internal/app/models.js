@@ -298,6 +298,14 @@ export class TunnelInfo {
              */
             this["protocol"] = domain$0.Protocol.$zero;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * OpenVPN transport proto (udp/tcp)
+             * @member
+             * @type {string | undefined}
+             */
+            this["proto"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
