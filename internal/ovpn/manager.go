@@ -99,16 +99,12 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 
 	// 4. Start the openvpn subprocess. Management flags as CLI args take
 	// precedence over any conflicting directives in the config file.
-	// --script-security 0 prevents execution of up/down/plugin scripts.
-	// Stdout/stderr go to the helper's stderr (which launchd routes to
-	// /var/log/wireguide-plus-helper.log) for easy debugging; we also keep
-	// a file copy via --log for persistent post-mortem access.
 	cmd := exec.Command(m.binaryPath,
 		"--config", cfgPath,
 		"--management", sockPath, "unix",
 		"--management-hold",
 		"--management-query-passwords",
-		"--script-security", "0",
+		"--script-security", "2",
 	)
 	cmd.Dir = m.runtimeDir
 	// Pipe OpenVPN output to the helper's stderr so it appears in
