@@ -273,6 +273,7 @@
     "subtitle": "Zugangsdaten für \"{name}\" eingeben.",
     "username": "Benutzername",
     "password": "Passwort",
+    "password_hint": "OTP-Token anhängen, falls erforderlich",
     "save": "Benutzernamen speichern",
     "submit": "Verbinden",
     "cancel": "Abbrechen",

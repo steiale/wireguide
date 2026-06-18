@@ -757,6 +757,7 @@
           <label for="auth-pass">{$t('auth.password')}</label>
           <input id="auth-pass" type="password" autocomplete="current-password"
             bind:value={authPassword} disabled={authBusy} />
+          <p class="field-hint">{$t('auth.password_hint')}</p>
 
           <label class="auth-save-row">
             <input type="checkbox" bind:checked={authSave} disabled={authBusy} />
@@ -1138,6 +1139,11 @@
   .modal input[type="number"]:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--blue-tint);
+  }
+  .field-hint {
+    margin: 2px 0 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
   }
   .auth-save-row {
     display: flex;

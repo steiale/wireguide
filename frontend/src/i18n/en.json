@@ -273,6 +273,7 @@
     "subtitle": "Enter credentials for \"{name}\".",
     "username": "Username",
     "password": "Password",
+    "password_hint": "Append your OTP token if required",
     "save": "Save username",
     "submit": "Connect",
     "cancel": "Cancel",

@@ -236,6 +236,7 @@
     "subtitle": "「{name}」の認証情報を入力してください。",
     "username": "ユーザー名",
     "password": "パスワード",
+    "password_hint": "必要に応じてOTPトークンを末尾に追加",
     "save": "ユーザー名を保存",
     "submit": "接続",
     "cancel": "キャンセル",
