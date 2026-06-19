@@ -138,12 +138,19 @@ func Run(addr string, ownerUID int, dataDir string) error {
 		return h.server.Broadcast
 	})))
 
-	// OpenVPN manager: resolve the bundled openvpn binary next to the helper
-	// executable, and supervise OpenVPN tunnels in a runtime dir under the
-	// system data dir. onStatus broadcasts an EventStatus the same way the
-	// WireGuard diff loop does; onAuthNeeded pushes an AuthPrompt event so the
-	// GUI can prompt for the TOTP code.
+	// OpenVPN manager: resolve the bundled openvpn binary. Primary location is
+	// next to the helper in /Library/PrivilegedHelperTools/ (copied there by the
+	// install script). If that's missing — e.g. the helper version matched on
+	// first launch so the install script never ran — fall back to the standard
+	// app bundle location so openvpn works without a forced helper reinstall.
 	ovpnBinary := filepath.Join(filepath.Dir(os.Args[0]), "openvpn")
+	if _, err := os.Stat(ovpnBinary); err != nil {
+		const appBundleFallback = "/Applications/WireGuide+.app/Contents/MacOS/openvpn"
+		if _, err2 := os.Stat(appBundleFallback); err2 == nil {
+			slog.Info("openvpn not found next to helper, using app bundle fallback", "path", appBundleFallback)
+			ovpnBinary = appBundleFallback
+		}
+	}
 	ovpnRuntimeDir := filepath.Join(dataDir, "ovpn-run")
 	h.ovpnManager = ovpn.NewManager(ovpnBinary, ovpnRuntimeDir,
 		h.broadcastOvpnStatus,
