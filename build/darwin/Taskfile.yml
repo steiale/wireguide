@@ -45,6 +45,23 @@ tasks:
       # binary imports just internal/helper, so it has no AppKit dependency and
       # is safe to run as a root LaunchDaemon.
       - go build {{.BUILD_FLAGS}} -o {{.HELPER_OUTPUT}} ./cmd/helper
+      # Sign the helper binary with the Developer ID identity (with hardened
+      # runtime) when that identity is available in the keychain. macOS 13+
+      # refuses to `launchctl bootstrap` an ad-hoc / unsigned LaunchDaemon, so
+      # an ad-hoc dev build would otherwise produce a helper launchd silently
+      # declines to load. Falling back to ad-hoc keeps CI / machines without the
+      # cert working (those builds just can't run the daemon locally). The
+      # release `sign` task re-signs the whole bundle afterwards, so this does
+      # not conflict with notarization.
+      - |
+        if security find-identity -v -p codesigning 2>/dev/null | grep -q "{{.SIGN_IDENTITY}}"; then
+          codesign --force --options runtime --timestamp \
+            --sign "{{.SIGN_IDENTITY}}" "{{.HELPER_OUTPUT}}"
+          echo "helper signed with Developer ID"
+        else
+          codesign --force --sign - "{{.HELPER_OUTPUT}}"
+          echo "WARNING: Developer ID identity not found — helper ad-hoc signed (launchd will refuse to load it on macOS 13+)"
+        fi
     vars:
       BUILD_FLAGS: '{{if eq .DEV "true"}}{{if .EXTRA_TAGS}}-tags {{.EXTRA_TAGS}} {{end}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
@@ -146,6 +163,21 @@ tasks:
     internal: true
     cmds:
       - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.app"
+      # `--deep` just re-signed the bundled helper ad-hoc, which macOS 13+ will
+      # refuse to `launchctl bootstrap`. Re-sign ONLY the helper binary with the
+      # Developer ID identity (hardened runtime) when it is available, so dev
+      # `package` builds produce a launchd-loadable helper without needing the
+      # full notarized `sign` task. The release `sign` task re-signs the whole
+      # bundle with Developer ID afterwards, so this is a no-op overwrite there.
+      - |
+        HELPER="{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}-helper"
+        if security find-identity -v -p codesigning 2>/dev/null | grep -q "{{.SIGN_IDENTITY}}"; then
+          codesign --force --options runtime --timestamp \
+            --sign "{{.SIGN_IDENTITY}}" "$HELPER"
+          echo "bundled helper re-signed with Developer ID"
+        else
+          echo "WARNING: Developer ID identity not found — bundled helper stays ad-hoc (launchd will refuse to load it on macOS 13+)"
+        fi
 
   codesign:skip:
     summary: Skips codesigning when cross-compiling
@@ -193,20 +225,20 @@ tasks:
     cmds:
       - |
         VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' build/darwin/Info.plist)
-        DMG="wireguide-plus-v${VERSION}-darwin-arm64.dmg"
+        DMG="lockplus-v${VERSION}-darwin-arm64.dmg"
         # Rename for the DMG (same convention as the zip)
-        cp -r "{{.BIN_DIR}}/{{.APP_NAME}}.app" "WireGuide+.app"
+        cp -r "{{.BIN_DIR}}/{{.APP_NAME}}.app" "LockPlus.app"
         create-dmg \
-          --volname "WireGuide+" \
+          --volname "LockPlus" \
           --window-pos 200 120 \
           --window-size 560 400 \
           --icon-size 120 \
-          --icon "WireGuide+.app" 140 195 \
-          --hide-extension "WireGuide+.app" \
+          --icon "LockPlus.app" 140 195 \
+          --hide-extension "LockPlus.app" \
           --app-drop-link 420 195 \
           "${DMG}" \
-          "WireGuide+.app"
-        rm -rf "WireGuide+.app"
+          "LockPlus.app"
+        rm -rf "LockPlus.app"
         # Sign the DMG itself (the .app inside is already signed)
         codesign --sign "{{.SIGN_IDENTITY}}" --force "${DMG}"
         # Notarize + staple
@@ -227,10 +259,10 @@ tasks:
       - task: sign:notarize
       - |
         VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' build/darwin/Info.plist)
-        ZIP="wireguide-plus-v${VERSION}-darwin-arm64.zip"
-        cp -r "{{.BIN_DIR}}/{{.APP_NAME}}.app" "WireGuide+.app"
-        zip -r "${ZIP}" "WireGuide+.app"
-        rm -rf "WireGuide+.app"
+        ZIP="lockplus-v${VERSION}-darwin-arm64.zip"
+        cp -r "{{.BIN_DIR}}/{{.APP_NAME}}.app" "LockPlus.app"
+        zip -r "${ZIP}" "LockPlus.app"
+        rm -rf "LockPlus.app"
         shasum -a 256 "${ZIP}"
 
         # Ed25519 detached signature for the auto-updater.

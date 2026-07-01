@@ -34,7 +34,7 @@ end run`
 }
 
 func notifyLinux(title, message string) error {
-	return exec.Command("notify-send", title, message, "-a", "WireGuide").Run()
+	return exec.Command("notify-send", title, message, "-a", "LockPlus").Run()
 }
 
 func notifyWindows(title, message string) error {
@@ -53,6 +53,6 @@ $textNodes = $template.GetElementsByTagName("text")
 $textNodes.Item(0).AppendChild($template.CreateTextNode('` + safeTitle + `')) | Out-Null
 $textNodes.Item(1).AppendChild($template.CreateTextNode('` + safeMsg + `')) | Out-Null
 $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("WireGuide").Show($toast)`
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("LockPlus").Show($toast)`
 	return exec.Command("powershell", "-Command", ps).Run()
 }

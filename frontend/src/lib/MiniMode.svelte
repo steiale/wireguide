@@ -32,7 +32,7 @@
 <div class="mini" class:connected={isConnected}>
   <div class="mini-header" style="-webkit-app-region: drag">
     <span class="mini-dot" class:on={isConnected}></span>
-    <span class="mini-name">{status?.tunnel_name || 'WireGuide'}</span>
+    <span class="mini-name">{status?.tunnel_name || 'LockPlus'}</span>
     <button class="mini-expand" on:click={expand} style="-webkit-app-region: no-drag">↗</button>
   </div>
 

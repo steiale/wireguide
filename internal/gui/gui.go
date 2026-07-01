@@ -1,4 +1,4 @@
-// Package gui contains the GUI-mode runtime for the WireGuide app.
+// Package gui contains the GUI-mode runtime for the LockPlus app.
 //
 // The package is split so each file has a single reason to change:
 //   - gui.go              (this file)  — Run() entry, Wails app + window setup
@@ -9,6 +9,7 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 
 	wgapp "github.com/steiale/wireguide/internal/app"
 	"github.com/steiale/wireguide/internal/domain"
+	"github.com/steiale/wireguide/internal/elevate"
 	"github.com/steiale/wireguide/internal/history"
 	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/storage"
@@ -109,7 +111,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 
 	// 4. Wails app
 	app := application.New(application.Options{
-		Name:        "WireGuide",
+		Name:        "LockPlus",
 		Description: "Cross-platform WireGuard desktop client",
 		Services: []application.Service{
 			application.NewService(tunnelService),
@@ -129,7 +131,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 
 	// 5. Main window
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:          "WireGuide",
+		Title:          "LockPlus",
 		Width:          680,
 		Height:         770,
 		EnableFileDrop: true,
@@ -174,9 +176,9 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	if runtime.GOOS == "darwin" {
 		tray.SetIcon(trayOffIcon)
 	} else {
-		tray.SetLabel("WireGuide")
+		tray.SetLabel("LockPlus")
 	}
-	tray.SetTooltip("WireGuide")
+	tray.SetTooltip("LockPlus")
 
 	// 7. Shutdown coordination (declared upfront so closures can reference it)
 	var (
@@ -304,8 +306,27 @@ func bootstrapHelper(app *application.App, clients *ipc.ClientHolder, bridge *ev
 			break
 		}
 		slog.Warn("helper connection failed", "attempt", attempt+1, "error", err)
+
+		// launchd refused to load the daemon (blocked Login Item / untrusted
+		// signature). Retrying the same osascript install will keep failing —
+		// the user must take an action in System Settings first. Show a
+		// targeted dialog with a button that opens the right pane, then quit.
+		// Looping here is the bug that produced the endless password prompts.
+		var bootErr *elevate.BootstrapError
+		if errors.As(err, &bootErr) {
+			slog.Error("launchd blocked the helper daemon", "output", bootErr.Output)
+			blockedCmd := `display dialog "macOS blocked LockPlus's background helper service.\n\nOpen System Settings → General → Login Items & Extensions, find LockPlus, and turn it ON. Then relaunch LockPlus.\n\nIf LockPlus is not listed, restart your Mac and try again." buttons {"Open Login Items", "Quit"} default button "Open Login Items" with title "LockPlus" with icon stop`
+			out, _ := exec.Command("osascript", "-e", blockedCmd).Output()
+			if strings.Contains(string(out), "Open Login Items") {
+				// x-apple.systempreferences URL for the Login Items pane.
+				_ = exec.Command("open", "x-apple.systempreferences:com.apple.LoginItems-Settings.extension").Run()
+			}
+			app.Quit()
+			return
+		}
+
 		if attempt < 2 {
-			retryCmd := `display dialog "WireGuide needs its helper service to manage VPN connections.\n\nPlease grant administrator access when prompted." buttons {"Quit", "Retry"} default button "Retry" with title "WireGuide" with icon caution`
+			retryCmd := `display dialog "LockPlus needs its helper service to manage VPN connections.\n\nPlease grant administrator access when prompted." buttons {"Quit", "Retry"} default button "Retry" with title "LockPlus" with icon caution`
 			out, retryErr := exec.Command("osascript", "-e", retryCmd).Output()
 			if retryErr != nil || strings.Contains(string(out), "Quit") {
 				slog.Error("helper setup cancelled by user")
@@ -315,7 +336,7 @@ func bootstrapHelper(app *application.App, clients *ipc.ClientHolder, bridge *ev
 			continue
 		}
 		slog.Error("helper connection failed after 3 attempts", "error", err)
-		failCmd := `display dialog "WireGuide could not start its helper service.\n\nPlease quit any other running copies of WireGuide and try again." buttons {"Quit"} default button "Quit" with title "WireGuide" with icon stop`
+		failCmd := `display dialog "LockPlus could not start its helper service.\n\nPlease quit any other running copies of LockPlus and try again." buttons {"Quit"} default button "Quit" with title "LockPlus" with icon stop`
 		_, _ = exec.Command("osascript", "-e", failCmd).Output()
 		app.Quit()
 		return

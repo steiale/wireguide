@@ -50,6 +50,12 @@ func (s *TunnelService) tunnelInfoFor(name, activeName string) (TunnelInfo, bool
 		notes = meta.Notes
 		protocol = domain.NormalizeProtocol(meta.Protocol)
 	}
+	// .ovpn file presence is authoritative — overrides whatever protocol the
+	// meta says. Handles tunnels migrated by copying raw files (no meta.json)
+	// and guards against stale meta that still says WireGuard.
+	if s.tunnelStore.IsOVPN(name) {
+		protocol = domain.ProtocolOpenVPN
+	}
 
 	endpoint := ""
 	proto := ""

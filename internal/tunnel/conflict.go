@@ -12,7 +12,7 @@ import (
 // ConflictInfo describes a routing conflict with an existing interface.
 type ConflictInfo struct {
 	InterfaceName  string   `json:"interface_name"`
-	Owner          string   `json:"owner"`           // "WireGuide", "Tailscale", "WireGuard", "Unknown"
+	Owner          string   `json:"owner"`           // "LockPlus", "Tailscale", "WireGuard", "Unknown"
 	OverlappingIPs []string `json:"overlapping_ips"` // CIDRs that overlap
 }
 
@@ -82,9 +82,9 @@ func isWireGuardLike(name string) bool {
 
 // identifyOwner determines who created this interface by checking UAPI sockets.
 func identifyOwner(ifaceName string) string {
-	// Check WireGuide socket
-	if socketExists("/var/run/wireguide-plus/" + ifaceName + ".sock") {
-		return "WireGuide"
+	// Check LockPlus socket
+	if socketExists("/var/run/lockplus/" + ifaceName + ".sock") {
+		return "LockPlus"
 	}
 
 	// Check WireGuard socket

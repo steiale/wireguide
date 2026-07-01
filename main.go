@@ -29,18 +29,18 @@ func main() {
 
 // systemDataDir returns the system-level data directory used by the GUI to
 // locate helper-managed state (e.g. crash recovery files written by the
-// privileged helper at /Library/Application Support/wireguide on macOS).
+// privileged helper at /Library/Application Support/lockplus on macOS).
 func systemDataDir() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/Library/Application Support/wireguide"
+		return "/Library/Application Support/lockplus"
 	case "linux":
-		return "/var/lib/wireguide"
+		return "/var/lib/lockplus"
 	case "windows":
 		if pd := os.Getenv("PROGRAMDATA"); pd != "" {
-			return pd + `\wireguide`
+			return pd + `\lockplus`
 		}
-		return `C:\ProgramData\wireguide`
+		return `C:\ProgramData\lockplus`
 	}
-	return "/tmp/wireguide"
+	return "/tmp/lockplus"
 }

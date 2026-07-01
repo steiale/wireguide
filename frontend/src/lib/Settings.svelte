@@ -358,9 +358,9 @@
         {:else if activeTab === 'about'}
           <div class="about-section">
             <div class="about-header">
-              <img src="/appicon.png" alt="WireGuide+" class="about-icon" />
+              <img src="/appicon.png" alt="LockPlus" class="about-icon" />
               <div>
-                <div class="about-name">WireGuide+</div>
+                <div class="about-name">LockPlus</div>
                 <div class="about-version-row">
                   <span class="about-version">{appVersion ? `v${appVersion}` : ''}</span>
                   {#if updateInfo?.available}

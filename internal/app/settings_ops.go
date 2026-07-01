@@ -196,8 +196,8 @@ func (s *TunnelService) RunUpdate(info *update.UpdateInfo) error {
 		if out, err := exec.Command(brewBin, "update").CombinedOutput(); err != nil {
 			slog.Warn("brew update failed, continuing with upgrade", "error", err, "output", string(out))
 		}
-		slog.Info("update: running brew upgrade --cask wireguide-plus")
-		cmd := exec.Command(brewBin, "upgrade", "--cask", "wireguide-plus")
+		slog.Info("update: running brew upgrade --cask lockplus")
+		cmd := exec.Command(brewBin, "upgrade", "--cask", "lockplus")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("brew upgrade failed: %w (%s)", err, string(out))
@@ -235,7 +235,7 @@ func (s *TunnelService) RunUpdate(info *update.UpdateInfo) error {
 }
 
 // ScanForWireGuardConfigs returns existing WireGuard configs found on the
-// filesystem that haven't been imported into WireGuide+ yet.
+// filesystem that haven't been imported into LockPlus yet.
 func (t *TunnelService) ScanForWireGuardConfigs() []FoundConfig {
 	list, _ := t.tunnelStore.List()
 	existing := make(map[string]bool, len(list))

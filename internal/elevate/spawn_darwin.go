@@ -26,7 +26,7 @@ func xmlEscape(s string) string {
 }
 
 const (
-	daemonLabel  = "io.github.steiale.wireguide-plus.helper"
+	daemonLabel  = "io.github.steiale.lockplus.helper"
 	daemonPlist  = "/Library/LaunchDaemons/" + daemonLabel + ".plist"
 	daemonBinary = "/Library/PrivilegedHelperTools/" + daemonLabel
 )
@@ -93,9 +93,9 @@ func installAndLoadDaemon(args Args) error {
     <key>KeepAlive</key>
     <true/>
     <key>StandardErrorPath</key>
-    <string>/var/log/wireguide-plus-helper.log</string>
+    <string>/var/log/lockplus-helper.log</string>
     <key>StandardOutPath</key>
-    <string>/var/log/wireguide-plus-helper.log</string>
+    <string>/var/log/lockplus-helper.log</string>
 </dict>
 </plist>
 `, xmlEscape(daemonLabel), xmlEscape(daemonBinary), xmlEscape(args.SocketPath), uid, xmlEscape(args.DataDir))
@@ -111,20 +111,6 @@ func installAndLoadDaemon(args Args) error {
 		return fmt.Errorf("plist validation failed: %s", strings.TrimSpace(string(out)))
 	}
 
-	// Single shell script that does everything as root:
-	// 1. Create target directory
-	// 2. Copy binary
-	// 3. Copy plist (from our validated temp file)
-	// 4. Set ownership/permissions
-	// 5. (Re)load the daemon.
-	//
-	// L2: The previous flow ran `bootout` then `bootstrap`, leaving a brief
-	// window with no helper running — long enough for an in-flight RPC to
-	// see the socket disappear. Use `launchctl kickstart -k` instead: when
-	// the service is already loaded it restarts it in-place with no gap.
-	// If the service isn't loaded yet (first install or a previous
-	// uninstall), `kickstart` fails with non-zero exit and we fall back to
-	// `bootstrap` to load it from the plist.
 	// If the app bundle ships an openvpn binary (Contents/MacOS/openvpn), copy
 	// it to /Library/PrivilegedHelperTools/openvpn so the helper can find it
 	// via filepath.Dir(os.Args[0]). The copy is conditional — dev builds that
@@ -137,26 +123,57 @@ func installAndLoadDaemon(args Args) error {
 		shellQuote(ovpnDst), shellQuote(ovpnDst),
 	)
 
+	// The shell script runs as root via osascript. It is structured so that a
+	// failure at any step aborts (set -e) and prints a recognisable marker on
+	// stdout. We DELIBERATELY do not suppress errors on the bootstrap step:
+	// when launchd refuses to load the daemon (blocked Login Item, bad
+	// signature, ...) we need that error text to surface back to Go so the GUI
+	// can show something actionable instead of silently looping.
+	//
+	// Flow inside the script:
+	//  1. bootout the current + legacy labels (ignore "not loaded" errors).
+	//  2. Remove legacy binary/plist.
+	//  3. Copy the fresh helper binary + plist into place, fix ownership.
+	//  4. (conditionally) copy the bundled openvpn binary.
+	//  5. Try `kickstart -k` (in-place restart of an already-loaded service);
+	//     if that fails (service not loaded), `bootstrap` it from the plist.
+	//     Bootstrap errors are NOT suppressed.
+	//  6. Verify with `launchctl print` that the service is actually
+	//     registered. If it is not, emit BOOTSTRAP_FAILED so Go can detect it.
+	//
+	// We echo a leading "INSTALL_OK" only when everything (including the
+	// verification) succeeds. Its presence/absence is how Go distinguishes a
+	// real success from a partial one.
 	shellScript := fmt.Sprintf(
-		// Idempotently stop and remove both the legacy v1.0.x daemon (label
-		// com.wireguide.helper) and the current one before reinstalling.
-		// `kickstart -k` later handles the managed restart; bootout here
-		// ensures any manually-unloaded or orphaned service is cleaned up.
-		// Errors suppressed: missing files / unloaded service are fine.
-		`launchctl bootout system/`+daemonLabel+` 2>/dev/null; `+
-			`launchctl bootout system/com.wireguide.helper 2>/dev/null; `+
+		`set -e; `+
+			`launchctl bootout system/`+daemonLabel+` 2>/dev/null || true; `+
+			`launchctl bootout system/com.wireguide.helper 2>/dev/null || true; `+
 			`rm -f /Library/LaunchDaemons/com.wireguide.helper.plist; `+
 			`rm -f /Library/PrivilegedHelperTools/com.wireguide.helper; `+
-			`mkdir -p /Library/PrivilegedHelperTools && `+
-			`cp -f %s %s && `+
-			`xattr -d com.apple.quarantine %s 2>/dev/null; `+
-			`chown root:wheel %s && `+
-			`chmod 755 %s && `+
-			`cp -f %s %s && `+
-			`chown root:wheel %s && `+
-			`chmod 644 %s && `+
+			`mkdir -p /Library/PrivilegedHelperTools; `+
+			`cp -f %s %s; `+
+			`xattr -d com.apple.quarantine %s 2>/dev/null || true; `+
+			`chown root:wheel %s; `+
+			`chmod 755 %s; `+
+			`cp -f %s %s; `+
+			`chown root:wheel %s; `+
+			`chmod 644 %s; `+
 			ovpnSnippet+
-			`(launchctl kickstart -k system/%s 2>/dev/null || launchctl bootstrap system %s)`,
+			// Ensure launchd's persistent disabled-state is cleared before we
+			// try to load the daemon. Without this, a prior macOS Login Items
+			// block (or an explicit `launchctl disable`) keeps the service
+			// disabled even after the plist is in place — bootstrap then
+			// succeeds (exit 0) but the daemon never actually starts.
+			`launchctl enable system/%s 2>/dev/null || true; `+
+			// Load the daemon. kickstart restarts an already-loaded service in
+			// place; if it isn't loaded yet, bootstrap it. Capture bootstrap's
+			// error so it ends up in the osascript output.
+			`if launchctl kickstart -k system/%s 2>/dev/null; then :; `+
+			`else BOOTERR=$(launchctl bootstrap system %s 2>&1) || { echo "BOOTSTRAP_FAILED: $BOOTERR"; exit 3; }; fi; `+
+			// Verify the service is now registered. `launchctl print` exits
+			// non-zero if the label is unknown to launchd.
+			`if launchctl print system/%s >/dev/null 2>&1; then echo INSTALL_OK; `+
+			`else echo "BOOTSTRAP_FAILED: service not registered after load"; exit 4; fi`,
 		shellQuote(exe), shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
@@ -164,44 +181,74 @@ func installAndLoadDaemon(args Args) error {
 		shellQuote(tmpPlist), shellQuote(daemonPlist),
 		shellQuote(daemonPlist),
 		shellQuote(daemonPlist),
-		daemonLabel,
-		shellQuote(daemonPlist),
+		daemonLabel,   // enable system/%s
+		daemonLabel,   // kickstart -k system/%s
+		shellQuote(daemonPlist), // bootstrap system %s
+		daemonLabel,   // print system/%s
 	)
 
 	escaped := strings.ReplaceAll(shellScript, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	osascriptCmd := fmt.Sprintf(
-		`do shell script "%s" with administrator privileges with prompt "WireGuide+ needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration. This prompt appears on first launch or after an app update."`,
+		`do shell script "%s" with administrator privileges with prompt "LockPlus needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration. This prompt appears on first launch or after an app update."`,
 		escaped,
 	)
 
 	slog.Info("installing LaunchDaemon (one-time admin prompt)")
-	if err := exec.Command("osascript", "-e", osascriptCmd).Run(); err != nil {
-		return fmt.Errorf("osascript install: %w", err)
+	// Capture combined output: osascript relays the shell script's stdout (our
+	// INSTALL_OK / BOOTSTRAP_FAILED markers) and any error text on failure.
+	out, err := exec.Command("osascript", "-e", osascriptCmd).CombinedOutput()
+	outStr := strings.TrimSpace(string(out))
+	if err != nil {
+		// Distinguish the two common failure modes so the GUI can react:
+		//  - launchd refused to load the daemon (our explicit BOOTSTRAP_FAILED
+		//    marker, echoed by the script before `exit 3`/`exit 4`)
+		//  - user cancelled the password prompt (osascript error -128)
+		if strings.Contains(outStr, "BOOTSTRAP_FAILED") {
+			slog.Error("LaunchDaemon bootstrap failed", "output", outStr)
+			return &BootstrapError{Output: outStr, Err: err}
+		}
+		if strings.Contains(outStr, "-128") || strings.Contains(strings.ToLower(outStr), "cancel") {
+			return fmt.Errorf("admin authorization cancelled by user")
+		}
+		return fmt.Errorf("osascript install failed: %s (%w)", outStr, err)
 	}
 
-	// Do NOT poll for the socket here. After kickstart, launchd may apply a
-	// throttle (default 10 s "ThrottleInterval") if the previous daemon
-	// instance had been alive for less than 10 s — exactly what happens during
-	// a version-upgrade flow where the GUI had just sent Shutdown to the old
-	// helper. A short wait loop here would expire before launchd respawns,
-	// causing SpawnHelper to return a spurious error and the GUI to show the
-	// "grant administrator access" retry dialog even though the install
-	// actually succeeded.
-	//
-	// The caller (ensureHelper in internal/gui) already polls the socket for
-	// up to 60 s after SpawnHelper returns, which comfortably covers any
-	// launchd throttle window.
-	slog.Info("LaunchDaemon install/restart command issued; caller will poll for socket")
+	// osascript returned 0 but double-check the success marker is present —
+	// `do shell script` only fails on a non-zero exit, and our `set -e` +
+	// explicit `exit` calls cover the error paths, but a belt-and-braces check
+	// here guards against a future script edit that swallows an error.
+	if !strings.Contains(outStr, "INSTALL_OK") {
+		slog.Error("LaunchDaemon install produced no success marker", "output", outStr)
+		return &BootstrapError{Output: outStr, Err: fmt.Errorf("install did not confirm success")}
+	}
+
+	slog.Info("LaunchDaemon installed and verified registered", "output", outStr)
 	return nil
 }
+
+// BootstrapError indicates the LaunchDaemon was copied into place but launchd
+// refused to load it (most commonly because macOS has the background item in a
+// blocked state under System Settings → General → Login Items & Extensions, or
+// because the binary's signature is not trusted). The GUI inspects for this
+// type to show a targeted recovery dialog instead of the generic retry loop.
+type BootstrapError struct {
+	Output string
+	Err    error
+}
+
+func (e *BootstrapError) Error() string {
+	return fmt.Sprintf("launchd refused to load the helper daemon: %s", e.Output)
+}
+
+func (e *BootstrapError) Unwrap() error { return e.Err }
 
 // helperBinaryPath returns the path of the standalone helper binary.
 //
 // The helper binary (cmd/helper, no Wails/AppKit dependency) lives next to
 // the GUI binary inside the .app bundle at:
 //
-//	WireGuide+.app/Contents/MacOS/wireguide-plus-helper
+//	LockPlus.app/Contents/MacOS/lockplus-helper
 //
 // Keeping it separate from the GUI binary prevents AppKit/WebKit framework
 // +load methods from crashing when the daemon is launched as root without a
@@ -215,7 +262,7 @@ func helperBinaryPath() (string, error) {
 		self = resolved
 	}
 	dir := filepath.Dir(self)
-	candidate := filepath.Join(dir, "wireguide-plus-helper")
+	candidate := filepath.Join(dir, "lockplus-helper")
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate, nil
 	}

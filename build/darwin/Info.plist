@@ -3,23 +3,23 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>WireGuide+</string>
+	<string>LockPlus</string>
 	<key>CFBundleExecutable</key>
-	<string>wireguide-plus</string>
+	<string>lockplus</string>
 	<key>CFBundleGetInfoString</key>
-	<string>WireGuide+ - WireGuard VPN Client</string>
+	<string>LockPlus - WireGuard VPN Client</string>
 	<key>CFBundleIconFile</key>
 	<string>icons</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.steiale.wireguide-plus</string>
+	<string>io.github.steiale.lockplus</string>
 	<key>CFBundleName</key>
-	<string>WireGuide+</string>
+	<string>LockPlus</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.56</string>
+	<string>1.0.58</string>
 	<key>CFBundleVersion</key>
-	<string>1.0.56</string>
+	<string>1.0.58</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>10.15.0</string>
 	<key>NSHighResolutionCapable</key>

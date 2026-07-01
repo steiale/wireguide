@@ -1,4 +1,4 @@
-// Package ovpn implements OpenVPN backend support for WireGuide+: parsing
+// Package ovpn implements OpenVPN backend support for LockPlus: parsing
 // .ovpn config files, storing credentials in the macOS Keychain, driving the
 // OpenVPN management interface, and supervising the openvpn subprocess.
 //
@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-// OVPNConfig is the subset of an .ovpn file WireGuide+ cares about. The full
+// OVPNConfig is the subset of an .ovpn file LockPlus cares about. The full
 // file is still passed through verbatim to the openvpn binary — this struct is
 // only used for display, validation, and deciding whether to prompt for
 // credentials.
@@ -24,7 +24,7 @@ type OVPNConfig struct {
 	AuthUserPass bool   // true if "auth-user-pass" is present (credentials required)
 }
 
-// ParseOVPN scans the lines of an .ovpn file for the directives WireGuide+
+// ParseOVPN scans the lines of an .ovpn file for the directives LockPlus
 // needs. It is intentionally lenient: unknown directives are ignored and the
 // raw bytes are what actually gets handed to openvpn.
 func ParseOVPN(data []byte) (*OVPNConfig, error) {

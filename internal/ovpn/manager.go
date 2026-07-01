@@ -108,7 +108,7 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 	)
 	cmd.Dir = m.runtimeDir
 	// Pipe OpenVPN output to the helper's stderr so it appears in
-	// /var/log/wireguide-plus-helper.log alongside the Go logs.
+	// /var/log/lockplus-helper.log alongside the Go logs.
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

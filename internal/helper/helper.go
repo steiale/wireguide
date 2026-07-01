@@ -145,7 +145,7 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	// app bundle location so openvpn works without a forced helper reinstall.
 	ovpnBinary := filepath.Join(filepath.Dir(os.Args[0]), "openvpn")
 	if _, err := os.Stat(ovpnBinary); err != nil {
-		const appBundleFallback = "/Applications/WireGuide+.app/Contents/MacOS/openvpn"
+		const appBundleFallback = "/Applications/LockPlus.app/Contents/MacOS/openvpn"
 		if _, err2 := os.Stat(appBundleFallback); err2 == nil {
 			slog.Info("openvpn not found next to helper, using app bundle fallback", "path", appBundleFallback)
 			ovpnBinary = appBundleFallback

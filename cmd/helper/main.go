@@ -1,4 +1,4 @@
-// Command helper is the privileged background service for WireGuide+.
+// Command helper is the privileged background service for LockPlus.
 //
 // This is a minimal binary that ONLY imports internal/helper — deliberately
 // excluding the Wails/AppKit/WebKit GUI stack so it can run as a root
@@ -32,7 +32,7 @@ func main() {
 	if *dataDir == "" {
 		*dataDir = systemDataDir()
 	}
-	log.Println("WireGuide helper starting...")
+	log.Println("LockPlus helper starting...")
 	if err := helper.Run(*socketPath, *socketUID, *dataDir); err != nil {
 		log.Fatal("helper error:", err)
 	}
@@ -41,14 +41,14 @@ func main() {
 func systemDataDir() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/Library/Application Support/wireguide"
+		return "/Library/Application Support/lockplus"
 	case "linux":
-		return "/var/lib/wireguide"
+		return "/var/lib/lockplus"
 	case "windows":
 		if pd := os.Getenv("PROGRAMDATA"); pd != "" {
-			return pd + `\wireguide`
+			return pd + `\lockplus`
 		}
-		return `C:\ProgramData\wireguide`
+		return `C:\ProgramData\lockplus`
 	}
-	return "/tmp/wireguide"
+	return "/tmp/lockplus"
 }

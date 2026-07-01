@@ -28,7 +28,7 @@ const (
 	// bundle's Info.plist cannot be read (e.g. unit tests, non-darwin
 	// builds, or running the bare binary without an enclosing .app).
 	// Keep this in sync with build/darwin/Info.plist on each release.
-	fallbackVersion = "1.0.56"
+	fallbackVersion = "1.0.58"
 
 	// minAssetSize is the minimum acceptable size for a release asset.
 	// A macOS .dmg/.zip containing WireGuide.app is always well over 1 MB;
@@ -94,7 +94,7 @@ func readBundleVersion() string {
 	if err != nil {
 		return ""
 	}
-	// Resolve symlinks so /Applications/WireGuide+.app/Contents/MacOS/wireguide-plus
+	// Resolve symlinks so /Applications/LockPlus.app/Contents/MacOS/lockplus
 	// (or a Homebrew-installed cask, which uses copies, not symlinks) both work.
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved

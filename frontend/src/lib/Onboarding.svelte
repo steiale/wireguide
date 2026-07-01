@@ -80,9 +80,9 @@
 <div class="onboarding-backdrop">
   <div class="onboarding-card">
     <div class="onboarding-header">
-      <div class="app-icon">W</div>
-      <h1>Welcome to WireGuide+</h1>
-      <p class="subtitle">Your WireGuard VPN manager</p>
+      <img src="/appicon.png" class="app-icon-img" alt="LockPlus" />
+      <h1>Welcome to LockPlus</h1>
+      <p class="subtitle">Your WireGuard & OpenVPN manager</p>
     </div>
 
     {#if scanning}
@@ -131,7 +131,7 @@
           </button>
         {:else}
           <label class="btn-primary btn-import-file" class:disabled={importing}>
-            <input type="file" accept=".conf,.zip" style="display:none" on:change={handleFileImport} />
+            <input type="file" accept=".conf,.ovpn,.zip" style="display:none" on:change={handleFileImport} />
             Import .conf / .zip
           </label>
         {/if}
@@ -177,17 +177,10 @@
     gap: 8px;
   }
 
-  .app-icon {
+  .app-icon-img {
     width: 56px;
     height: 56px;
-    background: var(--accent);
     border-radius: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 28px;
-    font-weight: 700;
-    color: var(--text-inverse, #fff);
     margin-bottom: 4px;
   }
 

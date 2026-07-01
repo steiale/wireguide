@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "WireGuide+",
+    "name": "LockPlus",
     "disconnected": "Getrennt",
     "connecting": "Verbinde...",
     "connected": "Verbunden",
@@ -106,11 +106,11 @@
     "pin_interface": "Interface fixieren",
     "pin_interface_hint": "Fixiert VPN-Umgehungsrouten auf das aktive Netzwerkinterface. Verhindert Latenzspitzen bei gleichzeitiger WLAN- und Ethernet-Verbindung.",
     "about": "Über",
-    "about_desc": "WireGuide+ — ein WireGuard-VPN-Client mit moderner Benutzeroberfläche und praktischen Zusatzfunktionen.",
+    "about_desc": "LockPlus — ein WireGuard-VPN-Client mit moderner Benutzeroberfläche und praktischen Zusatzfunktionen.",
     "about_issues": "Problem melden",
     "about_license": "Lizenz (MIT)",
     "up_to_date": "Du verwendest die neueste Version.",
-    "kofi_support": "WireGuide+ unterstützen"
+    "kofi_support": "LockPlus unterstützen"
   },
   "confirm": {
     "delete_title": "Tunnel löschen",
@@ -148,7 +148,7 @@
     "error": "VPN-Fehler: {message}"
   },
   "daemon": {
-    "not_running": "WireGuide+ Daemon läuft nicht",
+    "not_running": "LockPlus Daemon läuft nicht",
     "install_hint": "Daemon starten mit: sudo wireguided"
   },
   "tools": {
@@ -223,13 +223,13 @@
     "updating": "Aktualisiere...",
     "release_notes": "Was ist neu",
     "skip": "Diese Version überspringen",
-    "confirm_title": "WireGuide+ aktualisieren?",
+    "confirm_title": "LockPlus aktualisieren?",
     "vpn_warning": "Die VPN-Verbindung wird während des Updates kurz unterbrochen. Die App startet danach automatisch neu.",
     "proceed": "Jetzt aktualisieren",
     "cancel": "Später"
   },
   "kofi": {
-    "banner_text": "WireGuide+ gefällt dir? Es ist kostenlos — aber ein Kaffee hält es am Laufen. (einmalige Erinnerung)",
+    "banner_text": "LockPlus gefällt dir? Es ist kostenlos — aber ein Kaffee hält es am Laufen. (einmalige Erinnerung)",
     "buy_coffee": "Kauf mir einen Kaffee",
     "dismiss": "Schließen"
   },

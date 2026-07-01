@@ -57,7 +57,7 @@
   <div class="popup-backdrop" on:mousedown|self={dismiss}>
     <div class="popup" role="dialog" aria-modal="true" on:mousedown|stopPropagation>
       <div class="popup-header">
-        <img src="/appicon.png" alt="WireGuide" class="popup-icon" />
+        <img src="/appicon.png" alt="LockPlus" class="popup-icon" />
         <div>
           <div class="popup-title">{$t('update.available', { version: updateInfo.version })}</div>
           <span class="popup-current">{$t('update.current', { version: updateInfo.current_version })}</span>

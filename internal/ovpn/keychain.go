@@ -11,7 +11,7 @@ import (
 
 // keychainService is the generic-password service name under which all OpenVPN
 // credentials are stored. Each tunnel is a separate account within this service.
-const keychainService = "io.github.steiale.wireguide-plus.ovpn"
+const keychainService = "io.github.steiale.lockplus.ovpn"
 
 // Credentials holds an OpenVPN username and the *base* password (the static
 // part the user typed once). For TOTP servers the actual password sent to the

@@ -1,14 +1,10 @@
 package gui
 
 import (
-	"bytes"
 	_ "embed"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"image"
-	"image/color"
-	"image/png"
 	"log/slog"
 	"runtime"
 	"strings"
@@ -22,15 +18,21 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/icons"
 )
 
-//go:embed assets/wplus.png
-var trayWPlusPNG []byte
+//go:embed assets/lockplus_green.png
+var trayLockGreenPNG []byte
+
+//go:embed assets/lockplus_orange.png
+var trayLockOrangePNG []byte
+
+//go:embed assets/lockplus_off.png
+var trayLockOffPNG []byte
 
 // Tray icon variants — always SetIcon (non-template) to avoid a Wails v3 bug
 // where SetTemplateIcon makes all future SetIcon calls render monochrome.
 //
-//   - trayGreenIcon  — + is green  (connected, handshake confirmed)
-//   - trayAmberIcon  — + is amber  (connected, no handshake yet)
-//   - trayOffIcon    — + is dim    (disconnected)
+//   - trayGreenIcon  — padlock, + is green  (connected, handshake confirmed)
+//   - trayAmberIcon  — padlock, + is orange (connected, no handshake yet)
+//   - trayOffIcon    — padlock, + is gray   (disconnected)
 var (
 	trayGreenIcon []byte
 	trayAmberIcon []byte
@@ -46,42 +48,11 @@ func init() {
 			trayOffIcon = icons.SystrayMacTemplate
 		}
 	}()
-	trayGreenIcon = buildWPlusIcon(color.NRGBA{52, 199, 89, 255})  // macOS systemGreen
-	trayAmberIcon = buildWPlusIcon(color.NRGBA{255, 159, 10, 255}) // macOS systemOrange
-	trayOffIcon = buildWPlusIcon(color.NRGBA{255, 255, 255, 140})  // dim white
+	trayGreenIcon = pngWith144DPI(trayLockGreenPNG)
+	trayAmberIcon = pngWith144DPI(trayLockOrangePNG)
+	trayOffIcon = pngWith144DPI(trayLockOffPNG)
 }
 
-// buildWPlusIcon tints the embedded @2x W+ glyph with tintColor and returns
-// a PNG with an embedded pHYs chunk declaring 144 DPI. When NSImage(data:)
-// loads this PNG it reads the resolution metadata and sets the display size to
-// pixelWidth/2 × pixelHeight/2 points — so a 44×44 px PNG renders at 22×22 pt
-// with full @2x Retina sharpness, no CGo fixup required.
-func buildWPlusIcon(tintColor color.NRGBA) []byte {
-	src, err := png.Decode(bytes.NewReader(trayWPlusPNG))
-	if err != nil {
-		slog.Warn("failed to decode wplus.png", "error", err)
-		return icons.SystrayMacTemplate
-	}
-
-	sb := src.Bounds()
-	dst := image.NewNRGBA(sb)
-	for y := sb.Min.Y; y < sb.Max.Y; y++ {
-		for x := sb.Min.X; x < sb.Max.X; x++ {
-			_, _, _, a := src.At(x, y).RGBA()
-			alpha := uint8(a >> 8)
-			if alpha > 0 {
-				dst.SetNRGBA(x, y, color.NRGBA{tintColor.R, tintColor.G, tintColor.B, alpha})
-			}
-		}
-	}
-
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, dst); err != nil {
-		slog.Warn("failed to encode W+ tray icon", "error", err)
-		return icons.SystrayMacTemplate
-	}
-	return pngWith144DPI(buf.Bytes())
-}
 
 // pngWith144DPI splices a pHYs chunk (144 DPI = 5669 pixels/metre) into a PNG
 // immediately after its IHDR chunk. NSImage uses this metadata to determine
@@ -114,10 +85,15 @@ func pngWith144DPI(data []byte) []byte {
 // formatSpeedFixed renders bytes/sec as exactly 4 chars + "K", padded with
 // U+2007 FIGURE SPACE (digit-width in SF Pro) so the string always renders
 // at the same pixel width regardless of value. Cap at 9999 K.
+// Speeds between 0 and 1 KB/s render as "  <1K" so the tray label visibly
+// distinguishes "traffic flowing but slow" from "no traffic at all".
 func formatSpeedFixed(bps float64) string {
 	const fig = " " // figure space = digit width
 	if bps < 0 {
 		bps = 0
+	}
+	if bps > 0 && bps < 1024 {
+		return fig + fig + "<1K" // 2 fig spaces + "<1K" = same visual width as "   1K"
 	}
 	n := int(bps / 1024)
 	if n > 9999 {
@@ -281,15 +257,15 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 	switch {
 	case anyConnected && anyHandshake:
 		t.tray.SetIcon(trayGreenIcon)
-		t.tray.SetTooltip("WireGuide+ — " + strings.Join(status.ActiveTunnels, ", "))
+		t.tray.SetTooltip("LockPlus — " + strings.Join(status.ActiveTunnels, ", "))
 	case anyConnected:
 		t.tray.SetIcon(trayAmberIcon)
-		t.tray.SetTooltip("WireGuide+ — connecting…")
+		t.tray.SetTooltip("LockPlus — connecting…")
 	default:
 		if runtime.GOOS == "darwin" {
 			t.tray.SetIcon(trayOffIcon)
 		}
-		t.tray.SetTooltip("WireGuide+")
+		t.tray.SetTooltip("LockPlus")
 	}
 
 	if runtime.GOOS == "darwin" {
@@ -300,9 +276,9 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 		application.InvokeAsync(func() { t.tray.SetLabel(label) })
 	} else {
 		if anyConnected {
-			t.tray.SetLabel("WireGuide+ ●")
+			t.tray.SetLabel("LockPlus ●")
 		} else {
-			t.tray.SetLabel("WireGuide+")
+			t.tray.SetLabel("LockPlus")
 		}
 	}
 
@@ -367,7 +343,7 @@ func (t *trayManager) rebuildMenu() {
 	t.mu.Unlock()
 
 	m := t.app.NewMenu()
-	m.Add("WireGuide+").SetEnabled(false)
+	m.Add("LockPlus").SetEnabled(false)
 	m.AddSeparator()
 
 	var connected, disconnected []wgapp.TunnelInfo

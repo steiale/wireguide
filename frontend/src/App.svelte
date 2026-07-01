@@ -609,7 +609,7 @@
 
   <div class="layout">
     <nav class="icon-rail">
-      <div class="rail-logo">W+</div>
+      <img src="/appicon.png" class="rail-logo-img" alt="LockPlus" />
       <button class="rail-btn" class:active={isTunnelsView} on:click={() => { currentView = 'tunnels'; }}>
         <span class="rail-icon">⊡</span>
         <span class="rail-label">{$t('nav.tunnels')}</span>
@@ -865,12 +865,14 @@
     gap: 2px;
     flex-shrink: 0;
   }
-  .rail-logo {
-    font: 700 15px/20px var(--font-sans);
-    color: var(--accent);
-    letter-spacing: -0.03em;
-    padding: var(--space-2) 0 var(--space-4);
+  .rail-logo-img {
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
+    margin: 8px 0 16px;
     user-select: none;
+    pointer-events: none;
+    flex-shrink: 0;
   }
   .rail-btn {
     width: 72px;
