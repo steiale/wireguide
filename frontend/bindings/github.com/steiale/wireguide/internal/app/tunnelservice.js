@@ -598,7 +598,7 @@ export function SaveWifiRules(rules) {
 
 /**
  * ScanForWireGuardConfigs returns existing WireGuard configs found on the
- * filesystem that haven't been imported into WireGuide+ yet.
+ * filesystem that haven't been imported into LockPlus yet.
  * @returns {$CancellablePromise<$models.FoundConfig[]>}
  */
 export function ScanForWireGuardConfigs() {

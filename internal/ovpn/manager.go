@@ -1,16 +1,28 @@
 package ovpn
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/steiale/wireguide/internal/domain"
 )
+
+// cipherLogRe matches OpenVPN's own startup log line announcing the
+// negotiated data-channel cipher, e.g.:
+//
+//	Data Channel: cipher 'AES-256-GCM'
+//	Data Channel: cipher 'AES-256-GCM', auth 'SHA256'
+//
+// See src/openvpn/init.c in the OpenVPN 2.6 source.
+var cipherLogRe = regexp.MustCompile(`Data Channel: cipher '([^']+)'`)
 
 // authReply carries the credentials FeedCredentials passes back to a connect
 // goroutine that is blocked waiting on a >PASSWORD: prompt.
@@ -107,13 +119,19 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 		"--script-security", "2",
 	)
 	cmd.Dir = m.runtimeDir
-	// Pipe OpenVPN output to the helper's stderr so it appears in
-	// /var/log/lockplus-helper.log alongside the Go logs.
-	cmd.Stdout = os.Stderr
+	// Stdout is scanned for the negotiated cipher (see scanOutput) and then
+	// echoed to the helper's stderr so the full log still ends up in
+	// /var/log/lockplus-helper.log alongside the Go logs. Stderr is piped
+	// there directly since openvpn's own diagnostics go through stdout.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("attaching openvpn stdout: %w", err)
+	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting openvpn: %w", err)
 	}
+	go m.scanOutput(name, stdout)
 
 	e := &entry{
 		cmd:    cmd,
@@ -159,7 +177,7 @@ func (m *Manager) supervise(name string, e *entry) {
 
 	// The read loop blocks until the management connection closes.
 	mgmt.readLoop(
-		func(state string) { m.onMgmtState(name, state) },
+		func(state, localIP string) { m.onMgmtState(name, state, localIP) },
 		func(rx, tx int64) { m.onMgmtBytes(name, rx, tx) },
 		func() { m.onMgmtAuthPrompt(name, e) },
 		func() { /* readLoop done — handled below */ },
@@ -171,8 +189,38 @@ func (m *Manager) supervise(name string, e *entry) {
 	m.cleanup(name)
 }
 
+// scanOutput reads openvpn's stdout line by line, forwarding everything to
+// the helper's stderr log (preserving the previous direct-pipe behaviour)
+// while also watching for the "Data Channel: cipher '...'" line that reveals
+// the negotiated cipher — information the management interface itself never
+// exposes.
+func (m *Manager) scanOutput(name string, r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fmt.Fprintln(os.Stderr, line)
+		if match := cipherLogRe.FindStringSubmatch(line); match != nil {
+			m.setCipher(name, match[1])
+		}
+	}
+}
+
+// setCipher records the negotiated data-channel cipher and emits the status.
+func (m *Manager) setCipher(name, cipher string) {
+	m.mu.Lock()
+	e, ok := m.tunnels[name]
+	if ok {
+		e.status.Cipher = cipher
+	}
+	m.mu.Unlock()
+	if ok {
+		m.emitStatus(name)
+	}
+}
+
 // onMgmtState maps an OpenVPN management state string to a domain state.
-func (m *Manager) onMgmtState(name, state string) {
+// localIP is the tunnel-assigned client address; only non-empty on CONNECTED.
+func (m *Manager) onMgmtState(name, state, localIP string) {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
 	if !ok {
@@ -187,6 +235,9 @@ func (m *Manager) onMgmtState(name, state string) {
 		}
 		e.status.HasHandshake = true
 		e.status.LastHandshakeTime = time.Now()
+		if localIP != "" {
+			e.status.Address = localIP
+		}
 	case "EXITING":
 		e.status.State = domain.StateDisconnected
 	case "RECONNECTING":

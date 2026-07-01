@@ -109,6 +109,27 @@ export class ConnectionStatus {
         }
         if (/** @type {any} */(false)) {
             /**
+             * Address is the client's tunnel-assigned IP, as reported by OpenVPN's
+             * management interface on CONNECTED. WireGuard tunnels show their
+             * (static, pre-connect) address from the parsed config instead, so this
+             * is only ever populated for OpenVPN.
+             * @member
+             * @type {string | undefined}
+             */
+            this["address"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Cipher is the negotiated data-channel cipher (e.g. "AES-256-GCM"),
+             * parsed from OpenVPN's own log output. Empty for WireGuard, which
+             * always uses ChaCha20-Poly1305 and has no equivalent negotiation step.
+             * @member
+             * @type {string | undefined}
+             */
+            this["cipher"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * ActiveTunnels lists the names of all currently connected (or connecting)
              * tunnels. Populated by the multi-tunnel manager so the frontend can show
              * which tunnels are active.
@@ -136,14 +157,14 @@ export class ConnectionStatus {
      * @returns {ConnectionStatus}
      */
     static createFrom($$source = {}) {
-        const $$createField11_0 = $$createType0;
-        const $$createField12_0 = $$createType2;
+        const $$createField13_0 = $$createType0;
+        const $$createField14_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("active_tunnels" in $$parsedSource) {
-            $$parsedSource["active_tunnels"] = $$createField11_0($$parsedSource["active_tunnels"]);
+            $$parsedSource["active_tunnels"] = $$createField13_0($$parsedSource["active_tunnels"]);
         }
         if ("tunnels" in $$parsedSource) {
-            $$parsedSource["tunnels"] = $$createField12_0($$parsedSource["tunnels"]);
+            $$parsedSource["tunnels"] = $$createField14_0($$parsedSource["tunnels"]);
         }
         return new ConnectionStatus(/** @type {Partial<ConnectionStatus>} */($$parsedSource));
     }
@@ -362,7 +383,7 @@ export class PeerConfig {
 }
 
 /**
- * Protocol identifies which VPN backend a tunnel uses. WireGuide+ started as a
+ * Protocol identifies which VPN backend a tunnel uses. LockPlus started as a
  * WireGuard-only client; OpenVPN support was added later. Tunnels created before
  * the protocol field existed have no value in their .meta.json — callers MUST
  * treat the empty string as ProtocolWireGuard for backward compatibility.

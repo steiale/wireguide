@@ -336,6 +336,18 @@
                       <span class="info-value">{tun.proto.toUpperCase()}</span>
                     </div>
                   {/if}
+                  {#if isConnected && status?.address}
+                    <div class="info-row">
+                      <span class="info-label">{$t('tunnel.address')}</span>
+                      <span class="info-value">{status.address}</span>
+                    </div>
+                  {/if}
+                  {#if isConnected && status?.cipher}
+                    <div class="info-row">
+                      <span class="info-label">{$t('tunnel.cipher')}</span>
+                      <span class="info-value">{status.cipher}</span>
+                    </div>
+                  {/if}
                 </div>
               {:else if details[tun.name]}
                 {@const d = details[tun.name]}

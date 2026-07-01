@@ -6,6 +6,7 @@ import (
 
 	"github.com/steiale/wireguide/internal/diag"
 	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/ovpn"
 )
 
 // DNSLeakResult mirrors diag.DNSLeakResult for Wails JSON serialisation.
@@ -72,6 +73,10 @@ func (s *TunnelService) RunDNSLeakTest() (*DNSLeakResult, error) {
 //
 // Returns -1 if unreachable.
 func (s *TunnelService) GetTunnelLatency(name string) int {
+	if s.tunnelStore.IsOVPN(name) {
+		return s.getOVPNLatency(name)
+	}
+
 	cfg, err := s.tunnelStore.Load(name)
 	if err != nil {
 		return -1
@@ -101,6 +106,25 @@ func (s *TunnelService) GetTunnelLatency(name string) int {
 		}
 	}
 
+	return -1
+}
+
+// getOVPNLatency pings an OpenVPN tunnel's remote server directly. Unlike
+// WireGuard, an OpenVPN tunnel has no static "inner DNS server" to target —
+// the assigned client IP and pushed routes are only known once connected —
+// so pinging the public endpoint is the useful measurement in both states.
+func (s *TunnelService) getOVPNLatency(name string) int {
+	content, err := s.tunnelStore.LoadOVPN(name)
+	if err != nil {
+		return -1
+	}
+	cfg, err := ovpn.ParseOVPN([]byte(content))
+	if err != nil || cfg.Remote == "" {
+		return -1
+	}
+	if r := diag.PingEndpoint(cfg.Remote); r.Reachable {
+		return int(r.LatencyMs)
+	}
 	return -1
 }
 

@@ -24,7 +24,7 @@ export class ConflictInfo {
         }
         if (!("owner" in $$source)) {
             /**
-             * "WireGuide", "Tailscale", "WireGuard", "Unknown"
+             * "LockPlus", "Tailscale", "WireGuard", "Unknown"
              * @member
              * @type {string}
              */

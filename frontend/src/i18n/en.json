@@ -33,6 +33,7 @@
     "proto": "Protocol",
     "address": "Address",
     "allowed_ips": "Allowed IPs",
+    "cipher": "Cipher",
     "public_key": "Public Key",
     "handshake": "Handshake",
     "duration": "Duration",

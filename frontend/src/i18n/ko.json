@@ -32,6 +32,7 @@
     "proto": "프로토콜",
     "address": "주소",
     "allowed_ips": "허용 IP",
+    "cipher": "암호",
     "public_key": "공개 키",
     "handshake": "핸드셰이크",
     "duration": "연결 시간",

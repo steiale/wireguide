@@ -47,6 +47,17 @@ type ConnectionStatus struct {
 	// legacy/WireGuard statuses; the frontend treats empty as WireGuard.
 	Protocol Protocol `json:"protocol,omitempty"`
 
+	// Address is the client's tunnel-assigned IP, as reported by OpenVPN's
+	// management interface on CONNECTED. WireGuard tunnels show their
+	// (static, pre-connect) address from the parsed config instead, so this
+	// is only ever populated for OpenVPN.
+	Address string `json:"address,omitempty"`
+
+	// Cipher is the negotiated data-channel cipher (e.g. "AES-256-GCM"),
+	// parsed from OpenVPN's own log output. Empty for WireGuard, which
+	// always uses ChaCha20-Poly1305 and has no equivalent negotiation step.
+	Cipher string `json:"cipher,omitempty"`
+
 	// ActiveTunnels lists the names of all currently connected (or connecting)
 	// tunnels. Populated by the multi-tunnel manager so the frontend can show
 	// which tunnels are active.

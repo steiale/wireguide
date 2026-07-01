@@ -83,14 +83,15 @@ func (c *mgmtClient) signalTerm() error {
 // the supplied callbacks. It enables real-time state and bytecount reporting on
 // entry. onDone is always called exactly once when the loop exits.
 //
-//   - onState(state string)      — connection state, e.g. "CONNECTING",
+//   - onState(state, localIP string) — connection state, e.g. "CONNECTING",
 //     "WAIT", "AUTH", "GET_CONFIG", "ASSIGN_IP", "CONNECTED", "RECONNECTING",
-//     "EXITING".
+//     "EXITING". localIP is the tunnel-assigned client address, populated
+//     only on CONNECTED.
 //   - onBytes(rx, tx int64)       — periodic byte counters.
 //   - onAuthPrompt()              — the server is asking for username/password.
 //   - onDone()                    — the management connection ended.
 func (c *mgmtClient) readLoop(
-	onState func(state string),
+	onState func(state, localIP string),
 	onBytes func(rx, tx int64),
 	onAuthPrompt func(),
 	onDone func(),
@@ -117,7 +118,11 @@ func (c *mgmtClient) readLoop(
 			payload := strings.TrimPrefix(line, ">STATE:")
 			parts := strings.Split(payload, ",")
 			if len(parts) >= 2 && onState != nil {
-				onState(parts[1])
+				localIP := ""
+				if len(parts) >= 4 {
+					localIP = parts[3]
+				}
+				onState(parts[1], localIP)
 			}
 
 		case strings.HasPrefix(line, ">BYTECOUNT:"):

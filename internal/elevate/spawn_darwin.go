@@ -118,8 +118,8 @@ func installAndLoadDaemon(args Args) error {
 	ovpnExe := filepath.Join(filepath.Dir(exe), "openvpn")
 	ovpnDst := "/Library/PrivilegedHelperTools/openvpn"
 	ovpnSnippet := fmt.Sprintf(
-		`if [ -f %s ]; then cp -f %s %s && chown root:wheel %s && chmod 755 %s; fi; `,
-		shellQuote(ovpnExe), shellQuote(ovpnExe), shellQuote(ovpnDst),
+		`if [ -f %s ]; then cp -f %s %s && xattr -d com.apple.quarantine %s 2>/dev/null || true; chown root:wheel %s && chmod 755 %s; fi; `,
+		shellQuote(ovpnExe), shellQuote(ovpnExe), shellQuote(ovpnDst), shellQuote(ovpnDst),
 		shellQuote(ovpnDst), shellQuote(ovpnDst),
 	)
 

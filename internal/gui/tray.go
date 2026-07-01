@@ -229,17 +229,27 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 		}
 	}
 
+	// The byte-count baseline (prevRx/prevTx) MUST advance in lockstep with
+	// the time baseline (prevStatTime) — both only on ticks where canCompute
+	// is true. OpenVPN's management interface pushes a status update on every
+	// >BYTECOUNT: notification via a dedicated broadcast path (see
+	// helper.broadcastOvpnStatus), which arrives far more often than the
+	// ~1 Hz cadence this rate calc assumes. Committing prevRx/prevTx on every
+	// call (including the sub-0.5s bursts that fail canCompute) desynced the
+	// two baselines: dt kept measuring a real ~1s gap while the byte baseline
+	// had just been refreshed milliseconds earlier, so the computed delta was
+	// almost always ~0 regardless of actual throughput.
 	if canCompute {
 		t.speedRx = aggRx
 		t.speedTx = aggTx
 		t.tunnelSpeedRx = newTunSpeedRx
 		t.tunnelSpeedTx = newTunSpeedTx
 		t.prevStatTime = now
+		t.prevRx = newPrevRx
+		t.prevTx = newPrevTx
 	} else if t.prevStatTime.IsZero() {
 		t.prevStatTime = now
 	}
-	t.prevRx = newPrevRx
-	t.prevTx = newPrevTx
 
 	speedRx := t.speedRx
 	speedTx := t.speedTx
