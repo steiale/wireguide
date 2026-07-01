@@ -71,6 +71,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	if err := paths.EnsureDirs(); err != nil {
 		return fmt.Errorf("create dirs: %w", err)
 	}
+	paths.MigrateLegacyTunnels()
 	tunnelStore := storage.NewTunnelStore(paths.TunnelsDir)
 	settingsStore := storage.NewSettingsStore(paths.ConfigDir)
 	wifiRulesStore := storage.NewWifiRulesStore(paths.ConfigDir)

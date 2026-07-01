@@ -10,6 +10,11 @@ import (
 
 const appName = "lockplus"
 
+// legacyAppName was the app's data-directory name before the WireGuide+ →
+// LockPlus rename (v1.0.57). Kept around solely so MigrateLegacyTunnels can
+// find configs left behind by the old install.
+const legacyAppName = "wireguide-plus"
+
 // canWriteDir tests whether the current process can create files in dir by
 // writing and immediately removing a temp file. Used by EnsureDirs to
 // distinguish "can't chmod but can still use" from "truly inaccessible".
@@ -137,4 +142,52 @@ func (p *Paths) EnsureDirs() error {
 		}
 	}
 	return nil
+}
+
+// MigrateLegacyTunnels copies tunnel configs from the pre-rename
+// ~/Library/Application Support/wireguide-plus/tunnels directory into the
+// current TunnelsDir, if TunnelsDir is empty and the legacy directory has
+// files. It only ever copies — never deletes or moves the legacy directory —
+// so a failed or partial migration can always be retried or inspected by
+// hand. Call this once at startup, after EnsureDirs and before the
+// TunnelStore is constructed.
+//
+// Why this exists: upgrading from WireGuide+ to LockPlus (Homebrew cask
+// rename, v1.0.57) silently orphaned every tunnel a user had configured,
+// since the macOS Application Support directory name changed. This bit
+// real users on real machines with no way to recover except manual shell
+// surgery — this migration makes the upgrade path self-healing.
+func (p *Paths) MigrateLegacyTunnels() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	if entries, err := os.ReadDir(p.TunnelsDir); err == nil && len(entries) > 0 {
+		return // already has tunnels — never overwrite existing data
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	legacyDir := filepath.Join(home, "Library", "Application Support", legacyAppName, "tunnels")
+	legacyEntries, err := os.ReadDir(legacyDir)
+	if err != nil || len(legacyEntries) == 0 {
+		return
+	}
+	slog.Info("migrating tunnels from legacy wireguide-plus data dir",
+		"from", legacyDir, "to", p.TunnelsDir, "count", len(legacyEntries))
+	for _, e := range legacyEntries {
+		if e.IsDir() {
+			continue
+		}
+		src := filepath.Join(legacyDir, e.Name())
+		dst := filepath.Join(p.TunnelsDir, e.Name())
+		data, err := os.ReadFile(src)
+		if err != nil {
+			slog.Warn("legacy tunnel migration: read failed", "file", src, "error", err)
+			continue
+		}
+		if err := os.WriteFile(dst, data, 0600); err != nil {
+			slog.Warn("legacy tunnel migration: write failed", "file", dst, "error", err)
+		}
+	}
 }
