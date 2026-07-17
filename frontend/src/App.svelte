@@ -55,13 +55,24 @@
   // OpenVPN tunnel needs credentials (and none are cached). We show a modal that
   // collects username + password (which may include a TOTP token as part of
   // the password string — the user types everything as one combined field).
+  //
+  // authChallengeKind is '' for a plain prompt, 'static' (SCRV1 — an extra
+  // response field alongside the normal username/password, e.g. a
+  // server-defined security question) or 'dynamic' (CRV1 — a SEPARATE
+  // response-only prompt shown AFTER the base username/password already
+  // succeeded, e.g. "enter your TOTP token now"; no username/password
+  // fields are shown for this one).
   let showAuth = false;
   let authTunnelName = '';
   let authUsername = '';
   let authPassword = '';
+  let authResponse = '';
   let authSave = true;
   let authBusy = false;
   let authError = '';
+  let authChallengeKind = '';
+  let authChallengeText = '';
+  let authChallengeEcho = false;
 
   onMount(async () => {
     // Register the helper event listener FIRST so we never miss the
@@ -156,22 +167,36 @@
     });
 
     // OpenVPN auth prompt — the helper needs credentials to continue connecting.
-    // Payload: { tunnel_name: string }.
+    // Payload: { tunnel_name, challenge_kind, challenge_text, challenge_echo,
+    // challenge_concat }. challenge_kind is '' for a plain prompt.
     authPromptUnsub = Events.On('auth_prompt', async (event) => {
-      const name = event.data?.tunnel_name || '';
+      const data = event.data || {};
+      const name = data.tunnel_name || '';
       if (!name) return;
       authTunnelName = name;
       authError = '';
       authBusy = false;
-      // Pre-fill saved username; leave password empty so the user types the
-      // full combined password (including any TOTP token) fresh each time.
-      try {
-        const saved = await TunnelService.GetSavedCredentials(name);
-        authUsername = saved?.username || '';
-      } catch (_) {
+      authChallengeKind = data.challenge_kind || '';
+      authChallengeText = data.challenge_text || '';
+      authChallengeEcho = !!data.challenge_echo;
+      authResponse = '';
+      if (authChallengeKind === 'dynamic') {
+        // A separate response-only prompt after the base login already
+        // succeeded — no username/password to collect or re-show.
         authUsername = '';
+        authPassword = '';
+      } else {
+        // Pre-fill saved username; leave password empty so the user types
+        // the full combined password (including any TOTP token) fresh each
+        // time.
+        try {
+          const saved = await TunnelService.GetSavedCredentials(name);
+          authUsername = saved?.username || '';
+        } catch (_) {
+          authUsername = '';
+        }
+        authPassword = '';
       }
-      authPassword = '';
       showAuth = true;
     });
   });
@@ -270,7 +295,12 @@
   // Import a QR code image from a filesystem path (native drag-drop).
   async function importQRFromPath(path) {
     try {
-      const baseName = (path.split('/').pop() || 'tunnel').replace(/\.[^.]+$/, '');
+      const rawName = (path.split('/').pop() || 'tunnel').replace(/\.[^.]+$/, '');
+      // Unlike importFromPath, this never sanitized the name — a typical
+      // macOS screenshot/filename ("Screenshot 2026-07-17 at 10.30.45.png")
+      // contains dots, which the backend's tunnel-name validation rejects,
+      // so QR import failed for most real-world filenames.
+      const baseName = sanitizeTunnelName(rawName);
       const name = await uniqueName(baseName);
       await TunnelService.ImportQRFromPath(path, name);
       showToast(`Imported "${name}" from QR`);
@@ -284,7 +314,7 @@
   async function importQRFromFile(file) {
     if (!file) return;
     try {
-      const baseName = file.name.replace(/\.[^.]+$/, '');
+      const baseName = sanitizeTunnelName(file.name.replace(/\.[^.]+$/, ''));
       const name = await uniqueName(baseName);
       const buf = await file.arrayBuffer();
       const b64 = uint8ArrayToBase64(new Uint8Array(buf));
@@ -479,7 +509,15 @@
   async function handleDismissKofi() {
     kofiDismissed = true;
     try {
-      const s = currentSettings || await TunnelService.GetSettings();
+      // Always fetch live settings rather than falling back to the
+      // onMount-time `currentSettings` snapshot — that snapshot is never
+      // refreshed after startup, so `currentSettings || ...` effectively
+      // never took the live-fetch branch once the app had been running for
+      // any length of time. Since SaveSettings is a full-struct overwrite,
+      // spreading the stale snapshot here silently reverted every setting
+      // the user changed during the session (theme, language, etc.) back
+      // to its value at launch, the moment they dismissed this banner.
+      const s = await TunnelService.GetSettings();
       await TunnelService.SaveSettings({ ...s, kofi_dismissed: true });
     } catch (e) {
       console.warn('failed to persist kofi dismissed state:', e);
@@ -550,24 +588,44 @@
   async function submitAuth() {
     if (authBusy) return;
     authError = '';
-    if (!authUsername) {
-      authError = $t('auth.username_required');
-      return;
+    const isDynamic = authChallengeKind === 'dynamic';
+    if (isDynamic) {
+      if (!authResponse) {
+        authError = $t('auth.response_required');
+        return;
+      }
+    } else {
+      if (!authUsername) {
+        authError = $t('auth.username_required');
+        return;
+      }
+      if (authChallengeKind === 'static' && !authResponse) {
+        authError = $t('auth.response_required');
+        return;
+      }
     }
     authBusy = true;
     try {
       // Optionally save the username for next time (never the password — it
-      // includes a one-time token and is meaningless after 30 s).
-      if (authSave) {
+      // includes a one-time token and is meaningless after 30 s). Skipped
+      // for a dynamic challenge — there's no username field to save here,
+      // it was already saved (or not) at the base login prompt.
+      if (authSave && !isDynamic) {
         try {
           await TunnelService.SaveCredentials(authTunnelName, authUsername, '');
         } catch (e) {
           console.warn('SaveCredentials failed:', e);
         }
       }
-      await TunnelService.FeedCredentials(authTunnelName, authUsername, authPassword);
+      await TunnelService.FeedCredentials(
+        authTunnelName,
+        isDynamic ? '' : authUsername,
+        isDynamic ? '' : authPassword,
+        authResponse,
+      );
       showAuth = false;
       authPassword = '';
+      authResponse = '';
     } catch (e) {
       authError = errText(e);
     } finally {
@@ -578,6 +636,7 @@
   function cancelAuth() {
     showAuth = false;
     authPassword = '';
+    authResponse = '';
     authError = '';
   }
 </script>
@@ -742,7 +801,7 @@
   {#if showAuth}
     <div class="modal-backdrop" on:click={cancelAuth}>
       <div class="modal modal-auth" on:click|stopPropagation>
-        <h3>{$t('auth.title')}</h3>
+        <h3>{authChallengeKind === 'dynamic' ? $t('auth.challenge_title') : $t('auth.title')}</h3>
         <p class="hint">{$t('auth.subtitle', { name: authTunnelName })}</p>
 
         {#if authError}
@@ -750,19 +809,38 @@
         {/if}
 
         <form on:submit|preventDefault={submitAuth}>
-          <label for="auth-user">{$t('auth.username')}</label>
-          <input id="auth-user" type="text" autocomplete="username"
-            bind:value={authUsername} disabled={authBusy} />
+          {#if authChallengeKind !== 'dynamic'}
+            <label for="auth-user">{$t('auth.username')}</label>
+            <input id="auth-user" type="text" autocomplete="username"
+              bind:value={authUsername} disabled={authBusy} />
 
-          <label for="auth-pass">{$t('auth.password')}</label>
-          <input id="auth-pass" type="password" autocomplete="current-password"
-            bind:value={authPassword} disabled={authBusy} />
-          <p class="field-hint">{$t('auth.password_hint')}</p>
+            <label for="auth-pass">{$t('auth.password')}</label>
+            <input id="auth-pass" type="password" autocomplete="current-password"
+              bind:value={authPassword} disabled={authBusy} />
+            <p class="field-hint">{$t('auth.password_hint')}</p>
+          {/if}
 
-          <label class="auth-save-row">
-            <input type="checkbox" bind:checked={authSave} disabled={authBusy} />
-            <span>{$t('auth.save')}</span>
-          </label>
+          {#if authChallengeKind === 'static' || authChallengeKind === 'dynamic'}
+            <!-- Server-issued challenge (2FA) — static (SCRV1) shows this
+                 alongside the password above; dynamic (CRV1) shows it alone,
+                 as a separate step after the password above already
+                 succeeded. -->
+            <label for="auth-response">{authChallengeText || $t('auth.response')}</label>
+            {#if authChallengeEcho}
+              <input id="auth-response" type="text" autocomplete="one-time-code"
+                bind:value={authResponse} disabled={authBusy} />
+            {:else}
+              <input id="auth-response" type="password" autocomplete="one-time-code"
+                bind:value={authResponse} disabled={authBusy} />
+            {/if}
+          {/if}
+
+          {#if authChallengeKind !== 'dynamic'}
+            <label class="auth-save-row">
+              <input type="checkbox" bind:checked={authSave} disabled={authBusy} />
+              <span>{$t('auth.save')}</span>
+            </label>
+          {/if}
 
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" on:click={cancelAuth} disabled={authBusy}>

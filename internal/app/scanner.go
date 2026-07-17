@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 )
 
 // FoundConfig is a WireGuard .conf found on the filesystem.
@@ -46,10 +45,19 @@ func scanSystemWireGuardConfigs(existingNames map[string]bool) []FoundConfig {
 			continue
 		}
 		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".conf") {
+			if e.IsDir() {
 				continue
 			}
-			name := strings.TrimSuffix(e.Name(), ".conf")
+			// stripKnownTunnelExt matches case-insensitively AND strips
+			// case-insensitively — plain strings.TrimSuffix(name, ".conf")
+			// only strips an exact-case match, so "Foo.CONF" passed the old
+			// HasSuffix(ToLower(...)) check but came back from TrimSuffix
+			// unchanged, leaving the dot+extension in "name" and failing
+			// tunnel name validation on every subsequent import attempt.
+			name, ext := stripKnownTunnelExt(e.Name())
+			if ext != ".conf" {
+				continue
+			}
 			if existingNames[name] {
 				continue
 			}

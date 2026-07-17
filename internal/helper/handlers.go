@@ -167,6 +167,7 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 		h.mu.Unlock()
 		return nil, err
 	}
+	h.refreshKillSwitchIfEnabled("wg-connect", req.Config.Name)
 	return ipc.Empty{}, nil
 }
 
@@ -186,9 +187,12 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 
 	// Cancel any in-flight reconnect backoff first — otherwise the monitor
 	// could wake up seconds after the user clicked Disconnect and re-connect
-	// against their wishes.
+	// against their wishes. Scoped to tunnelName so disconnecting one tunnel
+	// doesn't abort a different tunnel's still-in-progress recovery; the
+	// legacy nameless-disconnect path (tunnelName == "") still cancels
+	// every active retry, matching what it actually tears down.
 	if h.monitor != nil {
-		h.monitor.CancelRetry()
+		h.monitor.CancelRetry(tunnelName)
 	}
 
 	// OpenVPN tunnels are tracked separately. If the named tunnel is an active
@@ -209,6 +213,7 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 		delete(h.activeCfgs, tunnelName)
 		delete(h.autoReconnect, tunnelName)
 		h.mu.Unlock()
+		h.refreshKillSwitchIfEnabled("wg-disconnect", tunnelName)
 	} else {
 		// No name specified — disconnect first active OpenVPN tunnel if there
 		// is no WireGuard tunnel active, then fall through to WireGuard.
@@ -229,6 +234,7 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 			delete(h.autoReconnect, activeName)
 		}
 		h.mu.Unlock()
+		h.refreshKillSwitchIfEnabled("wg-disconnect", activeName)
 	}
 	return ipc.Empty{}, nil
 }
@@ -267,29 +273,12 @@ func (h *Helper) handleSetKillSwitch(params json.RawMessage) (interface{}, error
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
+	// A manual toggle is authoritative — it must win over any stale
+	// suspend/resume bookkeeping left behind by a cancelled or abandoned
+	// reconnect retry sequence (see clearFirewallSuspendState).
+	h.clearFirewallSuspendState()
 	if req.Enabled {
-		status := h.manager.Status()
-		if status.State != tunnel.StateConnected {
-			return nil, fmt.Errorf("no active tunnel")
-		}
-		// Use pre-resolved endpoints (resolved before tunnel routes were
-		// installed). Doing DNS resolution here would fail because the kill
-		// switch is about to block non-tunnel traffic and/or the query would
-		// route through the tunnel itself.
-		endpoints := h.manager.ResolvedEndpoints()
-		if len(endpoints) == 0 {
-			return nil, fmt.Errorf("no resolved endpoints available — tunnel may have disconnected")
-		}
-		// Get interface addresses from ALL active configs for anti-spoof chains.
-		// With multiple tunnels, the kill switch must allow traffic from every
-		// tunnel's interface addresses, not just the first one.
-		var ifaceAddresses []string
-		h.mu.Lock()
-		for _, cfg := range h.activeCfgs {
-			ifaceAddresses = append(ifaceAddresses, cfg.Interface.Address...)
-		}
-		h.mu.Unlock()
-		if err := h.firewall.EnableKillSwitch(status.InterfaceName, ifaceAddresses, endpoints); err != nil {
+		if err := h.enableKillSwitchNow(); err != nil {
 			return nil, err
 		}
 	} else {
@@ -305,19 +294,34 @@ func (h *Helper) handleSetDNSProtection(params json.RawMessage) (interface{}, er
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
+	// See handleSetKillSwitch — same rationale.
+	h.clearFirewallSuspendState()
 	if req.Enabled {
-		status := h.manager.Status()
-		if status.State != tunnel.StateConnected {
-			return nil, fmt.Errorf("no active tunnel")
-		}
 		// DNS protection uses a single tunnel's interface name for the pf
 		// rule. This is intentional: the pf rule blocks port 53 globally
 		// and only allows it through the tunnel interface. With multiple
 		// tunnels, using the first connected tunnel's interface is
 		// sufficient because the DNS protection rule is a global "block
 		// port 53 except on <tunnel_iface>" anchor — any tunnel interface
-		// will work as the exception.
-		if err := h.firewall.EnableDNSProtection(status.InterfaceName, req.DNSServers); err != nil {
+		// will work as the exception — which is also why it's fine to
+		// prefer WireGuard's interface when both protocols are active and
+		// fall back to the first active OpenVPN tunnel's when WireGuard
+		// isn't connected, rather than needing to pick "the right" one.
+		ifaceName := ""
+		if status := h.manager.Status(); status.State == tunnel.StateConnected {
+			ifaceName = status.InterfaceName
+		} else if h.ovpnManager != nil {
+			for _, ovpnStatus := range h.ovpnManager.AllStatuses() {
+				if ovpnStatus.State == domain.StateConnected && ovpnStatus.InterfaceName != "" {
+					ifaceName = ovpnStatus.InterfaceName
+					break
+				}
+			}
+		}
+		if ifaceName == "" {
+			return nil, fmt.Errorf("no active tunnel")
+		}
+		if err := h.firewall.EnableDNSProtection(ifaceName, req.DNSServers); err != nil {
 			return nil, err
 		}
 	} else {
@@ -409,7 +413,7 @@ func (h *Helper) handleFeedCredentials(params json.RawMessage) (interface{}, err
 	if h.ovpnManager == nil {
 		return nil, fmt.Errorf("openvpn support not available")
 	}
-	if err := h.ovpnManager.FeedCredentials(req.TunnelName, req.Username, req.FullPassword); err != nil {
+	if err := h.ovpnManager.FeedCredentials(req.TunnelName, req.Username, req.FullPassword, req.Response); err != nil {
 		return nil, err
 	}
 	return ipc.Empty{}, nil

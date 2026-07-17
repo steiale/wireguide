@@ -258,11 +258,17 @@ func (s *TunnelService) GetSavedCredentials(tunnelName string) (*SavedCredential
 // FeedCredentials delivers credentials to an OpenVPN tunnel waiting on an auth
 // prompt. fullPassword must already be basePassword + the 6-digit TOTP code,
 // combined by the caller (the GUI prompts for the code on every connect).
-func (s *TunnelService) FeedCredentials(tunnelName, username, fullPassword string) error {
+//
+// response answers a challenge/response prompt (see the auth_prompt event's
+// challenge_kind): for a "dynamic" (CRV1) prompt it's the entire reply and
+// fullPassword is ignored; for a "static" (SCRV1) prompt it's paired with
+// fullPassword. Pass "" for a plain prompt.
+func (s *TunnelService) FeedCredentials(tunnelName, username, fullPassword, response string) error {
 	return s.call(ipc.MethodFeedCredentials, ipc.FeedCredentialsRequest{
 		TunnelName:   tunnelName,
 		Username:     username,
 		FullPassword: fullPassword,
+		Response:     response,
 	}, nil)
 }
 
@@ -474,14 +480,48 @@ func (s *TunnelService) GetTunnelDetail(name string) (*domain.WireGuardConfig, e
 	return s.tunnelStore.Load(name)
 }
 
+// isTunnelActive reports whether name is anywhere in the helper's full set
+// of currently active tunnels (WireGuard AND OpenVPN, any number of each —
+// the app supports multiple concurrent tunnels). Checking only
+// MethodActiveName (a single name, WG-first with an OVPN fallback for when
+// no WG tunnel is up) was wrong: with e.g. a WireGuard tunnel A and an
+// OpenVPN tunnel B both connected, ActiveName returns "A", so a guard that
+// only compared against ActiveName let B be deleted/renamed/edited right out
+// from under the still-running helper.
+func (s *TunnelService) isTunnelActive(name string) (bool, error) {
+	names, err := s.ActiveTunnelNames()
+	if err != nil {
+		return false, err
+	}
+	for _, n := range names {
+		if n == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ActiveTunnelNames returns every currently active tunnel name (WireGuard
+// AND OpenVPN — the helper supports multiple concurrent tunnels). Exported
+// for callers outside this package that need to act on the full active set
+// rather than the single "primary" name MethodActiveName reports (e.g. the
+// Wi-Fi auto-connect lifecycle's "disconnect everything" path).
+func (s *TunnelService) ActiveTunnelNames() ([]string, error) {
+	var active ipc.ActiveTunnelsResponse
+	if err := s.call(ipc.MethodActiveTunnels, nil, &active); err != nil {
+		return nil, err
+	}
+	return active.Names, nil
+}
+
 // DeleteTunnel removes a tunnel from local storage. Rejects deletion of the
 // currently connected tunnel (would orphan the interface).
 func (s *TunnelService) DeleteTunnel(name string) error {
-	var active ipc.StringResponse
-	if err := s.call(ipc.MethodActiveName, nil, &active); err != nil {
+	active, err := s.isTunnelActive(name)
+	if err != nil {
 		return fmt.Errorf("cannot verify tunnel state (helper unreachable): %w", err)
 	}
-	if active.Value == name {
+	if active {
 		return fmt.Errorf("cannot delete connected tunnel %q — disconnect first", name)
 	}
 	// Best-effort: remove any stored OpenVPN credentials for this tunnel. Done
@@ -496,19 +536,38 @@ func (s *TunnelService) DeleteTunnel(name string) error {
 }
 
 // RenameTunnel changes a tunnel's name. Rejects rename of the connected
-// tunnel since the interface name is derived from it.
+// tunnel since the interface name is derived from it. For OpenVPN tunnels,
+// also migrates any Keychain-stored credentials to the new name — otherwise
+// they're silently orphaned under the old name (GetSavedCredentials(newName)
+// comes back empty, forcing the user to re-enter them, while the stale
+// old-name entry lingers in the Keychain forever with no deletion path).
 func (s *TunnelService) RenameTunnel(oldName, newName string) error {
 	if err := storage.ValidateTunnelName(newName); err != nil {
 		return err
 	}
-	var active ipc.StringResponse
-	if err := s.call(ipc.MethodActiveName, nil, &active); err != nil {
+	active, err := s.isTunnelActive(oldName)
+	if err != nil {
 		return fmt.Errorf("cannot verify tunnel state (helper unreachable): %w", err)
 	}
-	if active.Value == oldName {
+	if active {
 		return fmt.Errorf("cannot rename connected tunnel %q — disconnect first", oldName)
 	}
-	return s.tunnelStore.Rename(oldName, newName)
+	isOVPN := s.tunnelStore.IsOVPN(oldName)
+	if err := s.tunnelStore.Rename(oldName, newName); err != nil {
+		return err
+	}
+	if isOVPN {
+		if creds, err := ovpn.LoadCredentials(oldName); err == nil {
+			if err := ovpn.StoreCredentials(newName, creds.Username, creds.BasePassword); err != nil {
+				slog.Warn("failed to migrate openvpn credentials to new tunnel name", "old", oldName, "new", newName, "error", err)
+			} else if err := ovpn.DeleteCredentials(oldName); err != nil {
+				slog.Warn("failed to delete old-name openvpn credentials after migration", "old", oldName, "error", err)
+			}
+		}
+		// No stored credentials under the old name is not an error — the
+		// user simply never saved any, or was always prompted fresh.
+	}
+	return nil
 }
 
 // TunnelExists reports whether a tunnel with the given name is stored.

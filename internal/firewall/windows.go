@@ -42,10 +42,20 @@ func NewPlatformFirewall() FirewallManager {
 	return &WindowsFirewall{}
 }
 
-func (f *WindowsFirewall) EnableKillSwitch(interfaceName string, _ []string, endpoints []string) error {
-	// Validate interface name to prevent injection.
-	if !validWinIfaceName.MatchString(interfaceName) {
+func (f *WindowsFirewall) EnableKillSwitch(interfaceName string, _ []string, endpoints []string, extra []KillSwitchTunnel) error {
+	// Validate interface name to prevent injection. interfaceName may be
+	// empty for an OpenVPN-only session (no WireGuard tunnel active) — extra
+	// covers that case instead.
+	if interfaceName != "" && !validWinIfaceName.MatchString(interfaceName) {
 		return fmt.Errorf("invalid interface name %q", interfaceName)
+	}
+	for _, t := range extra {
+		if !validWinIfaceName.MatchString(t.InterfaceName) {
+			return fmt.Errorf("invalid interface name %q", t.InterfaceName)
+		}
+	}
+	if interfaceName == "" && len(extra) == 0 {
+		return fmt.Errorf("no active tunnel to enable kill switch for")
 	}
 
 	f.mu.Lock()
@@ -85,6 +95,29 @@ func (f *WindowsFirewall) EnableKillSwitch(interfaceName string, _ []string, end
 		}
 	}
 
+	// Allow each additional (e.g. OpenVPN) tunnel's remote — protocol-aware,
+	// since OpenVPN commonly runs over TCP unlike WireGuard's always-UDP.
+	for ti, t := range extra {
+		proto := "udp"
+		if strings.HasPrefix(t.Proto, "tcp") {
+			proto = "tcp"
+		}
+		for ei, ep := range t.Endpoints {
+			ip, _, _ := net.SplitHostPort(ep)
+			if ip == "" {
+				ip = ep
+			}
+			if net.ParseIP(ip) == nil {
+				continue
+			}
+			if err := runWinFW("netsh", "advfirewall", "firewall", "add", "rule",
+				fmt.Sprintf("name=WireGuide-AllowExtraEndpoint%d-%d", ti, ei), "dir=out", "action=allow",
+				"remoteip="+ip, "protocol="+proto, "enable=yes"); err != nil {
+				return fmt.Errorf("adding extra endpoint allow rule for %s: %w", ip, err)
+			}
+		}
+	}
+
 	// Allow DHCP outbound (client port 68 -> server port 67)
 	if err := runWinFW("netsh", "advfirewall", "firewall", "add", "rule",
 		"name=WireGuide-AllowDHCP-Out", "dir=out", "action=allow",
@@ -107,15 +140,30 @@ func (f *WindowsFirewall) EnableKillSwitch(interfaceName string, _ []string, end
 			fmt.Sprintf(`New-NetFirewallRule -DisplayName 'WireGuide-AllowNDP-%s-In' -Direction Inbound -Action Allow -Protocol ICMPv6 -IcmpType %s`, ndpType, ndpType)).Run()
 	}
 
-	// Allow all traffic on WG tunnel interface (both directions)
-	if err := runWinFW("netsh", "advfirewall", "firewall", "add", "rule",
-		"name=WireGuide-AllowTunnel-Out", "dir=out", "action=allow",
-		"enable=yes", "interface="+interfaceName); err != nil {
-		return fmt.Errorf("adding tunnel outbound allow rule: %w", err)
+	// Allow all traffic on the WG tunnel interface (both directions), if one
+	// is active.
+	if interfaceName != "" {
+		if err := runWinFW("netsh", "advfirewall", "firewall", "add", "rule",
+			"name=WireGuide-AllowTunnel-Out", "dir=out", "action=allow",
+			"enable=yes", "interface="+interfaceName); err != nil {
+			return fmt.Errorf("adding tunnel outbound allow rule: %w", err)
+		}
+		_ = runWinFW("netsh", "advfirewall", "firewall", "add", "rule",
+			"name=WireGuide-AllowTunnel-In", "dir=in", "action=allow",
+			"enable=yes", "interface="+interfaceName)
 	}
-	_ = runWinFW("netsh", "advfirewall", "firewall", "add", "rule",
-		"name=WireGuide-AllowTunnel-In", "dir=in", "action=allow",
-		"enable=yes", "interface="+interfaceName)
+
+	// Allow all traffic on each additional (e.g. OpenVPN) tunnel's interface.
+	for ti, t := range extra {
+		if err := runWinFW("netsh", "advfirewall", "firewall", "add", "rule",
+			fmt.Sprintf("name=WireGuide-AllowExtraTunnel%d-Out", ti), "dir=out", "action=allow",
+			"enable=yes", "interface="+t.InterfaceName); err != nil {
+			return fmt.Errorf("adding extra tunnel outbound allow rule: %w", err)
+		}
+		_ = runWinFW("netsh", "advfirewall", "firewall", "add", "rule",
+			fmt.Sprintf("name=WireGuide-AllowExtraTunnel%d-In", ti), "dir=in", "action=allow",
+			"enable=yes", "interface="+t.InterfaceName)
+	}
 
 	// Step 3: Set the default policy to block all traffic.
 	// The allow rules above act as exceptions to this default policy.
@@ -307,6 +355,14 @@ func cleanupWinRules() {
 	// This avoids depending on an in-memory count that is lost on crash.
 	exec.Command("powershell", "-NoProfile", "-Command",
 		`Get-NetFirewallRule | Where-Object { $_.DisplayName -like 'WireGuide-AllowEndpoint*' } | Remove-NetFirewallRule`).Run()
+
+	// Remove additional-tunnel (e.g. OpenVPN) endpoint/interface allow rules.
+	// These use a distinct "AllowExtra*" prefix, not matched by the
+	// "AllowEndpoint*"/"AllowTunnel*" wildcards above — without this they'd
+	// persist across kill switch sessions, silently punching a permanent
+	// hole for whatever server/interface they referenced.
+	exec.Command("powershell", "-NoProfile", "-Command",
+		`Get-NetFirewallRule | Where-Object { $_.DisplayName -like 'WireGuide-AllowExtra*' } | Remove-NetFirewallRule`).Run()
 
 	// Remove type-specific NDP rules created by PowerShell.
 	exec.Command("powershell", "-NoProfile", "-Command",

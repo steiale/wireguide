@@ -178,7 +178,10 @@ func TestFetchExpectedHash_ServerError(t *testing.T) {
 // makeRelease builds a JSON-serialisable Release with one asset matching the
 // current platform and an optional checksum asset.
 func makeRelease(version string, assetSize int64, includeChecksum bool) Release {
-	assetName := fmt.Sprintf("WireGuide-%s-%s.dmg", runtime.GOOS, runtime.GOARCH)
+	// .zip, not .dmg: matchAsset now only selects the extension that's
+	// actually signed (see matchAsset's wantedExts) — a .dmg would never be
+	// selected on darwin, so tests need a fixture name matchAsset can find.
+	assetName := fmt.Sprintf("WireGuide-%s-%s.zip", runtime.GOOS, runtime.GOARCH)
 	assets := []Asset{
 		{Name: assetName, BrowserDownloadURL: "https://example.com/" + assetName, Size: assetSize},
 	}
@@ -271,6 +274,15 @@ func TestAssetSizeValidation_ExactlyMinimum(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDownloadUpdate_ChecksumMatch(t *testing.T) {
+	// This test isolates checksum-matching logic from the (separately
+	// tested, see TestDownloadUpdate_Signature*) Ed25519 signature
+	// requirement — no SignatureURL is set here, so requireSignature must
+	// be false for the duration or DownloadUpdate would fail past the
+	// checksum check for an unrelated reason.
+	old := requireSignature
+	requireSignature = false
+	defer func() { requireSignature = old }()
+
 	// Build a fake asset body that is >= minAssetSize.
 	bodySize := minAssetSize + 1024
 	body := make([]byte, bodySize)
@@ -337,7 +349,19 @@ func TestDownloadUpdate_ChecksumMismatch(t *testing.T) {
 	}
 }
 
+// TestDownloadUpdate_NoChecksum verifies that an absent checksum file no
+// longer blocks installation on its own (no release has ever actually
+// uploaded one — see build/darwin/Taskfile.yml and checker.go's
+// DownloadUpdate comment). The real authenticity gate is now the Ed25519
+// signature: with requireSignature=false and no SignatureURL, this should
+// succeed; TestDownloadUpdate_SignatureMissing_GraceMode covers the same
+// no-signature path in more detail, and TestDownloadUpdate_ChecksumMismatch
+// covers that a checksum, when present, still hard-fails on mismatch.
 func TestDownloadUpdate_NoChecksum(t *testing.T) {
+	old := requireSignature
+	requireSignature = false
+	defer func() { requireSignature = old }()
+
 	bodySize := minAssetSize + 1024
 	body := make([]byte, bodySize)
 
@@ -351,15 +375,18 @@ func TestDownloadUpdate_NoChecksum(t *testing.T) {
 		DownloadURL:  srv.URL + "/asset.dmg",
 		AssetName:    "asset.dmg",
 		AssetSize:    int64(bodySize),
-		ExpectedHash: "", // no checksum available
+		ExpectedHash: "", // no checksum available — no longer an error
 	}
 
-	_, err := DownloadUpdate(info)
-	if err == nil {
-		t.Fatal("expected error when no checksum is available")
+	path, err := DownloadUpdate(info)
+	if err != nil {
+		t.Fatalf("expected no-checksum + no-signature (grace mode) to succeed, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no checksum available") {
-		t.Errorf("expected 'no checksum available' in error, got: %v", err)
+	if info.HashVerified {
+		t.Error("HashVerified should stay false when no checksum was available to check")
+	}
+	if err := removeIfExists(path); err != nil {
+		t.Logf("cleanup warning: %v", err)
 	}
 }
 
@@ -498,7 +525,7 @@ func TestDownloadUpdate_HTTPError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMatchAsset_FindsPlatformAsset(t *testing.T) {
-	name := fmt.Sprintf("WireGuide-%s-%s.dmg", runtime.GOOS, runtime.GOARCH)
+	name := fmt.Sprintf("WireGuide-%s-%s.zip", runtime.GOOS, runtime.GOARCH)
 	assets := []Asset{
 		{Name: "WireGuide-linux-amd64.tar.gz"},
 		{Name: name},
@@ -850,10 +877,58 @@ func TestDownloadUpdate_SignatureInvalid(t *testing.T) {
 	}
 }
 
-func TestDownloadUpdate_SignatureMissing_GraceMode(t *testing.T) {
-	if requireSignature {
-		t.Skip("requireSignature=true; this test only meaningful in grace mode")
+// TestDownloadUpdate_SignatureRequired_MissingRejected is the direct
+// regression test for the bug this batch of fixes closes: with the real
+// production value of requireSignature (true — deliberately NOT overridden
+// in this test), an asset with no SignatureURL at all must be rejected, not
+// silently accepted on checksum alone. This is the actual security property;
+// the grace-mode test above covers the opposite (intentionally permissive)
+// configuration.
+func TestDownloadUpdate_SignatureRequired_MissingRejected(t *testing.T) {
+	if !requireSignature {
+		t.Fatal("requireSignature must default to true in production — if this changed, update this test's premise too")
 	}
+
+	bodySize := minAssetSize + 1024
+	body := make([]byte, bodySize)
+	h := sha256.Sum256(body)
+	expectedHash := hex.EncodeToString(h[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	info := &UpdateInfo{
+		DownloadURL:  srv.URL + "/asset.zip",
+		AssetName:    "asset.zip",
+		AssetSize:    int64(bodySize),
+		ExpectedHash: expectedHash,
+		// SignatureURL intentionally empty, checksum intentionally valid —
+		// this is exactly the shape of a compromised release where an
+		// attacker regenerated a matching checksum for a tampered asset but
+		// can't produce a valid signature without the offline private key.
+	}
+
+	_, err := DownloadUpdate(info)
+	if err == nil {
+		t.Fatal("expected DownloadUpdate to reject a missing signature under requireSignature=true, got success")
+	}
+	if !strings.Contains(err.Error(), "no Ed25519 signature") {
+		t.Errorf("expected 'no Ed25519 signature' in error, got: %v", err)
+	}
+}
+
+func TestDownloadUpdate_SignatureMissing_GraceMode(t *testing.T) {
+	// requireSignature is true in production now, but this test exists
+	// specifically to exercise the grace-mode path (legacy releases with no
+	// .sig at all) — flip it locally rather than skipping, now that it's a
+	// var instead of a const.
+	old := requireSignature
+	requireSignature = false
+	defer func() { requireSignature = old }()
+
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)

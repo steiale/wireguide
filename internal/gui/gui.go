@@ -194,14 +194,30 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 			tunnelService.CloseHistorySessions("app_quit")
 			c := clients.Get()
 			if c != nil {
-				// M1: Disconnect can take 15+ s on macOS (DNS restore,
-				// networksetup calls across services, route teardown). The
-				// default 10 s Call timeout is too short — match the 60 s
-				// budget used by callLong for Connect/Disconnect everywhere
-				// else.
-				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				_ = c.CallWithContext(ctx, ipc.MethodDisconnect, nil, nil)
-				cancel()
+				// Disconnect EVERY active tunnel, not just one. A single
+				// nameless MethodDisconnect call only tears down the
+				// helper's first active tunnel (WG first, else the first
+				// OpenVPN tunnel) — with multiple concurrent tunnels
+				// (WG+OVPN, or two WG tunnels), the others were left
+				// running under the LaunchDaemon after quit, even though
+				// CloseHistorySessions just marked ALL of their sessions
+				// closed as "app_quit" a moment ago. tunnelService.callLong
+				// already gives Disconnect its own generous timeout
+				// (matching the 60s budget used everywhere else — DNS
+				// restore + networksetup calls across services + route
+				// teardown can take 15+ s on macOS).
+				if names, err := tunnelService.ActiveTunnelNames(); err == nil {
+					for _, name := range names {
+						_ = tunnelService.DisconnectTunnel(name)
+					}
+				} else {
+					// Fallback: helper unreachable via the normal call path
+					// for some reason — still attempt the legacy single
+					// nameless disconnect so we don't skip teardown entirely.
+					ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+					_ = c.CallWithContext(ctx, ipc.MethodDisconnect, nil, nil)
+					cancel()
+				}
 				// Do NOT send MethodShutdown here. The helper installed as a
 				// LaunchDaemon (KeepAlive=true) is owned by launchd — if we
 				// tell it to shut down, launchd respawns it immediately, the
@@ -250,10 +266,11 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	healthWg.Add(1)
 	startHelperHealthMonitor(app, clients, dataDir, bridge, healthDone, &healthWg)
 
-	// 8b. Wi-Fi auto-connect lifecycle. The lifecycle's connect/disconnect
-	// paths already check for a nil client and skip when the holder is
-	// empty, so it's safe to start before the helper bootstrap completes.
-	wifiLC := startWifiLifecycle(clients, wifiRulesStore, tunnelStore)
+	// 8b. Wi-Fi auto-connect lifecycle. Its connect/disconnect paths go
+	// through tunnelService, whose IPC calls already handle a not-yet-ready
+	// helper by surfacing an error (logged, not fatal) — safe to start
+	// before the helper bootstrap completes.
+	wifiLC := startWifiLifecycle(tunnelService, wifiRulesStore)
 
 	// 8c. Bootstrap the helper in the background once the Wails event loop
 	// is running. ApplicationStarted fires on the main goroutine after the

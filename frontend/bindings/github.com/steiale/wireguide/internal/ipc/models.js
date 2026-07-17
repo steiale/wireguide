@@ -23,6 +23,34 @@ export class AuthPromptEventPayload {
              */
             this["tunnel_name"] = "";
         }
+        if (!("challenge_kind" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["challenge_kind"] = "";
+        }
+        if (!("challenge_text" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["challenge_text"] = "";
+        }
+        if (!("challenge_echo" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["challenge_echo"] = false;
+        }
+        if (!("challenge_concat" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["challenge_concat"] = false;
+        }
 
         Object.assign(this, $$source);
     }

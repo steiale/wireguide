@@ -16,7 +16,6 @@ import (
 
 	"github.com/steiale/wireguide/internal/config"
 	"github.com/steiale/wireguide/internal/domain"
-	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/ovpn"
 	"github.com/steiale/wireguide/internal/storage"
 	"github.com/makiuchi-d/gozxing"
@@ -43,15 +42,16 @@ func (s *TunnelService) zipUniqueName(base string) string {
 	return fmt.Sprintf("%s-%d", base, time.Now().UnixMilli())
 }
 
-// ImportZip extracts all .conf files from a zip archive and imports each one.
-// Returns per-file results; an error is only returned for zip-level failures.
+// ImportZip extracts all .conf and .ovpn files from a zip archive and imports
+// each one. Returns per-file results; an error is only returned for zip-level
+// failures.
 func (s *TunnelService) ImportZip(path string) ([]ZipImportResult, error) {
 	r, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening zip: %w", err)
 	}
 	defer r.Close()
-	return s.importZipReader(r.Reader)
+	return s.importZipReader(&r.Reader)
 }
 
 // ImportZipData imports a zip supplied as raw bytes (used by the file picker,
@@ -61,14 +61,38 @@ func (s *TunnelService) ImportZipData(data []byte) ([]ZipImportResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading zip: %w", err)
 	}
-	return s.importZipReader(*r)
+	return s.importZipReader(r)
+}
+
+// stripKnownTunnelExt case-insensitively strips a trailing ".conf" or
+// ".ovpn" from name and reports which one (lowercased) matched. Plain
+// strings.TrimSuffix(name, ".conf") only matches an exact-case suffix, so an
+// entry like "Foo.CONF" would pass a case-insensitive HasSuffix check
+// elsewhere but come back through TrimSuffix unchanged — leaving the dot
+// and extension in the "base name", which then fails tunnel name
+// validation. Every caller that both detects and strips one of these two
+// extensions should go through this single function so the two checks
+// can't disagree with each other again.
+func stripKnownTunnelExt(name string) (base, ext string) {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasSuffix(lower, ".conf"):
+		return name[:len(name)-len(".conf")], ".conf"
+	case strings.HasSuffix(lower, ".ovpn"):
+		return name[:len(name)-len(".ovpn")], ".ovpn"
+	default:
+		return name, ""
+	}
 }
 
 // importZipReader is the shared implementation for ImportZip and ImportZipData.
-func (s *TunnelService) importZipReader(r zip.Reader) ([]ZipImportResult, error) {
+// Each entry is imported independently — one failure doesn't abort the rest,
+// and each result is keyed to its own filename.
+func (s *TunnelService) importZipReader(r *zip.Reader) ([]ZipImportResult, error) {
 	var results []ZipImportResult
 	for _, f := range r.File {
-		if !strings.HasSuffix(strings.ToLower(f.Name), ".conf") {
+		baseName, ext := stripKnownTunnelExt(filepath.Base(f.Name))
+		if ext == "" {
 			continue
 		}
 		rc, err := f.Open()
@@ -82,16 +106,22 @@ func (s *TunnelService) importZipReader(r zip.Reader) ([]ZipImportResult, error)
 			results = append(results, ZipImportResult{Name: filepath.Base(f.Name), Error: err.Error()})
 			continue
 		}
-		baseName := strings.TrimSuffix(filepath.Base(f.Name), ".conf")
 		name := s.zipUniqueName(baseName)
-		if _, err := s.ImportConfig(name, string(data)); err != nil {
-			results = append(results, ZipImportResult{Name: baseName, Error: err.Error()})
+		var importErr error
+		switch ext {
+		case ".ovpn":
+			_, importErr = s.ImportOVPN(name, string(data))
+		default:
+			_, importErr = s.ImportConfig(name, string(data))
+		}
+		if importErr != nil {
+			results = append(results, ZipImportResult{Name: baseName, Error: importErr.Error()})
 		} else {
 			results = append(results, ZipImportResult{Name: name})
 		}
 	}
 	if len(results) == 0 {
-		return nil, fmt.Errorf("no .conf files found in zip")
+		return nil, fmt.Errorf("no .conf or .ovpn files found in zip")
 	}
 	return results, nil
 }
@@ -217,11 +247,11 @@ func (s *TunnelService) GetConfigText(name string) (string, error) {
 // Rejects edits of the connected tunnel. Routes to the OpenVPN path for .ovpn
 // tunnels so the raw config is saved without WireGuard parsing.
 func (s *TunnelService) UpdateConfig(name, content string) error {
-	var active ipc.StringResponse
-	if err := s.call(ipc.MethodActiveName, nil, &active); err != nil {
+	active, err := s.isTunnelActive(name)
+	if err != nil {
 		return fmt.Errorf("cannot verify tunnel state: %w", err)
 	}
-	if active.Value == name {
+	if active {
 		return fmt.Errorf("cannot edit connected tunnel %q — disconnect first", name)
 	}
 	if s.tunnelStore.IsOVPN(name) {

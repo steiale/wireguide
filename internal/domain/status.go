@@ -58,6 +58,14 @@ type ConnectionStatus struct {
 	// always uses ChaCha20-Poly1305 and has no equivalent negotiation step.
 	Cipher string `json:"cipher,omitempty"`
 
+	// DNSServers is the set of DNS resolver IPs actually applied for this
+	// tunnel. For OpenVPN, these come from the server's PUSH_REPLY
+	// dhcp-option DNS entries (there's no static client-side DNS directive
+	// to read before connecting — unlike WireGuard's `DNS = ...` config
+	// line, which the DNS leak test reads directly from the parsed
+	// .conf instead of via this field). Empty until CONNECTED.
+	DNSServers []string `json:"dns_servers,omitempty"`
+
 	// ActiveTunnels lists the names of all currently connected (or connecting)
 	// tunnels. Populated by the multi-tunnel manager so the frontend can show
 	// which tunnels are active.

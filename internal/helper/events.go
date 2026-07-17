@@ -35,15 +35,26 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 		return ipc.ConnectionStatus{}
 	}
 
-	// Include lightweight per-tunnel info (name + state + handshake presence)
-	// so the frontend can show correct badges. Full stats (rx/tx/duration)
-	// are only in the primary status to avoid sending redundant data every second.
+	// Include full per-tunnel info (rx/tx/duration included, matching the
+	// OpenVPN loop below) so the frontend can render correct stats/speed
+	// data for whichever tunnel's card is actually expanded — not just the
+	// "primary" one. This used to omit rx/tx/duration here as a bandwidth
+	// optimization ("full stats only in the primary status"), but that
+	// meant expanding a second WireGuard tunnel's card (or, before OpenVPN
+	// entries got full stats too, any non-primary tunnel) always showed
+	// zeroed-out traffic — the exact same class of bug the OpenVPN loop
+	// below doesn't have. A few extra int64 fields per tunnel per second is
+	// negligible next to that correctness gap, especially since a user
+	// realistically has at most a small handful of concurrent tunnels.
 	if allStats := h.manager.AllStatuses(); len(allStats) > 1 {
 		for _, ts := range allStats {
 			if ts != nil {
 				result.Tunnels = append(result.Tunnels, domain.ConnectionStatus{
 					State:         ts.State,
 					TunnelName:    ts.TunnelName,
+					RxBytes:       ts.RxBytes,
+					TxBytes:       ts.TxBytes,
+					Duration:      ts.Duration,
 					LastHandshake: ts.LastHandshake,
 					HasHandshake:  ts.HasHandshake,
 					Protocol:      domain.ProtocolWireGuard,
@@ -62,6 +73,7 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 			LastHandshake: ts.LastHandshake,
 			HasHandshake:  ts.HasHandshake,
 			Protocol:      domain.ProtocolOpenVPN,
+			DNSServers:    ts.DNSServers,
 		})
 		result.ActiveTunnels = appendUnique(result.ActiveTunnels, ts.TunnelName)
 	}

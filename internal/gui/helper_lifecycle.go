@@ -2,9 +2,12 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,6 +169,17 @@ func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, d
 		defer ticker.Stop()
 
 		wasAlive := true
+		// consecutiveFailures and gaveUp bound automatic recovery attempts.
+		// Without this, a daemon that can NEVER start again (blocked Login
+		// Item, binary removed, stuck past launchd's crash-loop throttle)
+		// caused ensureHelper → elevate.SpawnHelper to re-run the osascript
+		// admin-password prompt on every single 5s tick, forever — the
+		// bootstrap path (bootstrapHelper in gui.go) already had this same
+		// bug fixed via a capped 3-attempt loop + BootstrapError detection +
+		// user-cancel handling; this path never got the same treatment.
+		consecutiveFailures := 0
+		gaveUp := false
+		const maxAutoRecoveryAttempts = 6 // ~30s of 5s ticks before giving up automatically
 		for {
 			select {
 			case <-done:
@@ -198,6 +212,21 @@ func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, d
 				continue
 			}
 
+			// Self-heal a Resubscribe() whose Subscribe RPC failed
+			// transiently (e.g. the helper was still mid-initialization
+			// right after a recovery swap). Nothing else would ever retry
+			// it: the control connection this ping runs on is separate
+			// from the event connection, so pings keep succeeding while
+			// events silently stay dead — the tray icon and frontend status
+			// would freeze at their last-known value forever. Checked on
+			// every tick the helper is reachable, not just on state
+			// transitions, so it self-heals within one 5s tick regardless
+			// of when the failure happened.
+			if alive && !bridge.IsSubscribed() {
+				slog.Warn("event bridge not subscribed on current client, resubscribing")
+				bridge.Resubscribe()
+			}
+
 			switch {
 			case !alive && wasAlive:
 				slog.Warn("helper disconnected", "error", err)
@@ -206,17 +235,26 @@ func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, d
 					Message: "Helper process not responding: " + err.Error(),
 				})
 				wasAlive = false
+				consecutiveFailures = 0
+				gaveUp = false
 
 				// Try to recover immediately — don't wait for the next tick.
-				if recoverHelper(clients, bridge, dataDir, done) {
+				if attemptHelperRecovery(app, clients, bridge, dataDir, done, &consecutiveFailures, &gaveUp, maxAutoRecoveryAttempts) {
 					slog.Info("helper recovered")
 					app.Event.Emit("helper", HelperEvent{Alive: true})
 					wasAlive = true
 				}
 
 			case !alive && !wasAlive:
-				// Retry recovery on subsequent ticks until it comes back.
-				if recoverHelper(clients, bridge, dataDir, done) {
+				if gaveUp {
+					// Already showed the user a one-shot dialog/toast and
+					// stopped auto-retrying — don't hammer osascript/launchd
+					// every 5s. The user must relaunch the app (which goes
+					// through bootstrapHelper's own properly-bounded retry)
+					// or fix whatever's blocking the daemon.
+					continue
+				}
+				if attemptHelperRecovery(app, clients, bridge, dataDir, done, &consecutiveFailures, &gaveUp, maxAutoRecoveryAttempts) {
 					slog.Info("helper recovered")
 					app.Event.Emit("helper", HelperEvent{Alive: true})
 					wasAlive = true
@@ -233,10 +271,74 @@ func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, d
 	}()
 }
 
+// attemptHelperRecovery wraps recoverHelper with the give-up bookkeeping
+// described in startHelperHealthMonitor: a terminal elevate.BootstrapError
+// gives up immediately (further attempts would fail identically forever),
+// and repeated non-terminal failures give up after maxAttempts rather than
+// retrying — and re-prompting for a password — indefinitely.
+func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, bridge *eventBridge, dataDir string, done <-chan struct{}, consecutiveFailures *int, gaveUp *bool, maxAttempts int) bool {
+	ok, err := recoverHelper(clients, bridge, dataDir, done)
+	if ok {
+		*consecutiveFailures = 0
+		return true
+	}
+
+	var bootErr *elevate.BootstrapError
+	if errors.As(err, &bootErr) {
+		*gaveUp = true
+		slog.Error("launchd blocked the helper daemon during recovery — giving up automatic retries", "output", bootErr.Output)
+		app.Event.Emit("helper", HelperEvent{
+			Alive:   false,
+			Message: "macOS blocked the helper service. Open System Settings → Login Items & Extensions, enable LockPlus, then relaunch the app.",
+		})
+		// One-shot dialog with the same remediation bootstrapHelper offers on
+		// first launch — run in a goroutine so a blocking AppleScript modal
+		// doesn't stall the health-monitor loop's next tick.
+		go func() {
+			blockedCmd := `display dialog "macOS blocked LockPlus's background helper service.\n\nOpen System Settings → General → Login Items & Extensions, find LockPlus, and turn it ON. Then relaunch LockPlus." buttons {"Open Login Items", "Dismiss"} default button "Open Login Items" with title "LockPlus" with icon stop`
+			out, _ := exec.Command("osascript", "-e", blockedCmd).Output()
+			if strings.Contains(string(out), "Open Login Items") {
+				_ = exec.Command("open", "x-apple.systempreferences:com.apple.LoginItems-Settings.extension").Run()
+			}
+		}()
+		return false
+	}
+
+	// A user who dismisses the admin-password prompt made a deliberate
+	// choice — re-prompting on the very next 5s tick (and up to
+	// maxAttempts times, ~30s of repeated prompts) is hostile, not helpful.
+	// Treat this the same as BootstrapError: stop automatically, one-shot
+	// notice, wait for a manual relaunch (which goes through
+	// bootstrapHelper's own Retry/Quit-aware prompt loop instead).
+	if errors.Is(err, elevate.ErrUserCancelled) {
+		*gaveUp = true
+		slog.Warn("user declined the admin prompt during helper recovery — giving up automatic retries")
+		app.Event.Emit("helper", HelperEvent{
+			Alive:   false,
+			Message: "Helper service needs administrator access to restart. Please quit and relaunch LockPlus when ready to authorize it.",
+		})
+		return false
+	}
+
+	*consecutiveFailures++
+	if *consecutiveFailures >= maxAttempts {
+		*gaveUp = true
+		slog.Error("helper recovery failed repeatedly — giving up automatic retries", "attempts", *consecutiveFailures)
+		app.Event.Emit("helper", HelperEvent{
+			Alive:   false,
+			Message: "Helper service unavailable. Please quit and relaunch LockPlus.",
+		})
+	}
+	return false
+}
+
 // recoverHelper attempts to re-establish a working helper connection. Returns
-// true if a new client is now in place. Best-effort — caller decides whether
-// to retry on the next tick.
-func recoverHelper(clients *ipc.ClientHolder, bridge *eventBridge, dataDir string, done <-chan struct{}) bool {
+// true if a new client is now in place, plus the underlying error (nil on
+// success) so the caller can distinguish a transient failure worth retrying
+// from a terminal one (elevate.BootstrapError) that will keep failing
+// identically forever until the user acts outside the app — see
+// attemptHelperRecovery.
+func recoverHelper(clients *ipc.ClientHolder, bridge *eventBridge, dataDir string, done <-chan struct{}) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -256,9 +358,9 @@ func recoverHelper(clients *ipc.ClientHolder, bridge *eventBridge, dataDir strin
 	newClient, err := ensureHelper(ctx, dataDir)
 	if err != nil {
 		slog.Debug("helper recovery attempt failed", "error", err)
-		return false
+		return false, err
 	}
 	clients.Set(newClient)
 	bridge.Resubscribe()
-	return true
+	return true, nil
 }

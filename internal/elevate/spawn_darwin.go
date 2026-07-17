@@ -117,9 +117,15 @@ func installAndLoadDaemon(args Args) error {
 	// lack the binary still install the helper successfully.
 	ovpnExe := filepath.Join(filepath.Dir(exe), "openvpn")
 	ovpnDst := "/Library/PrivilegedHelperTools/openvpn"
+	// rm the destination before cp: overwriting an already-executed binary's
+	// file in place (same inode) has been observed to poison syspolicyd's
+	// per-file exec-approval cache on some macOS versions, permanently
+	// wedging that inode into an "OS_REASON_CODESIGNING" kill loop even
+	// though the binary is validly signed and notarized (spctl/codesign both
+	// pass). rm+cp gets a fresh inode and avoids the whole class of bug.
 	ovpnSnippet := fmt.Sprintf(
-		`if [ -f %s ]; then cp -f %s %s && xattr -d com.apple.quarantine %s 2>/dev/null || true; chown root:wheel %s && chmod 755 %s; fi; `,
-		shellQuote(ovpnExe), shellQuote(ovpnExe), shellQuote(ovpnDst), shellQuote(ovpnDst),
+		`if [ -f %s ]; then rm -f %s; cp -f %s %s && xattr -d com.apple.quarantine %s 2>/dev/null || true; chown root:wheel %s && chmod 755 %s; fi; `,
+		shellQuote(ovpnExe), shellQuote(ovpnDst), shellQuote(ovpnExe), shellQuote(ovpnDst), shellQuote(ovpnDst),
 		shellQuote(ovpnDst), shellQuote(ovpnDst),
 	)
 
@@ -151,6 +157,9 @@ func installAndLoadDaemon(args Args) error {
 			`rm -f /Library/LaunchDaemons/com.wireguide.helper.plist; `+
 			`rm -f /Library/PrivilegedHelperTools/com.wireguide.helper; `+
 			`mkdir -p /Library/PrivilegedHelperTools; `+
+			// rm before cp — see ovpnSnippet comment above for why overwriting
+			// the existing binary's inode in place is unsafe.
+			`rm -f %s; `+
 			`cp -f %s %s; `+
 			`xattr -d com.apple.quarantine %s 2>/dev/null || true; `+
 			`chown root:wheel %s; `+
@@ -174,6 +183,7 @@ func installAndLoadDaemon(args Args) error {
 			// non-zero if the label is unknown to launchd.
 			`if launchctl print system/%s >/dev/null 2>&1; then echo INSTALL_OK; `+
 			`else echo "BOOTSTRAP_FAILED: service not registered after load"; exit 4; fi`,
+		shellQuote(daemonBinary),
 		shellQuote(exe), shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
@@ -209,7 +219,7 @@ func installAndLoadDaemon(args Args) error {
 			return &BootstrapError{Output: outStr, Err: err}
 		}
 		if strings.Contains(outStr, "-128") || strings.Contains(strings.ToLower(outStr), "cancel") {
-			return fmt.Errorf("admin authorization cancelled by user")
+			return ErrUserCancelled
 		}
 		return fmt.Errorf("osascript install failed: %s (%w)", outStr, err)
 	}
@@ -226,6 +236,14 @@ func installAndLoadDaemon(args Args) error {
 	slog.Info("LaunchDaemon installed and verified registered", "output", outStr)
 	return nil
 }
+
+// ErrUserCancelled indicates the user dismissed the admin-password prompt
+// rather than authorizing it. Like BootstrapError, this is terminal for the
+// current attempt — retrying immediately just re-shows the same prompt — so
+// callers (e.g. the GUI's health-monitor recovery loop) should treat it the
+// same way: stop auto-retrying rather than counting it as one of a bounded
+// number of transient-failure retries.
+var ErrUserCancelled = fmt.Errorf("admin authorization cancelled by user")
 
 // BootstrapError indicates the LaunchDaemon was copied into place but launchd
 // refused to load it (most commonly because macOS has the background item in a

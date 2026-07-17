@@ -282,3 +282,19 @@ tasks:
         echo "Release zip ready: ${ZIP}"
         [ -f "${ZIP}.sig" ] && echo "Signature: ${ZIP}.sig"
       - task: create:dmg
+      - |
+        # SHA256SUMS.txt: no release has ever uploaded a separate checksums
+        # file before, which meant internal/update/checker.go's checksum
+        # lookup (fetchExpectedHash) always came back empty for every real
+        # release — the Ed25519 .sig is the actual cryptographic authenticity
+        # guarantee (signed offline, unlike a same-release checksum file an
+        # attacker who compromised the release could just regenerate to
+        # match), but this file gives independent-source-friendly mirrors
+        # something to check too and keeps the "SHA256SUMS" concept in the
+        # code from being permanently a no-op. Format matches what
+        # fetchExpectedHash parses: "<hex-hash>  <filename>" per line.
+        VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' build/darwin/Info.plist)
+        ZIP="lockplus-v${VERSION}-darwin-arm64.zip"
+        DMG="lockplus-v${VERSION}-darwin-arm64.dmg"
+        shasum -a 256 "${ZIP}" "${DMG}" > SHA256SUMS.txt
+        echo "Checksums written: SHA256SUMS.txt"

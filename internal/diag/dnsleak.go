@@ -42,7 +42,18 @@ func RunDNSLeakTest(expectedDNS []string) *DNSLeakResult {
 
 	// Check system resolver configuration
 	// On macOS: scutil --dns, on Linux: /etc/resolv.conf
-	systemDNS := getSystemDNSServers()
+	systemDNS, err := readSystemResolvers()
+	if err != nil {
+		// A failure to even enumerate the system's configured resolvers
+		// (scutil/PowerShell erroring, /etc/resolv.conf missing, timeout)
+		// must NOT be reported as "no leak" — that previously happened
+		// because this case fell through with an empty systemDNS slice, so
+		// the loop below simply never ran and Leaked stayed false. A
+		// security diagnostic silently reporting "safe" when it couldn't
+		// actually check anything is worse than reporting nothing.
+		result.Error = fmt.Sprintf("could not enumerate system DNS resolvers: %v", err)
+		return result
+	}
 
 	expectedSet := make(map[string]bool)
 	for _, dns := range expectedDNS {
@@ -108,14 +119,6 @@ func testDNSServer(server, domain string) bool {
 		return false
 	}
 	return true
-}
-
-func getSystemDNSServers() []string {
-	servers, err := readSystemResolvers()
-	if err != nil {
-		return nil
-	}
-	return servers
 }
 
 // readSystemResolvers detects configured DNS servers using OS-specific methods.

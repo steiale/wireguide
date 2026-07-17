@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync/atomic"
 
 	"github.com/steiale/wireguide/internal/autostart"
@@ -117,7 +116,19 @@ func (s *TunnelService) SetDNSProtection(enabled bool) error {
 			return fmt.Errorf("cannot verify tunnel state: %w", err)
 		}
 		if active.Value != "" {
-			if cfg, err := s.tunnelStore.Load(active.Value); err == nil {
+			if s.tunnelStore.IsOVPN(active.Value) {
+				// WireGuard's DNS list is a static client-side directive,
+				// readable straight from the parsed .conf. OpenVPN has no
+				// such directive — DNS is pushed by the server at connect
+				// time — so tunnelStore.Load (WireGuard-only) always
+				// errored here for an .ovpn tunnel, silently leaving
+				// dnsServers empty (same root cause, and same fix, as
+				// RunDNSLeakTest's OVPN gap: read the actually-applied
+				// PUSH_REPLY DNS servers off the live status instead).
+				if status, err := s.GetStatus(); err == nil && status != nil {
+					dnsServers = status.DNSServers
+				}
+			} else if cfg, err := s.tunnelStore.Load(active.Value); err == nil {
 				dnsServers = cfg.Interface.DNS
 			}
 		}
@@ -250,7 +261,7 @@ func (t *TunnelService) ScanForWireGuardConfigs() []FoundConfig {
 func (t *TunnelService) ImportFoundConfigs(paths []string) []ZipImportResult {
 	var results []ZipImportResult
 	for _, p := range paths {
-		name := strings.TrimSuffix(filepath.Base(p), ".conf")
+		name, _ := stripKnownTunnelExt(filepath.Base(p))
 		data, err := os.ReadFile(p)
 		if err != nil {
 			results = append(results, ZipImportResult{Name: name, Error: err.Error()})

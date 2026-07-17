@@ -12,30 +12,36 @@
 package gui
 
 import (
-	"context"
 	"log/slog"
 	"sync"
-	"time"
 
 	wgapp "github.com/steiale/wireguide/internal/app"
-	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/storage"
 	"github.com/steiale/wireguide/internal/wifi"
 )
 
 // wifiLifecycle owns the live wifi.Monitor and applies rule changes.
 type wifiLifecycle struct {
-	mu      sync.Mutex
-	monitor *wifi.Monitor
-	clients *ipc.ClientHolder
-	store   *storage.WifiRulesStore
+	mu            sync.Mutex
+	monitor       *wifi.Monitor
+	tunnelService *wgapp.TunnelService
+	store         *storage.WifiRulesStore
 }
 
 // startWifiLifecycle loads persisted rules, starts the monitor, and registers
 // the rules-change hook so SaveWifiRules updates the live monitor in place.
 // Returns the lifecycle so the caller can stop it on shutdown.
-func startWifiLifecycle(clients *ipc.ClientHolder, store *storage.WifiRulesStore, tunnelStore *storage.TunnelStore) *wifiLifecycle {
-	lc := &wifiLifecycle{clients: clients, store: store}
+//
+// connect/disconnect actions go through tunnelService (the same Wails
+// service the frontend calls) rather than issuing raw IPC requests directly,
+// so SSID-triggered auto-connect gets the exact same protocol dispatch
+// (WireGuard vs OpenVPN), MarkInflight/UnmarkInflight bracketing (without
+// it, the health monitor could misread a slow OVPN auto-connect as a dead
+// helper and kill the in-flight RPC mid-connect — the same root cause as
+// the previously-fixed "helper dies 22-30s after connect" bug), and history
+// recording that TunnelService.Connect/DisconnectTunnel already provide.
+func startWifiLifecycle(tunnelService *wgapp.TunnelService, store *storage.WifiRulesStore) *wifiLifecycle {
+	lc := &wifiLifecycle{tunnelService: tunnelService, store: store}
 
 	rules, err := store.Load()
 	if err != nil {
@@ -43,9 +49,7 @@ func startWifiLifecycle(clients *ipc.ClientHolder, store *storage.WifiRulesStore
 		rules = wifi.DefaultRules()
 	}
 
-	lc.monitor = wifi.NewMonitor(rules, func(oldSSID, newSSID string) {
-		lc.handleSSIDChange(oldSSID, newSSID, tunnelStore)
-	})
+	lc.monitor = wifi.NewMonitor(rules, lc.handleSSIDChange)
 	lc.monitor.Start()
 
 	// Register the runtime-update hook so the Wails service can hand new
@@ -81,7 +85,7 @@ func (lc *wifiLifecycle) stop() {
 // Errors here MUST be logged, not returned — the wifi monitor has no caller
 // to surface them to. A failed connect on SSID change should not crash the
 // process.
-func (lc *wifiLifecycle) handleSSIDChange(_, newSSID string, tunnelStore *storage.TunnelStore) {
+func (lc *wifiLifecycle) handleSSIDChange(_, newSSID string) {
 	rules, err := lc.store.Load()
 	if err != nil {
 		slog.Warn("wifi: rules reload failed, skipping action", "error", err)
@@ -94,67 +98,55 @@ func (lc *wifiLifecycle) handleSSIDChange(_, newSSID string, tunnelStore *storag
 	case "disconnect":
 		lc.disconnectAll()
 	case "connect":
-		lc.connectTunnel(tunnelName, tunnelStore)
+		lc.connectTunnel(tunnelName)
 	case "none":
 		// Nothing to do
 	}
 }
 
-// connectTunnel asks the helper to bring up the named tunnel. If a different
-// tunnel is already active we tear it down first — running two tunnels just
-// because the user moved between SSIDs is rarely what they want, and the
-// helper's connect path doesn't multiplex implicitly.
-func (lc *wifiLifecycle) connectTunnel(name string, tunnelStore *storage.TunnelStore) {
-	c := lc.clients.Get()
-	if c == nil {
-		slog.Warn("wifi: cannot connect — helper unavailable", "tunnel", name)
-		return
-	}
-	cfg, err := tunnelStore.Load(name)
+// connectTunnel asks the helper to bring up the named tunnel, dispatching by
+// protocol via tunnelService.Connect (WireGuard or OpenVPN — previously this
+// loaded only the .conf path directly, so mapping an SSID to an OpenVPN
+// tunnel silently did nothing). If any OTHER tunnel is already active we
+// tear all of them down first — running extra tunnels just because the user
+// moved between SSIDs is rarely what they want.
+func (lc *wifiLifecycle) connectTunnel(name string) {
+	active, err := lc.tunnelService.ActiveTunnelNames()
 	if err != nil {
-		slog.Warn("wifi: cannot load tunnel config", "tunnel", name, "error", err)
+		slog.Warn("wifi: cannot query active tunnels — helper may be unavailable", "tunnel", name, "error", err)
 		return
 	}
-	meta, _ := tunnelStore.LoadMeta(name)
-	autoReconnect := meta != nil && meta.AutoReconnect
-
-	// If something else is active, disconnect it first. Use a short
-	// timeout — if the helper is wedged we don't want to block the
-	// poll goroutine indefinitely.
-	var active ipc.StringResponse
-	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := c.CallWithContext(pingCtx, ipc.MethodActiveName, nil, &active); err == nil && active.Value != "" && active.Value != name {
-		dcCtx, dcCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		_ = c.CallWithContext(dcCtx, ipc.MethodDisconnect, nil, nil)
-		dcCancel()
+	for _, n := range active {
+		if n == name {
+			continue
+		}
+		if err := lc.tunnelService.DisconnectTunnel(n); err != nil {
+			slog.Warn("wifi: failed to disconnect other active tunnel before auto-connect", "tunnel", n, "error", err)
+		}
 	}
-	cancel()
 
-	connectCtx, connectCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer connectCancel()
-	if err := c.CallWithContext(connectCtx, ipc.MethodConnect, ipc.ConnectRequest{
-		Config:        cfg,
-		AutoReconnect: autoReconnect,
-	}, nil); err != nil {
+	if err := lc.tunnelService.Connect(name); err != nil {
 		slog.Warn("wifi: connect failed", "tunnel", name, "error", err)
 		return
 	}
 	slog.Info("wifi: auto-connected", "tunnel", name)
 }
 
-// disconnectAll tears down whatever the helper currently has up. We don't
-// distinguish "no tunnel was active" from "helper unreachable" here — both
-// cases just log and move on.
+// disconnectAll tears down every currently active tunnel (WireGuard AND
+// OpenVPN — previously this issued a single nameless Disconnect, which the
+// helper resolves to only the FIRST active tunnel, silently leaving any
+// others running and mis-recording their history sessions as closed).
 func (lc *wifiLifecycle) disconnectAll() {
-	c := lc.clients.Get()
-	if c == nil {
+	active, err := lc.tunnelService.ActiveTunnelNames()
+	if err != nil {
+		slog.Warn("wifi: cannot query active tunnels for auto-disconnect", "error", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := c.CallWithContext(ctx, ipc.MethodDisconnect, nil, nil); err != nil {
-		slog.Warn("wifi: auto-disconnect failed", "error", err)
-		return
+	for _, name := range active {
+		if err := lc.tunnelService.DisconnectTunnel(name); err != nil {
+			slog.Warn("wifi: auto-disconnect failed", "tunnel", name, "error", err)
+			continue
+		}
+		slog.Info("wifi: auto-disconnected (trusted SSID)", "tunnel", name)
 	}
-	slog.Info("wifi: auto-disconnected (trusted SSID)")
 }

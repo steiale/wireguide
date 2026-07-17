@@ -43,6 +43,16 @@
     pin_interface: false,
     log_level: 'info',
     tray_icon_style: 'color',
+    // These two aren't editable from this modal (onboarding_complete is set
+    // by the onboarding flow; kofi_dismissed by the banner's own dismiss
+    // button), but SaveSettings does a full-struct overwrite backend-side —
+    // omitting them from save()'s payload silently reset both to false on
+    // every unrelated settings change (theme, language, any toggle),
+    // bringing back the onboarding wizard and the Ko-fi banner. Loading and
+    // round-tripping them here, even though nothing in this UI edits them,
+    // keeps save() a true "everything currently in effect" snapshot.
+    onboarding_complete: false,
+    kofi_dismissed: false,
   };
   let loaded = false;
   let appVersion = '';
@@ -104,6 +114,8 @@
         settings.pin_interface = s.pin_interface ?? false;
         settings.log_level = s.log_level || 'info';
         settings.tray_icon_style = s.tray_icon_style || 'color';
+        settings.onboarding_complete = s.onboarding_complete ?? false;
+        settings.kofi_dismissed = s.kofi_dismissed ?? false;
       }
     } catch (e) {
       console.error('load settings:', e);
@@ -124,6 +136,8 @@
         health_check: settings.health_check,
         pin_interface: settings.pin_interface,
         log_level: settings.log_level,
+        onboarding_complete: settings.onboarding_complete,
+        kofi_dismissed: settings.kofi_dismissed,
       });
       saveError = '';
       return true;
@@ -172,10 +186,19 @@
   function onKillSwitchChange(e) {
     settings.kill_switch = e.target.checked;
     if ($connectionStatus?.state === 'connected') {
-      TunnelService.SetKillSwitch(settings.kill_switch).catch((err) => {
+      TunnelService.SetKillSwitch(settings.kill_switch).then(() => {
+        scheduleSave();
+      }).catch((err) => {
+        // Rejection here (e.g. only an OpenVPN tunnel is active — the kill
+        // switch currently only supports WireGuard) previously reverted the
+        // toggle silently, and scheduleSave() below would still have fired
+        // unconditionally, persisting a kill_switch:true setting that was
+        // never actually enforced. Surface the error and skip the save.
         console.error('SetKillSwitch failed:', err);
         settings.kill_switch = !settings.kill_switch;
+        saveError = err?.message ?? String(err);
       });
+      return;
     }
     scheduleSave();
   }

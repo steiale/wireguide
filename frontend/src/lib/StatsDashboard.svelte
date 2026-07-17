@@ -1,7 +1,16 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { connectionStatus } from '../stores/tunnels.js';
   import { t } from '../i18n/index.js';
+
+  // The specific tunnel's status entry (from TunnelCards' getStatus(name),
+  // which already resolves to either the primary $connectionStatus object
+  // or the matching entry in $connectionStatus.tunnels[]). Previously this
+  // component read the global $connectionStatus store directly and always
+  // used its top-level rx_bytes/tx_bytes — which are only ever the
+  // PRIMARY tunnel's numbers. With more than one tunnel connected (e.g.
+  // WireGuard + OpenVPN together), expanding any non-primary tunnel's card
+  // plotted the primary tunnel's traffic instead of its own.
+  export let status = null;
 
   let canvas;
   let ctx;
@@ -19,10 +28,10 @@
   });
 
   // Collect samples from status polling
-  $: if ($connectionStatus?.state === 'connected') {
+  $: if (status?.state === 'connected') {
     samples = [...samples, {
-      rx: $connectionStatus.rx_bytes || 0,
-      tx: $connectionStatus.tx_bytes || 0,
+      rx: status.rx_bytes || 0,
+      tx: status.tx_bytes || 0,
       time: Date.now()
     }].slice(-maxSamples);
   }

@@ -23,6 +23,7 @@ type routeMonitor struct {
 	cmd      *exec.Cmd
 	stopCh   chan struct{}
 	running  bool
+	stopped  bool // true once Stop() has ever been called — see Start()
 	reapply  func()
 	debounce *time.Timer
 
@@ -41,11 +42,23 @@ func newRouteMonitor(reapply func()) *routeMonitor {
 	return &routeMonitor{reapply: reapply}
 }
 
-// Start begins monitoring. Safe to call multiple times (no-op if already running).
+// Start begins monitoring. Safe to call multiple times (no-op if already
+// running). Also a permanent no-op once Stop() has ever been called on this
+// instance (see stopped) — AddRoutes schedules Start() after a 2s delay, and
+// if teardown (RemoveRoutes/Cleanup, e.g. on a failed connect or a fast
+// manual disconnect) happens inside that window, Stop() runs against a
+// monitor that was never started (running==false, so it no-ops) with
+// nothing to prevent the delayed Start() from firing 2s later against an
+// already-discarded manager — leaking a root `route -n monitor` subprocess
+// and its reader goroutine for the helper daemon's lifetime, once per
+// occurrence. A new connect cycle always builds a fresh DarwinManager (and
+// thus a fresh routeMonitor via newRouteMonitor), so tombstoning this
+// instance permanently is correct — it will never legitimately need to
+// start again.
 func (rm *routeMonitor) Start() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	if rm.running {
+	if rm.running || rm.stopped {
 		return
 	}
 
@@ -75,6 +88,12 @@ func (rm *routeMonitor) Start() {
 // occur, so the caller can safely tear down shared state.
 func (rm *routeMonitor) Stop() {
 	rm.mu.Lock()
+	// Set unconditionally, even on the early-return below: Stop() can race
+	// with AddRoutes's 2s-delayed Start() and run first, while
+	// rm.running is still false — that must still tombstone the instance
+	// so the delayed Start() call later on doesn't spin up a subprocess
+	// against an already-torn-down manager (see Start()'s comment).
+	rm.stopped = true
 	if !rm.running {
 		rm.mu.Unlock()
 		return

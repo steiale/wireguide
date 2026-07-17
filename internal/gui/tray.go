@@ -124,6 +124,15 @@ type trayManager struct {
 	tunnelStatus  map[string]domain.ConnectionStatus
 	rebuildTimer  *time.Timer
 	rebuilding    atomic.Bool
+	// rebuildPending is set when a rebuild request arrives while another is
+	// already in flight (the CAS in rebuildMenu fails). Without this, that
+	// request was silently dropped — a disconnect transition landing while
+	// a slower prior rebuild (disk reads for tunnels + settings, can exceed
+	// the 100ms scheduleRebuild delay) is still running left the tray menu
+	// stale until some LATER, unrelated state-change event happened to
+	// trigger another rebuild. The in-flight rebuild checks this flag right
+	// before releasing `rebuilding` and re-schedules itself if set.
+	rebuildPending  atomic.Bool
 	lastMenuRebuild time.Time
 
 	prevRx        map[string]int64
@@ -335,9 +344,18 @@ func (t *trayManager) scheduleRebuild() {
 
 func (t *trayManager) rebuildMenu() {
 	if !t.rebuilding.CompareAndSwap(false, true) {
+		// A rebuild is already in flight — don't drop this request, just
+		// mark it so the in-flight one re-triggers a fresh rebuild for us
+		// once it finishes (state may have changed again in the meantime).
+		t.rebuildPending.Store(true)
 		return
 	}
-	defer t.rebuilding.Store(false)
+	defer func() {
+		t.rebuilding.Store(false)
+		if t.rebuildPending.CompareAndSwap(true, false) {
+			t.scheduleRebuild()
+		}
+	}()
 
 	tunnels, err := t.svc.ListTunnelsLocal()
 	if err != nil {

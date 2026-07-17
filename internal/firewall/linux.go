@@ -39,13 +39,23 @@ func (f *LinuxFirewall) SetFwMark(mark int) {
 	}
 }
 
-func (f *LinuxFirewall) EnableKillSwitch(interfaceName string, ifaceAddresses []string, endpoints []string) error {
+func (f *LinuxFirewall) EnableKillSwitch(interfaceName string, ifaceAddresses []string, endpoints []string, extra []KillSwitchTunnel) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	// Validate interface name before interpolating into nft rules.
-	if !validIfaceName.MatchString(interfaceName) {
+	// interfaceName may be empty for an OpenVPN-only session (no WireGuard
+	// tunnel active) — extra covers that case instead.
+	if interfaceName != "" && !validIfaceName.MatchString(interfaceName) {
 		return fmt.Errorf("invalid interface name %q", interfaceName)
+	}
+	for _, t := range extra {
+		if !validIfaceName.MatchString(t.InterfaceName) {
+			return fmt.Errorf("invalid interface name %q", t.InterfaceName)
+		}
+	}
+	if interfaceName == "" && len(extra) == 0 {
+		return fmt.Errorf("no active tunnel to enable kill switch for")
 	}
 
 	// Build endpoint allow rules with port restrictions (H11)
@@ -74,8 +84,40 @@ func (f *LinuxFirewall) EnableKillSwitch(interfaceName string, ifaceAddresses []
 		}
 	}
 
+	// Additional (e.g. OpenVPN) tunnel endpoints — protocol-aware, since
+	// OpenVPN commonly runs over TCP unlike WireGuard's always-UDP.
+	for _, t := range extra {
+		proto := "udp"
+		if strings.HasPrefix(t.Proto, "tcp") {
+			proto = "tcp"
+		}
+		for _, ep := range t.Endpoints {
+			ip, port, _ := net.SplitHostPort(ep)
+			if ip == "" {
+				ip = ep
+			}
+			if ip == "" {
+				continue
+			}
+			if net.ParseIP(ip) == nil {
+				slog.Warn("skipping invalid endpoint IP in nft rules", "endpoint", ep)
+				continue
+			}
+			addrKw := "ip"
+			if strings.Contains(ip, ":") {
+				addrKw = "ip6"
+			}
+			if port != "" {
+				fmt.Fprintf(&endpointRules, "    %s daddr %s %s dport %s accept\n", addrKw, ip, proto, port)
+			} else {
+				fmt.Fprintf(&endpointRules, "    %s daddr %s accept\n", addrKw, ip)
+			}
+		}
+	}
+
 	// Extract plain IP addresses from CIDR interface addresses for the
-	// preraw anti-spoof chain (C3).
+	// preraw anti-spoof chain (C3). WireGuard-only: extra tunnels don't
+	// carry known local interface addresses here.
 	var ifaceIPs []string
 	for _, addr := range ifaceAddresses {
 		ip, _, err := net.ParseCIDR(addr)
@@ -91,13 +133,26 @@ func (f *LinuxFirewall) EnableKillSwitch(interfaceName string, ifaceAddresses []
 	// Build the preraw chain: drops spoofed packets arriving on non-WG
 	// interfaces destined for the WG address (C3).
 	var prerawRules strings.Builder
-	for _, ip := range ifaceIPs {
-		addrKw := "ip"
-		if strings.Contains(ip, ":") {
-			addrKw = "ip6"
+	if interfaceName != "" {
+		for _, ip := range ifaceIPs {
+			addrKw := "ip"
+			if strings.Contains(ip, ":") {
+				addrKw = "ip6"
+			}
+			fmt.Fprintf(&prerawRules, "    iifname != \"%s\" %s daddr %s fib saddr type != local drop\n",
+				interfaceName, addrKw, ip)
 		}
-		fmt.Fprintf(&prerawRules, "    iifname != \"%s\" %s daddr %s fib saddr type != local drop\n",
-			interfaceName, addrKw, ip)
+	}
+
+	// Tunnel-interface accept lines for output/input/forward chains — the
+	// primary WireGuard interface (if any) plus every additional (OpenVPN)
+	// tunnel's interface.
+	ifaceNames := extraInterfaceNames(interfaceName, extra)
+	var oifAccept, iifAccept, fwdAccept strings.Builder
+	for _, ifn := range ifaceNames {
+		fmt.Fprintf(&oifAccept, "    oif %s accept\n", ifn)
+		fmt.Fprintf(&iifAccept, "    iif %s accept\n", ifn)
+		fmt.Fprintf(&fwdAccept, "    oifname %s accept\n    iifname %s accept\n", ifn, ifn)
 	}
 
 	fwmarkHex := fmt.Sprintf("0x%08x", f.fwmark)
@@ -113,16 +168,16 @@ table inet %s {
     udp sport 68 udp dport 67 accept
     # Allow DHCPv6 (H11)
     udp sport 546 udp dport 547 accept
-    # Allow WireGuard endpoints
-%s    # Allow WireGuard tunnel
-    oif %s accept
+    # Allow tunnel endpoints
+%s    # Allow tunnel interfaces
+%s
     # Allow established connections
     ct state established,related accept
   }
   chain input {
     type filter hook input priority 0; policy drop;
     iif lo accept
-    iif %s accept
+%s
     # Allow DHCP responses
     udp sport 67 udp dport 68 accept
     # Allow DHCPv6 responses (H11)
@@ -131,8 +186,7 @@ table inet %s {
   }
   chain forward {
     type filter hook forward priority 0; policy drop;
-    oifname %s accept
-    iifname %s accept
+%s
   }
   chain preraw {
     type filter hook prerouting priority raw; policy accept;
@@ -146,8 +200,9 @@ table inet %s {
     meta l4proto udp meta mark %s ct mark set meta mark
   }
 }
-`, nftTable, endpointRules.String(), interfaceName, interfaceName,
-		interfaceName, interfaceName,
+`, nftTable, endpointRules.String(), oifAccept.String(),
+		iifAccept.String(),
+		fwdAccept.String(),
 		prerawRules.String(), fwmarkHex, fwmarkHex)
 
 	if err := nftApply(rules); err != nil {
@@ -155,6 +210,20 @@ table inet %s {
 	}
 	f.killSwitchEnabled = true
 	return nil
+}
+
+// extraInterfaceNames collects the primary WireGuard interface (if any) plus
+// every additional tunnel's interface name, for building repeated
+// per-interface accept rules.
+func extraInterfaceNames(interfaceName string, extra []KillSwitchTunnel) []string {
+	var names []string
+	if interfaceName != "" {
+		names = append(names, interfaceName)
+	}
+	for _, t := range extra {
+		names = append(names, t.InterfaceName)
+	}
+	return names
 }
 
 func (f *LinuxFirewall) DisableKillSwitch() error {

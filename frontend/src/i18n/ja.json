@@ -11,7 +11,8 @@
     "tunnels": "トンネル",
     "tools": "ツール",
     "logs": "ログ",
-    "settings": "設定"
+    "settings": "設定",
+    "history": "履歴"
   },
   "tunnel": {
     "list_title": "トンネル",
@@ -41,7 +42,10 @@
     "kill_switch": "キルスイッチ",
     "dns_protection": "DNS 保護",
     "details": "詳細",
-    "rename_hint": "ダブルクリックで名前変更"
+    "rename_hint": "ダブルクリックで名前変更",
+    "notes_label": "トンネルのメモ",
+    "notes_placeholder": "メモを追加...",
+    "latency": "レイテンシ"
   },
   "import": {
     "title": "トンネルのインポート",
@@ -60,7 +64,9 @@
     "zip_ok": "完了",
     "zip_none": "zip 内に .conf ファイルが見つかりませんでした",
     "zip_summary": "{ok}件インポート、{fail}件失敗",
-    "zip_summary_ok": "{ok}件インポート"
+    "zip_summary_ok": "{ok}件インポート",
+    "qr_button": "QRコードからインポート",
+    "qr_error": "QRコードのインポートに失敗しました"
   },
   "editor": {
     "title": "トンネル編集: {name}",
@@ -106,7 +112,8 @@
     "about_desc": "モダンUIと便利な機能を備えたクロスプラットフォーム WireGuard VPNクライアント",
     "about_issues": "問題を報告",
     "about_license": "ライセンス (MIT)",
-    "up_to_date": "最新バージョンです。"
+    "up_to_date": "最新バージョンです。",
+    "kofi_support": "LockPlus を応援する"
   },
   "confirm": {
     "delete_title": "トンネルを削除",
@@ -224,21 +231,56 @@
     "proceed": "更新する",
     "cancel": "あとで"
   },
+  "kofi": {
+    "banner_text": "LockPlus は気に入っていますか? 無料ですが、コーヒー1杯が開発の継続を支えます。(一度だけの表示)",
+    "buy_coffee": "コーヒーをおごる",
+    "dismiss": "閉じる"
+  },
+  "history": {
+    "title": "履歴",
+    "no_history": "接続履歴はまだありません",
+    "clear": "消去",
+    "confirm_clear_title": "履歴を消去",
+    "confirm_clear_message": "すべての接続履歴を削除してもよろしいですか?",
+    "confirm_clear": "すべての履歴を消去しますか?",
+    "active": "接続中",
+    "reason_user": "切断されました",
+    "reason_error": "エラー",
+    "reason_health_check": "ヘルスチェック",
+    "reason_reconnect": "再接続",
+    "reason_app_quit": "アプリ終了",
+    "today": "今日",
+    "yesterday": "昨日",
+    "started": "開始",
+    "ended": "終了"
+  },
   "wifi_rules": {
     "title": "Wi-Fi ルール",
+    "tab": "Wi-Fi",
+    "enabled": "Wi-Fi 自動接続を有効にする",
+    "enabled_hint": "特定のネットワークに接続したときにトンネルを自動的に接続・切断します。",
     "connect_untrusted": "信頼できない Wi-Fi で自動接続",
+    "default_tunnel": "デフォルトのトンネル",
     "trusted_ssids": "信頼するネットワーク",
+    "trusted_hint": "これらのネットワークに接続すると VPN は自動的に切断されます。",
     "ssid_tunnel_map": "SSID 別自動接続",
+    "mapping_hint": "ネットワークごとに使用するトンネルを選択します。",
     "add_trusted": "追加",
+    "add_mapping": "追加",
     "ssid_placeholder": "ネットワーク名 (SSID)",
-    "select_tunnel": "トンネルを選択…"
+    "select_tunnel": "トンネルを選択…",
+    "current_ssid": "現在接続中",
+    "no_ssid": "Wi-Fi に接続されていません"
   },
   "auth": {
     "title": "OpenVPN 認証",
+    "challenge_title": "追加認証が必要です",
     "subtitle": "「{name}」の認証情報を入力してください。",
     "username": "ユーザー名",
     "password": "パスワード",
     "password_hint": "必要に応じてOTPトークンを末尾に追加",
+    "response": "応答",
+    "response_required": "応答が必要です",
     "save": "ユーザー名を保存",
     "submit": "接続",
     "cancel": "キャンセル",

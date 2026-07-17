@@ -27,17 +27,30 @@ export function getLanguage() {
   return get(locale);
 }
 
-function translate(lang, key, params = {}) {
-  const keys = key.split('.');
-  let value = translations[lang] || translations.en;
+// lookup walks a dotted key path through a single language's tree, returning
+// the string value or undefined if any segment along the way is missing.
+function lookup(tree, keys) {
+  let value = tree;
   for (const k of keys) {
     if (value && typeof value === 'object') {
       value = value[k];
     } else {
-      return key;
+      return undefined;
     }
   }
-  if (typeof value !== 'string') return key;
+  return typeof value === 'string' ? value : undefined;
+}
+
+function translate(lang, key, params = {}) {
+  const keys = key.split('.');
+  // Previously a missing key in the CURRENT language returned the raw key
+  // string immediately (e.g. a ko/ja user seeing "history.today" rendered
+  // literally) — the app only ever fell back to English when the whole
+  // language object was missing, not per-key. Falling back to English per
+  // key means a future translation gap degrades to readable English instead
+  // of an internal key name, matching how en.json itself is the source of
+  // truth every other language is diffed against.
+  const value = lookup(translations[lang] || translations.en, keys) ?? lookup(translations.en, keys) ?? key;
   return value.replace(/\{(\w+)\}/g, (_, name) => params[name] ?? `{${name}}`);
 }
 

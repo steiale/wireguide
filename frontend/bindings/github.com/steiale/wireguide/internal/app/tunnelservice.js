@@ -164,13 +164,19 @@ export function ExportTunnel(name) {
  * FeedCredentials delivers credentials to an OpenVPN tunnel waiting on an auth
  * prompt. fullPassword must already be basePassword + the 6-digit TOTP code,
  * combined by the caller (the GUI prompts for the code on every connect).
+ *
+ * response answers a challenge/response prompt (see the auth_prompt event's
+ * challenge_kind): for a "dynamic" (CRV1) prompt it's the entire reply and
+ * fullPassword is ignored; for a "static" (SCRV1) prompt it's paired with
+ * fullPassword. Pass "" for a plain prompt.
  * @param {string} tunnelName
  * @param {string} username
  * @param {string} fullPassword
+ * @param {string} response
  * @returns {$CancellablePromise<void>}
  */
-export function FeedCredentials(tunnelName, username, fullPassword) {
-    return $Call.ByID(549903296, tunnelName, username, fullPassword);
+export function FeedCredentials(tunnelName, username, fullPassword, response) {
+    return $Call.ByID(549903296, tunnelName, username, fullPassword, response);
 }
 
 /**

@@ -24,6 +24,18 @@ type OVPNConfig struct {
 	AuthUserPass bool   // true if "auth-user-pass" is present (credentials required)
 }
 
+// normalizeDirective lowercases a config-file directive and strips an
+// optional leading "--". OpenVPN itself accepts config-file directives
+// either with or without the double-dash prefix normally only seen on the
+// command line (see options.c) — it strips the prefix internally before
+// matching, so a validator that only matches bare names (as this one
+// previously did) can be bypassed entirely by prefixing a blocked directive
+// with "--", e.g. "--up /tmp/evil.sh" instead of "up /tmp/evil.sh". Both
+// forms must be checked identically here.
+func normalizeDirective(field string) string {
+	return strings.ToLower(strings.TrimPrefix(field, "--"))
+}
+
 // ParseOVPN scans the lines of an .ovpn file for the directives LockPlus
 // needs. It is intentionally lenient: unknown directives are ignored and the
 // raw bytes are what actually gets handed to openvpn.
@@ -60,11 +72,24 @@ func ParseOVPN(data []byte) (*OVPNConfig, error) {
 		if len(fields) == 0 {
 			continue
 		}
-		switch strings.ToLower(fields[0]) {
+		switch normalizeDirective(fields[0]) {
 		case "remote":
 			if cfg.Remote == "" && len(fields) >= 2 {
 				if len(fields) >= 3 {
-					cfg.Remote = fields[1] + ":" + fields[2]
+					host := fields[1]
+					if strings.Contains(host, ":") {
+						// IPv6 literal host with an explicit port — must be
+						// bracketed, or "host:port" (e.g. "2001:db8::1:1194")
+						// is ambiguous: net.SplitHostPort can't tell where
+						// the host ends and the port begins, and the whole
+						// unbracketed string can itself parse as a
+						// (different, wrong) valid IPv6 address. Consumers
+						// that need to split host from port again (kill
+						// switch remote resolution, latency ping) rely on
+						// this being unambiguous.
+						host = "[" + host + "]"
+					}
+					cfg.Remote = host + ":" + fields[2]
 				} else {
 					cfg.Remote = fields[1]
 				}
@@ -113,18 +138,29 @@ func ValidateOVPN(data []byte) error {
 		if len(fields) == 0 {
 			continue
 		}
-		directive := strings.ToLower(fields[0])
+		directive := normalizeDirective(fields[0])
 		switch directive {
 		case "remote":
 			hasRemote = true
 		case "client", "tls-client":
 			hasClient = true
 		// Reject script and plugin directives — the helper runs openvpn as root
-		// with --script-security 0, but we also reject at import time so users
-		// get a clear error rather than a silent no-op.
+		// with --script-security 1 (built-in ifconfig/route calls only, no
+		// user-defined scripts — see manager.go), so these would be inert
+		// anyway, but we also reject at import time so users get a clear
+		// error rather than a silent no-op.
+		//
+		// "iproute" is included even though script-security 1 is meant to
+		// exempt "built-in" networking calls: on iproute2-enabled openvpn
+		// builds, --iproute substitutes an ARBITRARY binary in place of the
+		// real ip/route call, which script-security 1 would still permit
+		// since it can't tell the substitute apart from the real thing. Our
+		// bundled macOS build isn't compiled with iproute2 support, so this
+		// isn't currently exploitable, but blocking the directive at import
+		// costs nothing and closes the gap if that ever changes.
 		case "up", "down", "route-up", "route-pre-down",
 			"tls-verify", "client-connect", "client-disconnect",
-			"learn-address", "ipchange", "plugin":
+			"learn-address", "ipchange", "plugin", "iproute":
 			return fmt.Errorf("invalid .ovpn: directive %q is not allowed (script/plugin execution is disabled)", directive)
 		}
 	}

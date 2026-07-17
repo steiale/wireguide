@@ -41,12 +41,34 @@ func PingEndpoint(endpoint string) *PingResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	parsedIP := net.ParseIP(ip)
+	isIPv6 := parsedIP != nil && parsedIP.To4() == nil
+
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
+		// Windows' ping.exe auto-detects IPv4 vs IPv6 from the address
+		// literal — no separate binary or flag needed — and -w is
+		// milliseconds for both families.
 		cmd = exec.CommandContext(ctx, "ping", "-n", "3", "-w", "3000", ip)
-	default:
-		cmd = exec.CommandContext(ctx, "ping", "-c", "3", "-W", "3", ip)
+	case "darwin":
+		// macOS ships a plain `ping` (IPv4 only) and a separate `ping6`
+		// (IPv6) — feeding ping an IPv6 literal fails outright ("Host
+		// unreachable") even for a reachable host. Also: macOS/BSD ping's
+		// -W is MILLISECONDS, unlike Linux's iputils ping where -W is
+		// SECONDS — "-W 3" on macOS was a 3ms timeout, so most real hosts
+		// looked unreachable regardless of the ip family bug.
+		if isIPv6 {
+			cmd = exec.CommandContext(ctx, "ping6", "-c", "3", ip)
+		} else {
+			cmd = exec.CommandContext(ctx, "ping", "-c", "3", "-W", "3000", ip)
+		}
+	default: // linux and other unix-likes
+		if isIPv6 {
+			cmd = exec.CommandContext(ctx, "ping6", "-c", "3", "-W", "3", ip)
+		} else {
+			cmd = exec.CommandContext(ctx, "ping", "-c", "3", "-W", "3", ip)
+		}
 	}
 
 	start := time.Now()

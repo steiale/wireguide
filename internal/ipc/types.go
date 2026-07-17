@@ -37,8 +37,20 @@ type ConnectRequest struct {
 
 // AuthPromptEventPayload is broadcast (helper → GUI) when an OpenVPN tunnel is
 // waiting for the user to enter credentials.
+//
+// ChallengeKind is empty for a plain username/password prompt, "static"
+// (SCRV1 — collect a challenge response alongside the password, in the same
+// prompt) or "dynamic" (CRV1 — collect a response in a SEPARATE prompt,
+// after the base password already succeeded; the GUI should show a
+// response-only form with no username/password fields in this case). The
+// server-issued opaque state ID for a dynamic challenge is an internal
+// wire-protocol detail the frontend never needs and is not included here.
 type AuthPromptEventPayload struct {
-	TunnelName string `json:"tunnel_name"`
+	TunnelName      string `json:"tunnel_name"`
+	ChallengeKind   string `json:"challenge_kind,omitempty"`
+	ChallengeText   string `json:"challenge_text,omitempty"`
+	ChallengeEcho   bool   `json:"challenge_echo,omitempty"`
+	ChallengeConcat bool   `json:"challenge_concat,omitempty"`
 }
 
 // SaveCredentialsRequest is the parameter for Ovpn.SaveCredentials. The helper
@@ -52,10 +64,17 @@ type SaveCredentialsRequest struct {
 // FeedCredentialsRequest is the parameter for Ovpn.FeedCredentials. FullPassword
 // is basePassword + the 6-digit TOTP code, combined by the GUI just before the
 // call so the helper forwards it verbatim to openvpn.
+//
+// Response carries the user's answer to a challenge/response prompt (see
+// AuthPromptEventPayload.ChallengeKind): for a "dynamic" prompt it's the
+// ENTIRE reply and FullPassword is ignored (the GUI shows no
+// username/password fields for that prompt); for a "static" prompt it's
+// paired with FullPassword. Ignored for a plain prompt.
 type FeedCredentialsRequest struct {
 	TunnelName   string `json:"tunnel_name"`
 	Username     string `json:"username"`
 	FullPassword string `json:"full_password"`
+	Response     string `json:"response,omitempty"`
 }
 
 // ConnectionStatus is the wire representation of the tunnel connection state.
@@ -124,8 +143,8 @@ type ActiveTunnelsResponse struct {
 // aggregate state. The frontend can iterate Tunnels for per-tunnel detail
 // or use the top-level State for a single-tunnel-compatible view.
 type MultiStatusResponse struct {
-	State   domain.State        `json:"state"`
-	Tunnels []ConnectionStatus  `json:"tunnels"`
+	State   domain.State       `json:"state"`
+	Tunnels []ConnectionStatus `json:"tunnels"`
 }
 
 // BoolResponse wraps a single bool.

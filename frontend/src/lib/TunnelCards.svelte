@@ -154,7 +154,12 @@
     const current = metas[name]?.auto_reconnect ?? false;
     metas = { ...metas, [name]: { ...metas[name], auto_reconnect: !current } };
     try {
-      await TunnelService.SaveTunnelMeta(name, { auto_reconnect: !current });
+      // SaveTunnelMeta is a full-replace call (SaveMeta overwrites the whole
+      // sidecar file backend-side) — sending only auto_reconnect silently
+      // wiped this tunnel's notes back to empty. Spread the current meta
+      // (already loaded via GetTunnelMeta when the card expanded, same as
+      // the notes textarea's save below) so every field round-trips.
+      await TunnelService.SaveTunnelMeta(name, { ...metas[name], auto_reconnect: !current });
     } catch (e) {
       metas = { ...metas, [name]: { ...metas[name], auto_reconnect: current } };
     }
@@ -175,7 +180,14 @@
     deleteConfirmName = null;
     try {
       await TunnelService.DeleteTunnel(name);
-      if (expandedName === name) expandedName = null;
+      if (expandedName === name) {
+        // Deleting the expanded tunnel must also stop its latency poll —
+        // clearing expandedName alone left the 10s GetTunnelLatency
+        // interval running forever against a now-nonexistent tunnel, since
+        // toggleExpand's own stop-polling branch never gets a chance to run.
+        stopLatencyPolling(name);
+        expandedName = null;
+      }
       selectedTunnel.set(null);
       dispatch('refresh');
     } catch (e) {
@@ -306,7 +318,7 @@
                 </div>
                 {#if chartReadyNames.has(tun.name)}
                   <div class="card-chart">
-                    <StatsDashboard />
+                    <StatsDashboard {status} />
                   </div>
                 {/if}
               {:else if latencies[tun.name] !== undefined}

@@ -36,17 +36,26 @@ const (
 	// injected by an attacker.
 	minAssetSize = 1 << 20 // 1 MB
 
-	// requireSignature controls whether a missing or invalid Ed25519
-	// signature aborts the install. Older releases (uploaded before the
-	// signing pipeline existed) do not have a `.sig` file, so we leave a
-	// grace period during which a missing signature only logs a warning.
-	// Flip this to true once every supported release has been re-signed.
-	requireSignature = false
-
 	// maxSignatureSize bounds how many bytes we read from a `.sig` URL.
 	// An Ed25519 signature is exactly 64 bytes; anything larger is bogus.
 	maxSignatureSize = 1 << 10 // 1 KB (huge margin over 64 bytes)
 )
+
+// requireSignature controls whether a missing or invalid Ed25519 signature
+// aborts the install. Verified true for the current release (v1.0.62 has
+// lockplus-v1.0.62-darwin-arm64.zip.sig on GitHub) and every release since
+// v1.0.20 — the update flow only ever checks the LATEST release regardless
+// of what version the caller is currently running, so historical releases
+// without a .sig don't matter here. This is now the primary cryptographic
+// authenticity guarantee: unlike a checksum file (which lives in the same,
+// potentially-compromised release), the Ed25519 private key never touches
+// release infrastructure.
+//
+// A var, not a const, so tests can flip it to false to isolate other
+// validation logic (checksum/size/content-length) from the signature
+// requirement — same rationale as embeddedPublicKey below being a var;
+// production code never reassigns either.
+var requireSignature = true
 
 // embeddedPublicKey is the base64-encoded Ed25519 public key used to verify
 // release signatures. The matching private key is kept offline and used to
@@ -141,19 +150,19 @@ type Asset struct {
 
 // UpdateInfo contains information about an available update.
 type UpdateInfo struct {
-	Available    bool   `json:"available"`
-	Version      string `json:"version"`
-	CurrentVer   string `json:"current_version"`
-	ReleaseURL   string `json:"release_url"`
-	DownloadURL  string `json:"download_url"`
-	ReleaseNotes string `json:"release_notes"`
-	AssetName    string `json:"asset_name"`
-	AssetSize    int64  `json:"asset_size"`
-	ChecksumURL       string `json:"checksum_url,omitempty"`       // URL to SHA256SUMS file
-	ExpectedHash      string `json:"expected_hash,omitempty"`      // pre-parsed SHA256 for this asset
-	HashVerified      bool   `json:"hash_verified"`                // set to true after successful checksum verification
-	SignatureURL      string `json:"signature_url,omitempty"`      // URL to the Ed25519 .sig file (empty for legacy releases)
-	SignatureVerified bool   `json:"signature_verified"`           // set to true after successful Ed25519 verification
+	Available         bool   `json:"available"`
+	Version           string `json:"version"`
+	CurrentVer        string `json:"current_version"`
+	ReleaseURL        string `json:"release_url"`
+	DownloadURL       string `json:"download_url"`
+	ReleaseNotes      string `json:"release_notes"`
+	AssetName         string `json:"asset_name"`
+	AssetSize         int64  `json:"asset_size"`
+	ChecksumURL       string `json:"checksum_url,omitempty"`  // URL to SHA256SUMS file
+	ExpectedHash      string `json:"expected_hash,omitempty"` // pre-parsed SHA256 for this asset
+	HashVerified      bool   `json:"hash_verified"`           // set to true after successful checksum verification
+	SignatureURL      string `json:"signature_url,omitempty"` // URL to the Ed25519 .sig file (empty for legacy releases)
+	SignatureVerified bool   `json:"signature_verified"`      // set to true after successful Ed25519 verification
 }
 
 // CheckForUpdate queries GitHub Releases API for newer version.
@@ -304,18 +313,29 @@ func DownloadUpdate(info *UpdateInfo) (string, error) {
 		return "", fmt.Errorf("downloaded %d bytes but expected %d — possible truncation or tampering", written, info.AssetSize)
 	}
 
-	// Checksum verification is mandatory — refuse to install without it.
-	if info.ExpectedHash == "" {
-		os.Remove(destPath)
-		return "", fmt.Errorf("refusing to install update: no checksum available for verification")
+	// Checksum verification is opportunistic, not mandatory: no release in
+	// this project's history has ever uploaded a separate SHA256SUMS-style
+	// asset (see build/darwin/Taskfile.yml's release task, which now
+	// generates one for future releases), so ExpectedHash was always empty
+	// in practice — treating it as mandatory meant every real update
+	// silently failed at this exact line. A checksum, when present, is
+	// still checked and a MISMATCH is always fatal (strong signal of
+	// tampering or a bad build). But its ABSENCE no longer blocks
+	// installation on its own: requireSignature below enforces the Ed25519
+	// signature instead, which is the actual authenticity guarantee here
+	// (signed offline — unlike a checksum file living in the same,
+	// potentially-compromised release, which an attacker could simply
+	// regenerate to match a tampered asset).
+	if info.ExpectedHash != "" {
+		actual := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(actual, info.ExpectedHash) {
+			os.Remove(destPath)
+			return "", fmt.Errorf("checksum mismatch: expected %s, got %s", info.ExpectedHash, actual)
+		}
+		info.HashVerified = true
+	} else {
+		slog.Info("no checksum file for this release — relying on Ed25519 signature verification", "version", info.Version)
 	}
-
-	actual := hex.EncodeToString(hasher.Sum(nil))
-	if !strings.EqualFold(actual, info.ExpectedHash) {
-		os.Remove(destPath)
-		return "", fmt.Errorf("checksum mismatch: expected %s, got %s", info.ExpectedHash, actual)
-	}
-	info.HashVerified = true
 
 	// Ed25519 signature verification. The signing key is kept offline, so a
 	// compromised GitHub release alone cannot forge a valid signature.
@@ -472,12 +492,39 @@ func matchAsset(assets []Asset) string {
 
 	archNames := []string{arch, "universal"}
 
-	for _, a := range assets {
-		name := strings.ToLower(a.Name)
-		for _, osn := range osNames {
-			for _, an := range archNames {
-				if strings.Contains(name, osn) && strings.Contains(name, an) {
-					return a.Name
+	// wantedExts, in priority order, restricts matching to actual installer
+	// packages. A plain os/arch substring match (the previous behavior) can
+	// also match a same-named .sig/.txt/checksum asset — e.g.
+	// "lockplus-v1.0.62-darwin-arm64.zip.sig" contains both "darwin" and
+	// "arm64" — and GitHub's asset listing order isn't guaranteed to put the
+	// real package first, so that could select the .sig file itself as "the
+	// asset" (breaking the update, since it's under minAssetSize) or a
+	// same-os/arch .dmg over the .zip (breaking signature verification,
+	// since only the .zip is ever signed — see build/darwin/Taskfile.yml).
+	// Matching by exact expected extension, checked in priority order,
+	// removes both failure modes structurally: ".zip.sig" never has
+	// HasSuffix(".zip") == true.
+	var wantedExts []string
+	switch runtime.GOOS {
+	case "darwin":
+		wantedExts = []string{".zip"} // the only signed artifact; .dmg is direct-download-only
+	case "windows":
+		wantedExts = []string{".msi", ".exe"}
+	default:
+		wantedExts = []string{".deb", ".rpm", ".appimage"}
+	}
+
+	for _, ext := range wantedExts {
+		for _, a := range assets {
+			name := strings.ToLower(a.Name)
+			if !strings.HasSuffix(name, ext) {
+				continue
+			}
+			for _, osn := range osNames {
+				for _, an := range archNames {
+					if strings.Contains(name, osn) && strings.Contains(name, an) {
+						return a.Name
+					}
 				}
 			}
 		}

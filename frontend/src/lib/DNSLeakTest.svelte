@@ -32,7 +32,14 @@
     <div class="error-msg">{error}</div>
   {/if}
 
-  {#if result}
+  {#if result?.error}
+    <!-- Backend couldn't even enumerate system DNS resolvers (scutil/etc
+         failed) — this is a failed TEST, not a clean result, and must never
+         fall through to the leaked/safe display below: that would render
+         result.leaked's zero value (false) as a reassuring "✓ Safe" for a
+         test that didn't actually check anything. -->
+    <div class="error-msg">{result.error}</div>
+  {:else if result}
     <div class="result" class:leaked={result.leaked} class:safe={!result.leaked}>
       <div class="status-icon">{result.leaked ? '⚠' : '✓'}</div>
       <div class="status-text">

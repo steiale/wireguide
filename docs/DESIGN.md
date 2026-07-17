@@ -165,21 +165,40 @@ Equivalent to wg-quick's `monitor_daemon`. Watches `route -n monitor` for kernel
 
 ## Kill Switch (macOS pf)
 
-Rules are loaded into the `com.apple.wireguide` anchor. macOS ships with `anchor "com.apple/*" all` in pf.conf, so our anchor is automatically evaluated — **we never modify the main ruleset**.
+Rules are loaded into the `com.apple/wireguide` anchor (a slash, not a dot — the anchor MUST be nested under `com.apple` to be reached by macOS's `anchor "com.apple/*" all` wildcard in pf.conf; a dot-separated name is a syntactically-valid but completely unreferenced top-level anchor the kernel never evaluates, which is exactly what shipped for a while before this was caught). Given the slash nesting, our anchor is automatically evaluated — **we never modify the main ruleset**.
 
 ```
 # WireGuide kill switch rules (loaded into anchor)
 pass quick on lo0 all                           # loopback
 pass out quick proto udp to 1.2.3.4 port 443   # WG endpoint
+pass out quick proto tcp to 5.6.7.8 port 1194  # OpenVPN remote (protocol-aware, unlike WG)
 pass out quick proto udp from any port 68 to any port 67  # DHCP
 pass out quick proto udp from any port 546 to any port 547 # DHCPv6
-pass quick on utun6 all                         # tunnel interface
-anchor "com.apple.wireguide/dns"                # DNS sub-anchor
+pass quick on utun6 all                         # WG tunnel interface
+pass quick on utun7 all                         # OpenVPN tunnel interface
+anchor "dns"                                    # DNS sub-anchor — relative name, resolves to com.apple/wireguide/dns
 block drop out all                              # block everything else
 block drop in all
 ```
 
+**Multi-protocol whitelisting**: `EnableKillSwitch(interfaceName, ifaceAddresses, endpoints, extra)` takes the WireGuard interface/endpoints as before, plus `extra []KillSwitchTunnel` for any other active tunnels (currently OpenVPN). Each OpenVPN tunnel's remote is resolved to a literal IP **once, at `Connect()` time** (`ovpn.Manager.resolveRemoteForKillSwitch`) — same principle as WireGuard's pre-resolved endpoints: resolving on-demand after the tunnel is already routing traffic risks the DNS query looping back through the tunnel itself. `interfaceName` may be empty for an OpenVPN-only session (no WireGuard tunnel active); `extra` covers that case instead — at least one of the two must be non-empty.
+
+**Auto-refresh on connect/disconnect**: `EnableKillSwitch` itself is stateless about *what changed* — it just rebuilds the full ruleset from whatever the caller says is active right now. `Helper.enableKillSwitchNow()` gathers that "currently active" snapshot (WireGuard status + `ovpn.Manager.ActiveRemotes()`), and `Helper.refreshKillSwitchIfEnabled()` calls it — but only if the kill switch is already on — as a best-effort side effect after: WireGuard's `handleConnect`/`handleDisconnect`, and OpenVPN's `onActiveChange` callback (fired from `onMgmtState`'s CONNECTED transition and from `cleanup()`, deliberately NOT from the once-a-second bytecount update). This closes the gap where enabling the kill switch with tunnel A active, then connecting tunnel B, would leave B's traffic blocked until a manual re-toggle.
+
+**Tracking OpenVPN's own internal reconnects**: `entry.remoteAddr` isn't just resolved once and frozen — OpenVPN's own `>STATE:` line reports fields "(e) address of remote server, (f) port of remote server" on every CONNECTED transition (see `management-notes.txt`), which `onMgmtState` uses to overwrite `entry.remoteAddr` with whatever OpenVPN is ACTUALLY using right now. Since switching remotes always requires OpenVPN to leave CONNECTED and go through RECONNECTING first (a TLS renegotiation can't happen mid-session), this transition is exactly what the `onActiveChange` hook above already watches — so a `remote`-directive failover or a round-robin DNS re-resolution correctly triggers both an updated `remoteAddr` and a kill-switch rebuild that whitelists it, with no separate mechanism needed. The `Connect()`-time DNS resolution (`resolveRemoteForKillSwitch`) is now just a best-effort seed for the brief window before the tunnel first reaches CONNECTED.
+
 **Why anchor-only**: previous approach saved main pf rules via `pfctl -sr` and re-loaded with anchor reference. This broke on macOS Tahoe because `pfctl -sr` outputs `scrub-anchor` directives that cause syntax errors when fed back to `pfctl -f`.
+
+## OpenVPN Challenge/Response (CRV1/SCRV1)
+
+RADIUS/LDAP-backed 2FA gateways use OpenVPN's management-interface challenge/response protocol (see [management-notes.txt](https://github.com/OpenVPN/openvpn/blob/master/doc/management-notes.txt) in the OpenVPN source) instead of just concatenating an OTP onto the password. Two variants, both implemented in `internal/ovpn/management.go` (parsing) and `internal/ovpn/manager.go` (state/formatting):
+
+- **SCRV1 (static)**: the server's very first `>PASSWORD:Need 'Auth' username/password` prompt carries an `SC:<flag>,<text>` suffix. The user answers with password + response together, in the SAME prompt — no extra round trip. `flag` bit 0 = echo the response as typed, bit 1 = concatenate password+response as plain text (vs. base64-encode both into `SCRV1:<pw_b64>:<resp_b64>`).
+- **CRV1 (dynamic)**: the server accepts the base password first, THEN rejects it with `>PASSWORD:Verification Failed: 'Auth' ['CRV1:<flags>:<state_id>:<user_b64>:<challenge_text>']` — a SEPARATE round trip. This requires `--auth-retry interact` on the openvpn subprocess (`Connect()` in manager.go): without it, OpenVPN's core just exits on that "failure" instead of restarting and re-prompting. Once it restarts, a bare `Need 'Auth'` prompt returns and must be answered with `password "Auth" CRV1::<state_id>::<response>` — the SAME username as the original login, not anything new.
+
+Because CRV1's challenge and its answering prompt arrive on two different lines with an OpenVPN-driven restart in between, `Manager` tracks `entry.pendingChallenge` across that gap: `onMgmtDynamicChallenge` (triggered by the "Verification Failed" line) notifies the GUI and stores the challenge WITHOUT blocking, so the management read loop keeps processing (state changes, the eventual retry prompt); `onMgmtAuthPrompt` (triggered by the next `Need 'Auth'` line) picks up the pending challenge, blocks waiting for the GUI's reply exactly like a plain prompt does, and formats it onto the wire. `entry.lastUsername` remembers the username across this gap since the GUI's CRV1 form shows no username field to resend one.
+
+The GUI-facing IPC surface stays deliberately thin: `AuthPromptEventPayload` carries `challenge_kind` ("" / "static" / "dynamic") + display fields (text/echo/concat) but never the CRV1 state ID — that's a wire-protocol implementation detail the frontend never touches. `FeedCredentials` gained one new `response` parameter; the backend alone decides how to combine it with the username/password depending on `challenge_kind`.
 
 ## Reconnect
 

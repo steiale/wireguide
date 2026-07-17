@@ -64,6 +64,25 @@ func (b *eventBridge) Resubscribe() {
 	b.app.Event.Emit("helper_reset", struct{}{})
 }
 
+// IsSubscribed reports whether the bridge is actively subscribed on the
+// CURRENT client held by clients.Get(). Used by the health monitor to detect
+// and self-heal the case where a Resubscribe() call installed a new client
+// but the Subscribe RPC within it failed transiently (e.g. the helper was
+// still mid-initialization) — nothing else would ever retry that specific
+// subscription, since a ping on the (separate) control connection keeps
+// succeeding and the health monitor has no other signal that events are
+// dead. Returns true when there's no client at all — that's not this
+// method's problem to flag.
+func (b *eventBridge) IsSubscribed() bool {
+	c := b.clients.Get()
+	if c == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.subscribedTo == c
+}
+
 func (b *eventBridge) resubscribe() {
 	c := b.clients.Get()
 	if c == nil {

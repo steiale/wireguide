@@ -67,6 +67,17 @@ type FirewallSuspendFunc func() error
 // firewall rules with the new interface name and endpoints.
 type FirewallResumeFunc func() error
 
+// retryState is one tunnel's independent reconnectWithBackoff lifecycle:
+// its cancel func, its exit signal, and its own attempt counter. Kept
+// per-tunnel (in Monitor.retries, keyed by tunnel name) rather than as
+// single shared Monitor fields — see that field's comment for why sharing
+// them across tunnels was a real bug.
+type retryState struct {
+	cancel  context.CancelFunc
+	done    chan struct{} // closed when reconnectWithBackoff exits
+	attempt int
+}
+
 // Monitor watches tunnel health and triggers reconnection.
 type Monitor struct {
 	mu            sync.Mutex
@@ -79,15 +90,21 @@ type Monitor struct {
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
 	running       bool
-	attempt       int
 	sleepDetector SleepDetector
 
-	// retryCancel cancels the current reconnectWithBackoff goroutine.
-	// Called from Stop() and from CancelRetry() (manual Disconnect) so that a
-	// pending exponential-backoff sleep returns immediately instead of waiting
-	// out the full delay.
-	retryCancel context.CancelFunc
-	retryDone   chan struct{} // closed when reconnectWithBackoff exits
+	// retries holds one independent retryState per tunnel name currently
+	// being retried (the legacy "reconnect everything" path — used by
+	// sleep/wake and manual Disconnect with no tunnel name — uses "" as its
+	// key). This used to be a single set of shared fields
+	// (retryCancel/retryDone/attempt), which meant triggering a reconnect
+	// for tunnel B would cancel tunnel A's still-in-progress retry
+	// goroutine outright (e.g. on wake with two active tunnels, or two
+	// tunnels going handshake-stale around the same time) — A could be left
+	// permanently disconnected, or worse, A's retry goroutine's own
+	// success/give-up path could end up cancelling B's NEWER retry via the
+	// shared retryCancel field once B's trigger had overwritten it. Keying
+	// per-tunnel isolates each tunnel's backoff/cancel lifecycle completely.
+	retries map[string]*retryState
 
 	// healthCheckEnabled controls whether the periodic handshake age
 	// check runs in monitorLoop. Can be toggled at runtime via
@@ -188,9 +205,9 @@ func (m *Monitor) Stop() {
 	}
 	m.running = false
 	close(m.stopCh)
-	if m.retryCancel != nil {
-		m.retryCancel()
-		m.retryCancel = nil
+	for name, rs := range m.retries {
+		rs.cancel()
+		delete(m.retries, name)
 	}
 	if m.sleepDetector != nil {
 		m.sleepDetector.Stop()
@@ -212,26 +229,52 @@ func (m *Monitor) Stop() {
 	}
 }
 
-// CancelRetry aborts any in-flight reconnection attempt. Called by the helper
+// CancelRetry aborts an in-flight reconnection attempt. Called by the helper
 // when the user manually disconnects — we don't want a backoff sleep to wake
 // up seconds later and re-connect against the user's wishes.
-func (m *Monitor) CancelRetry() {
+//
+// tunnelName scopes the cancellation to that tunnel's own retry sequence
+// only — disconnecting tunnel X must not abort tunnel Y's still-in-progress
+// recovery, which is exactly what happened when this cancelled a single
+// Monitor-wide retry regardless of which tunnel the caller actually meant.
+// Pass "" for the legacy "disconnect everything" path, which cancels every
+// active retry sequence (matching what a nameless Disconnect actually tears
+// down helper-side).
+func (m *Monitor) CancelRetry(tunnelName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.retryCancel != nil {
-		m.retryCancel()
-		m.retryCancel = nil
+	if tunnelName == "" {
+		for name, rs := range m.retries {
+			rs.cancel()
+			delete(m.retries, name)
+		}
+		return
 	}
-	m.attempt = 0
+	if rs, ok := m.retries[tunnelName]; ok {
+		rs.cancel()
+		delete(m.retries, tunnelName)
+	}
 }
 
-// GetState returns the current reconnection state.
+// GetState returns an aggregate reconnection state across every tunnel
+// currently being retried. Reconnecting is true if ANY tunnel has an active
+// retry sequence; Attempt is the highest attempt count among them. This
+// only approximates per-tunnel detail — real per-tunnel state is what
+// notifyStatus/reconnectWithBackoff report at call time — but it's
+// sufficient for the aggregate "is anything reconnecting" queries that use
+// this method today.
 func (m *Monitor) GetState() State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	maxAttempt := 0
+	for _, rs := range m.retries {
+		if rs.attempt > maxAttempt {
+			maxAttempt = rs.attempt
+		}
+	}
 	return State{
-		Reconnecting: m.attempt > 0,
-		Attempt:      m.attempt,
+		Reconnecting: len(m.retries) > 0,
+		Attempt:      maxAttempt,
 		MaxAttempts:  m.cfg.MaxAttempts,
 	}
 }
@@ -295,33 +338,34 @@ func (m *Monitor) triggerReconnect() {
 
 func (m *Monitor) triggerReconnectTunnel(tunnelName string) {
 	m.mu.Lock()
-	// Save old cancel/done so we can clean up outside the lock.
-	oldCancel := m.retryCancel
-	oldDone := m.retryDone
+	if m.retries == nil {
+		m.retries = make(map[string]*retryState)
+	}
+	// Save the OLD entry for THIS tunnel name so we can clean it up outside
+	// the lock — other tunnels' entries in the map are untouched.
+	old := m.retries[tunnelName]
 
-	// Create new context and goroutine under the lock — no gap for another
-	// goroutine to sneak in and create a duplicate reconnectWithBackoff.
+	// Create the new retry state and register it under the lock — no gap
+	// for another goroutine to sneak in and create a duplicate
+	// reconnectWithBackoff for the same tunnel.
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	m.retryCancel = cancel
-	m.retryDone = done
-	m.attempt = 0
+	rs := &retryState{cancel: cancel, done: make(chan struct{})}
+	m.retries[tunnelName] = rs
 	m.mu.Unlock()
 
-	// Cancel the old retry goroutine outside the lock to avoid deadlock.
-	if oldCancel != nil {
-		oldCancel()
-	}
-	if oldDone != nil {
+	// Cancel the OLD retry goroutine for this SAME tunnel name outside the
+	// lock to avoid deadlock. This never touches any other tunnel's entry.
+	if old != nil {
+		old.cancel()
 		select {
-		case <-oldDone:
+		case <-old.done:
 		case <-time.After(5 * time.Second):
-			slog.Warn("timed out waiting for previous retry goroutine to exit")
+			slog.Warn("timed out waiting for previous retry goroutine to exit", "tunnel", tunnelName)
 		}
 	}
 
 	go func() {
-		defer close(done)
+		defer close(rs.done)
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("reconnectWithBackoff panic (recovered)",
@@ -329,15 +373,29 @@ func (m *Monitor) triggerReconnectTunnel(tunnelName string) {
 					"stack", string(debug.Stack()))
 			}
 		}()
-		m.reconnectWithBackoff(ctx, tunnelName)
+		m.reconnectWithBackoff(ctx, tunnelName, rs)
 	}()
+}
+
+// clearRetryState removes tunnelName's entry from m.retries, but ONLY if it
+// still points at rs — i.e. only if no NEWER triggerReconnectTunnel call for
+// the same tunnel has already replaced it. Without this guard, a
+// slow-to-finish goroutine (e.g. one that just gave up after max attempts)
+// could delete a different, newer retryState for the same tunnel name that
+// superseded it in the interim.
+func (m *Monitor) clearRetryState(tunnelName string, rs *retryState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.retries[tunnelName] == rs {
+		delete(m.retries, tunnelName)
+	}
 }
 
 // reconnectWithBackoff retries reconnection with exponential backoff.
 // If tunnelName is non-empty, only that specific tunnel is disconnected and
 // reconnected. If tunnelName is empty, the legacy Disconnect()/reconnectFn("")
 // path is used (reconnects all tunnels, used by sleep/wake).
-func (m *Monitor) reconnectWithBackoff(ctx context.Context, tunnelName string) {
+func (m *Monitor) reconnectWithBackoff(ctx context.Context, tunnelName string, rs *retryState) {
 	delay := m.cfg.InitialDelay
 
 	for {
@@ -346,24 +404,18 @@ func (m *Monitor) reconnectWithBackoff(ctx context.Context, tunnelName string) {
 			m.mu.Unlock()
 			return
 		}
-		m.attempt++
-		attempt := m.attempt
+		rs.attempt++
+		attempt := rs.attempt
 		m.mu.Unlock()
 
 		if m.cfg.MaxAttempts > 0 && attempt > m.cfg.MaxAttempts {
-			slog.Error("max reconnection attempts reached", "attempts", m.cfg.MaxAttempts)
+			slog.Error("max reconnection attempts reached", "attempts", m.cfg.MaxAttempts, "tunnel", tunnelName)
 			m.notifyStatus(State{
 				Reconnecting: false,
 				Attempt:      attempt - 1,
 				MaxAttempts:  m.cfg.MaxAttempts,
 			})
-			m.mu.Lock()
-			m.attempt = 0
-			if m.retryCancel != nil {
-				m.retryCancel()
-				m.retryCancel = nil
-			}
-			m.mu.Unlock()
+			m.clearRetryState(tunnelName, rs)
 			return
 		}
 
@@ -459,13 +511,7 @@ func (m *Monitor) reconnectWithBackoff(ctx context.Context, tunnelName string) {
 
 		slog.Info("reconnected successfully", "attempt", attempt, "tunnel", tunnelName)
 		m.notifyStatus(State{Reconnecting: false})
-		m.mu.Lock()
-		m.attempt = 0
-		if m.retryCancel != nil {
-			m.retryCancel()
-			m.retryCancel = nil
-		}
-		m.mu.Unlock()
+		m.clearRetryState(tunnelName, rs)
 		return
 	}
 }

@@ -95,6 +95,16 @@ type Helper struct {
 	fwSavedKillSwitch    bool
 	fwSavedDNSProtection bool
 	fwSavedDNSServers    []string // DNS servers to re-enable on resume
+	// fwSuspended is true from the first suspendFirewall() call in a retry
+	// sequence until resumeFirewall() actually finishes restoring (or
+	// determines there was nothing to restore). A failed reconnect attempt
+	// calls suspendFirewall() again before the next retry; without this
+	// flag that second call would re-snapshot IsKillSwitchEnabled() —
+	// which is already false from the FIRST suspend — permanently
+	// forgetting that the kill switch was ever on. See resumeFirewall for
+	// the other half of this fix: it now only clears fwSaved*/fwSuspended
+	// once restore actually succeeds, not unconditionally on every call.
+	fwSuspended bool
 
 	// shutdownTimer is a singleton grace-window timer. When the control
 	// connection drops we Reset it; when the GUI reconnects we Stop it. This
@@ -155,6 +165,7 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	h.ovpnManager = ovpn.NewManager(ovpnBinary, ovpnRuntimeDir,
 		h.broadcastOvpnStatus,
 		h.broadcastAuthPrompt,
+		h.refreshKillSwitchForOVPNChange,
 	)
 
 	// Crash recovery (now logs via broadcast handler)
@@ -269,12 +280,108 @@ func (h *Helper) broadcastOvpnStatus(status domain.ConnectionStatus) {
 }
 
 // broadcastAuthPrompt notifies the GUI that an OpenVPN tunnel is waiting for
-// credentials (e.g. a TOTP code).
-func (h *Helper) broadcastAuthPrompt(tunnelName string) {
+// credentials (e.g. a TOTP code) — or, if challenge is non-nil, a
+// challenge/response answer (see ovpn.AuthChallenge).
+func (h *Helper) broadcastAuthPrompt(tunnelName string, challenge *ovpn.AuthChallenge) {
 	if h.server == nil {
 		return
 	}
-	h.server.Broadcast(ipc.EventAuthPrompt, ipc.AuthPromptEventPayload{TunnelName: tunnelName})
+	payload := ipc.AuthPromptEventPayload{TunnelName: tunnelName}
+	if challenge != nil {
+		payload.ChallengeKind = string(challenge.Kind)
+		payload.ChallengeText = challenge.Text
+		payload.ChallengeEcho = challenge.Echo
+		payload.ChallengeConcat = challenge.Concat
+	}
+	h.server.Broadcast(ipc.EventAuthPrompt, payload)
+}
+
+// refreshKillSwitchForOVPNChange is the OpenVPN manager's onActiveChange
+// callback (see ovpn.Manager) — fired when an OpenVPN tunnel reaches
+// CONNECTED or is torn down.
+func (h *Helper) refreshKillSwitchForOVPNChange(tunnelName string, active bool) {
+	ctx := "ovpn-disconnect"
+	if active {
+		ctx = "ovpn-connect"
+	}
+	h.refreshKillSwitchIfEnabled(ctx, tunnelName)
+}
+
+// refreshKillSwitchIfEnabled rebuilds the kill switch's pf ruleset from the
+// CURRENT set of active tunnels, if the kill switch is currently enabled.
+// Its ruleset was built from whatever tunnels were active at the time it
+// was last (re)loaded and does NOT automatically pick up tunnels that
+// connect/disconnect afterward — see EnableKillSwitch's doc comment. Called
+// as a best-effort side effect after any WireGuard or OpenVPN
+// connect/disconnect that already succeeded (or is already being torn
+// down), so failures here are logged, not propagated — the connect/
+// disconnect the caller actually asked for should not be affected by
+// whether the kill switch happens to pick it up immediately.
+func (h *Helper) refreshKillSwitchIfEnabled(context, tunnelName string) {
+	if !h.firewall.IsKillSwitchEnabled() {
+		return
+	}
+	if err := h.enableKillSwitchNow(); err != nil {
+		// E.g. the newly-connected tunnel's remote couldn't be resolved, or
+		// nothing is active anymore — the existing (possibly now-stale)
+		// ruleset stays loaded rather than risk disabling the kill switch
+		// outright.
+		slog.Warn("refreshKillSwitchIfEnabled: failed to rebuild kill switch",
+			"context", context, "tunnel", tunnelName, "error", err)
+	}
+}
+
+// enableKillSwitchNow builds and loads the kill switch pf ruleset from the
+// CURRENT set of active tunnels (WireGuard + OpenVPN). Shared by the manual
+// toggle (handleSetKillSwitch) and the OpenVPN connect/disconnect refresh
+// above, so both compute the exact same ruleset the same way.
+func (h *Helper) enableKillSwitchNow() error {
+	status := h.manager.Status()
+	wgConnected := status.State == tunnel.StateConnected
+
+	// OpenVPN tunnels whose remote was successfully resolved (see
+	// ovpn.Manager.ActiveRemotes) get their own pass-rule too.
+	extra := h.killSwitchExtraTunnels()
+
+	if !wgConnected && len(extra) == 0 {
+		// Distinguish "an OpenVPN tunnel is active but its remote
+		// couldn't be resolved/whitelisted" (rare: DNS failed at Connect
+		// time) from "nothing active at all" for a clearer error.
+		if h.ovpnManager != nil {
+			for _, ovpnStatus := range h.ovpnManager.AllStatuses() {
+				if ovpnStatus.State == domain.StateConnected {
+					return fmt.Errorf("kill switch cannot whitelist this OpenVPN tunnel (its remote could not be resolved) — try reconnecting")
+				}
+			}
+		}
+		return fmt.Errorf("no active tunnel")
+	}
+
+	var endpoints []string
+	var ifaceAddresses []string
+	ifaceName := ""
+	if wgConnected {
+		ifaceName = status.InterfaceName
+		// Use pre-resolved endpoints (resolved before tunnel routes were
+		// installed). Doing DNS resolution here would fail because the
+		// kill switch is about to block non-tunnel traffic and/or the
+		// query would route through the tunnel itself.
+		endpoints = h.manager.ResolvedEndpoints()
+		if len(endpoints) == 0 {
+			return fmt.Errorf("no resolved endpoints available — tunnel may have disconnected")
+		}
+		// Get interface addresses from ALL active configs for anti-spoof
+		// chains. With multiple tunnels, the kill switch must allow
+		// traffic from every tunnel's interface addresses, not just the
+		// first one.
+		h.mu.Lock()
+		for _, cfg := range h.activeCfgs {
+			ifaceAddresses = append(ifaceAddresses, cfg.Interface.Address...)
+		}
+		h.mu.Unlock()
+	}
+
+	return h.firewall.EnableKillSwitch(ifaceName, ifaceAddresses, endpoints, extra)
 }
 
 // onReconnectState forwards reconnection state changes to any subscribed GUI.
@@ -287,6 +394,25 @@ func (h *Helper) onReconnectState(state reconnect.State) {
 	})
 }
 
+// anyTunnelActive reports whether any WireGuard or OpenVPN tunnel is
+// currently active. Used by the shutdown-grace-timer logic, which must
+// consider both protocols — checking WireGuard alone would tear down a live
+// OpenVPN-only session if the GUI process dies (crash/kill; a clean quit
+// disconnects everything first) during the grace window.
+func (h *Helper) anyTunnelActive() (name string, active bool) {
+	if h.manager != nil {
+		if t := h.manager.ActiveTunnel(); t != "" {
+			return t, true
+		}
+	}
+	if h.ovpnManager != nil {
+		if names := h.ovpnManager.ActiveTunnelNames(); len(names) > 0 {
+			return names[0], true
+		}
+	}
+	return "", false
+}
+
 // startShutdownTimer begins (or re-begins) the grace-window countdown. Called
 // when the GUI's control connection drops.
 //
@@ -296,12 +422,9 @@ func (h *Helper) onReconnectState(state reconnect.State) {
 // wg-quick's monitor_daemon. The timer only applies when there is no active
 // tunnel (i.e., the user disconnected and then closed the GUI).
 func (h *Helper) startShutdownTimer() {
-	active := ""
-	if h.manager != nil {
-		active = h.manager.ActiveTunnel()
-	}
+	active, isActive := h.anyTunnelActive()
 
-	if active != "" {
+	if isActive {
 		slog.Info("GUI disconnected but tunnel is active — helper stays alive (wg-quick semantics)",
 			"active_tunnel", active)
 		return
@@ -317,7 +440,7 @@ func (h *Helper) startShutdownTimer() {
 	h.shutdownTimer = time.AfterFunc(shutdownGrace, func() {
 		// Double-check at fire time: a tunnel may have been activated between
 		// timer start and fire (e.g., reconnect monitor brought it back up).
-		if t := h.manager.ActiveTunnel(); t != "" {
+		if t, ok := h.anyTunnelActive(); ok {
 			slog.Info("shutdown timer fired but tunnel is now active — aborting shutdown",
 				"active_tunnel", t)
 			return
@@ -350,20 +473,78 @@ func isDaemon() bool {
 	return os.Getppid() == 1
 }
 
+// killSwitchExtraTunnels builds the kill switch's "additional tunnels" list
+// (currently just OpenVPN) from every connected OVPN tunnel whose remote was
+// successfully resolved — see ovpn.Manager.ActiveRemotes. Shared by
+// handleSetKillSwitch (manual toggle) and resumeFirewall (post-reconnect
+// restore) so both paths whitelist OpenVPN identically.
+func (h *Helper) killSwitchExtraTunnels() []firewall.KillSwitchTunnel {
+	if h.ovpnManager == nil {
+		return nil
+	}
+	var extra []firewall.KillSwitchTunnel
+	for _, r := range h.ovpnManager.ActiveRemotes() {
+		extra = append(extra, firewall.KillSwitchTunnel{
+			InterfaceName: r.InterfaceName,
+			Proto:         r.Proto,
+			Endpoints:     []string{r.Addr},
+		})
+	}
+	return extra
+}
+
+// clearFirewallSuspendState discards any in-progress reconnect suspend/resume
+// bookkeeping. Called before a MANUAL kill-switch/DNS-protection toggle
+// (handleSetKillSwitch/handleSetDNSProtection): a cancelled or abandoned
+// reconnect retry sequence can leave fwSuspended stuck true (see
+// suspendFirewall/resumeFirewall) until a later resumeFirewall call happens
+// to complete — during that window, a user's own explicit toggle should win
+// outright, not risk being silently overridden by a stale saved value once
+// some later, unrelated resume eventually fires.
+func (h *Helper) clearFirewallSuspendState() {
+	h.mu.Lock()
+	h.fwSuspended = false
+	h.fwSavedKillSwitch = false
+	h.fwSavedDNSProtection = false
+	h.fwSavedDNSServers = nil
+	h.mu.Unlock()
+}
+
 // suspendFirewall saves the current firewall state and disables all firewall
 // rules. Called by the reconnect monitor before Disconnect so that old pf rules
 // referencing the previous utun interface name don't block the new connection.
 func (h *Helper) suspendFirewall() error {
+	h.mu.Lock()
+	alreadySuspended := h.fwSuspended
+	h.mu.Unlock()
+	if alreadySuspended {
+		// A previous suspend in this same retry sequence never got a chance
+		// to resume successfully (failed attempt, or the new interface
+		// wasn't ready yet — see resumeFirewall). The firewall is already
+		// down from that earlier suspend, so re-reading
+		// IsKillSwitchEnabled()/IsDNSProtectionEnabled() now would capture
+		// "false" (the CURRENT, suspended state) instead of the TRUE
+		// original state we still need to restore — permanently losing it.
+		// fwSaved* already holds the real original values; leave them alone.
+		slog.Debug("suspendFirewall: already suspended from a previous attempt in this retry sequence, not re-snapshotting")
+		return nil
+	}
+
 	ksEnabled := h.firewall.IsKillSwitchEnabled()
 	dnsEnabled := h.firewall.IsDNSProtectionEnabled()
 
 	h.mu.Lock()
 	h.fwSavedKillSwitch = ksEnabled
 	h.fwSavedDNSProtection = dnsEnabled
+	h.fwSuspended = ksEnabled || dnsEnabled
 	// H2: Union DNS lists from ALL active configs (not just the first one
 	// with a non-empty DNS list). With multi-tunnel setups, breaking on the
 	// first match silently dropped DNS servers belonging to other tunnels
-	// when the firewall was resumed.
+	// when the firewall was resumed. This also includes OpenVPN tunnels'
+	// server-pushed DNS — WireGuard-only snapshotting here meant a WG
+	// tunnel's reconnect could resume DNS protection using only WG's static
+	// DNS list (or none), silently discarding a concurrently active OVPN
+	// tunnel's pushed DNS servers from the restored allowlist.
 	seen := make(map[string]struct{})
 	var combined []string
 	for _, cfg := range h.activeCfgs {
@@ -376,6 +557,20 @@ func (h *Helper) suspendFirewall() error {
 			}
 			seen[dns] = struct{}{}
 			combined = append(combined, dns)
+		}
+	}
+	if h.ovpnManager != nil {
+		for _, st := range h.ovpnManager.AllStatuses() {
+			for _, dns := range st.DNSServers {
+				if dns == "" {
+					continue
+				}
+				if _, ok := seen[dns]; ok {
+					continue
+				}
+				seen[dns] = struct{}{}
+				combined = append(combined, dns)
+			}
 		}
 	}
 	h.fwSavedDNSServers = combined
@@ -416,13 +611,13 @@ func (h *Helper) resumeFirewall() error {
 	for _, cfg := range h.activeCfgs {
 		ifaceAddresses = append(ifaceAddresses, cfg.Interface.Address...)
 	}
-	// Clear saved state so a second resume is a no-op.
-	h.fwSavedKillSwitch = false
-	h.fwSavedDNSProtection = false
-	h.fwSavedDNSServers = nil
 	h.mu.Unlock()
 
 	if !restoreKS && !restoreDNS {
+		// Nothing was suspended, so there's nothing to lose — safe to clear.
+		h.mu.Lock()
+		h.fwSuspended = false
+		h.mu.Unlock()
 		slog.Debug("resumeFirewall: no firewall rules to restore")
 		return nil
 	}
@@ -437,33 +632,67 @@ func (h *Helper) resumeFirewall() error {
 		"kill_switch", restoreKS, "dns_protection", restoreDNS,
 		"new_interface", ifaceName)
 
+	// ksDone/dnsDone track whether each requested restore actually
+	// happened. Unlike the previous version, fwSaved*/fwSuspended are only
+	// cleared once everything that needed restoring has been restored —
+	// otherwise a reconnect attempt that fails before the new interface
+	// exists (the common case: suspend → disconnect → reconnect fails →
+	// resume, with no interface yet) would permanently discard the "kill
+	// switch was on" signal instead of preserving it for the next retry's
+	// resume call.
+	ksDone := true
 	if restoreKS {
-		if ifaceName == "" {
-			slog.Warn("resumeFirewall: no interface name available, cannot re-enable kill switch")
+		ksDone = false
+		// A WG reconnect's suspend/resume cycle must not drop a concurrently
+		// active OpenVPN tunnel's kill-switch whitelist entry — include it
+		// here the same way handleSetKillSwitch does for a manual toggle.
+		extra := h.killSwitchExtraTunnels()
+		if ifaceName == "" && len(extra) == 0 {
+			slog.Warn("resumeFirewall: no interface available (WireGuard or OpenVPN), cannot re-enable kill switch yet")
 		} else {
-			endpoints := h.manager.ResolvedEndpoints()
-			if len(endpoints) == 0 {
-				slog.Warn("resumeFirewall: no resolved endpoints, cannot re-enable kill switch")
+			var endpoints []string
+			if ifaceName != "" {
+				endpoints = h.manager.ResolvedEndpoints()
+			}
+			if ifaceName != "" && len(endpoints) == 0 {
+				slog.Warn("resumeFirewall: no resolved endpoints, cannot re-enable kill switch yet")
 			} else {
-				if err := h.firewall.EnableKillSwitch(ifaceName, ifaceAddresses, endpoints); err != nil {
+				if err := h.firewall.EnableKillSwitch(ifaceName, ifaceAddresses, endpoints, extra); err != nil {
 					slog.Error("resumeFirewall: failed to re-enable kill switch", "error", err)
 					return fmt.Errorf("resumeFirewall: enable kill switch: %w", err)
 				}
+				ksDone = true
 			}
 		}
 	}
 
+	dnsDone := true
 	if restoreDNS {
+		dnsDone = false
 		if ifaceName == "" {
-			slog.Warn("resumeFirewall: no interface name available, cannot re-enable DNS protection")
+			slog.Warn("resumeFirewall: no interface name available, cannot re-enable DNS protection yet")
 		} else if len(savedDNSServers) == 0 {
 			slog.Warn("resumeFirewall: no DNS servers saved, cannot re-enable DNS protection")
+			dnsDone = true // nothing we could ever restore here — don't retry forever
 		} else {
 			if err := h.firewall.EnableDNSProtection(ifaceName, savedDNSServers); err != nil {
 				slog.Error("resumeFirewall: failed to re-enable DNS protection", "error", err)
 				return fmt.Errorf("resumeFirewall: enable DNS protection: %w", err)
 			}
+			dnsDone = true
 		}
+	}
+
+	if ksDone && dnsDone {
+		h.mu.Lock()
+		h.fwSavedKillSwitch = false
+		h.fwSavedDNSProtection = false
+		h.fwSavedDNSServers = nil
+		h.fwSuspended = false
+		h.mu.Unlock()
+	} else {
+		slog.Debug("resumeFirewall: restore incomplete, keeping saved state for next attempt",
+			"kill_switch_restored", ksDone, "dns_restored", dnsDone)
 	}
 
 	return nil

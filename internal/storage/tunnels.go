@@ -167,17 +167,34 @@ func (s *TunnelStore) Rename(oldName, newName string) error {
 		return fmt.Errorf("tunnel %q already exists", newName)
 	}
 
-	// Rename the config file — .ovpn for OpenVPN tunnels, .conf for WireGuard.
-	var srcCfg, dstCfg string
-	if _, err := os.Stat(s.ovpnPath(oldName)); err == nil {
-		srcCfg = s.ovpnPath(oldName)
-		dstCfg = s.ovpnPath(newName)
-	} else {
-		srcCfg = oldPath
-		dstCfg = s.path(newName)
+	// Rename the config file — .ovpn for OpenVPN tunnels, .conf for
+	// WireGuard. A tunnel is normally only ever one or the other, but if
+	// both somehow coexist (the same "legacy/weird coexistence" case
+	// Delete's comment already acknowledges and cleans up best-effort),
+	// renaming only whichever one Stat happened to find first stranded the
+	// other under the OLD name — a ghost/duplicate entry that List() would
+	// then surface twice. Rename every config file that actually exists.
+	_, ovpnErr := os.Stat(s.ovpnPath(oldName))
+	ovpnExists := ovpnErr == nil
+	_, confErr := os.Stat(oldPath)
+	confExists := confErr == nil
+
+	if !ovpnExists && !confExists {
+		return fmt.Errorf("tunnel %q has no config file", oldName)
 	}
-	if err := os.Rename(srcCfg, dstCfg); err != nil {
-		return err
+	if ovpnExists {
+		if err := os.Rename(s.ovpnPath(oldName), s.ovpnPath(newName)); err != nil {
+			return err
+		}
+	}
+	if confExists {
+		if err := os.Rename(oldPath, s.path(newName)); err != nil {
+			// If the .ovpn rename above already succeeded, the tunnel
+			// exists under newName now — surface the error but don't try
+			// to roll the .ovpn rename back (matches this function's
+			// existing no-rollback posture on other partial-failure paths).
+			return err
+		}
 	}
 
 	// Best-effort: rename the .meta.json sidecar as well.

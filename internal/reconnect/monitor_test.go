@@ -157,6 +157,14 @@ func TestSleepWake_TriggersReconnect_WhenConnected(t *testing.T) {
 
 	mon, mgr, sd := newTestMonitor(testConfig(), reconnectFn)
 	mgr.setConnected(true, "test-tunnel")
+	// sleepWakeLoop iterates AllStatuses() (not IsConnected/ActiveTunnel),
+	// so the mock needs an actual status entry, not just setConnected's
+	// connected/activeName fields.
+	mgr.setStatus(&tunnel.ConnectionStatus{TunnelName: "test-tunnel"})
+	// sleepWakeLoop also gates each tunnel through shouldReconnectFn — nil
+	// (the default) means "auto-reconnect nothing," so this must be set for
+	// wake-triggered reconnect to ever fire.
+	mon.SetShouldReconnect(func(name string) bool { return true })
 
 	mon.Start()
 	defer mon.Stop()
@@ -348,13 +356,20 @@ func TestCancelRetry_StopsInProgressReconnect(t *testing.T) {
 
 	beforeCancel := reconnectCalls.Load()
 
-	// Cancel retry while it's sleeping before the next attempt.
-	mon.CancelRetry()
+	// Grab the retry goroutine's done channel BEFORE cancelling — CancelRetry
+	// removes the map entry, so it must be read first.
+	mon.mu.Lock()
+	var retryDone chan struct{}
+	if rs, ok := mon.retries[""]; ok {
+		retryDone = rs.done
+	}
+	mon.mu.Unlock()
+
+	// Cancel retry while it's sleeping before the next attempt. "" matches
+	// triggerReconnect()'s legacy (nameless) tunnel key.
+	mon.CancelRetry("")
 
 	// Wait for the retry goroutine to fully exit.
-	mon.mu.Lock()
-	retryDone := mon.retryDone
-	mon.mu.Unlock()
 	if retryDone != nil {
 		select {
 		case <-retryDone:
@@ -404,14 +419,28 @@ func TestFirewallCallbacks_CalledInOrder(t *testing.T) {
 
 	mon.triggerReconnect()
 
-	// Wait for the retry goroutine to finish by watching retryDone.
+	// Grab the retry goroutine's done channel IMMEDIATELY after
+	// triggerReconnect returns — the map entry is written synchronously
+	// before triggerReconnectTunnel returns, but on a fast (first-attempt)
+	// success the goroutine can finish and clear its own entry very
+	// quickly, so this must not be delayed.
 	mon.mu.Lock()
-	retryDone := mon.retryDone
+	var retryDone chan struct{}
+	if rs, ok := mon.retries[""]; ok {
+		retryDone = rs.done
+	}
 	mon.mu.Unlock()
-	select {
-	case <-retryDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for reconnect to complete")
+	if retryDone == nil {
+		// Already completed between triggerReconnect() returning and the
+		// lock above — reconnect succeeded even faster than we could
+		// observe the in-flight state, which is fine for this test's
+		// purposes (it only cares about final ordering, checked below).
+	} else {
+		select {
+		case <-retryDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for reconnect to complete")
+		}
 	}
 
 	mu.Lock()
@@ -587,6 +616,8 @@ func TestStop_CancelsActiveReconnect(t *testing.T) {
 
 	mon, mgr, _ := newTestMonitor(cfg, reconnectFn)
 	mgr.setConnected(true, "test-tunnel")
+	mgr.setStatus(&tunnel.ConnectionStatus{TunnelName: "test-tunnel"})
+	mon.SetShouldReconnect(func(name string) bool { return true })
 
 	mon.Start()
 
@@ -653,9 +684,12 @@ func TestGetState_ReflectsAttempt(t *testing.T) {
 }
 
 func TestSleepWake_ActiveTunnel_NoIsConnected(t *testing.T) {
-	// The sleepWakeLoop also checks ActiveTunnel() != "" even if IsConnected
-	// returns false. This covers the case where the tunnel is in a connecting
-	// or disconnecting transient state.
+	// sleepWakeLoop iterates manager.AllStatuses() and gates each entry
+	// through shouldReconnectFn — it does NOT consult IsConnected()/
+	// ActiveTunnel() at all. This covers a tunnel that shows up in
+	// AllStatuses() (e.g. a connecting/disconnecting transient state) even
+	// when the simpler IsConnected()/ActiveTunnel() accessors wouldn't
+	// reflect it as the primary active tunnel.
 	var reconnectCalls atomic.Int32
 	reconnectFn := func(name string) error {
 		reconnectCalls.Add(1)
@@ -663,8 +697,9 @@ func TestSleepWake_ActiveTunnel_NoIsConnected(t *testing.T) {
 	}
 
 	mon, mgr, sd := newTestMonitor(testConfig(), reconnectFn)
-	// Not "connected" but has an active tunnel name (e.g., connecting state).
 	mgr.setConnected(false, "my-tunnel")
+	mgr.setStatus(&tunnel.ConnectionStatus{TunnelName: "my-tunnel"})
+	mon.SetShouldReconnect(func(name string) bool { return true })
 
 	mon.Start()
 	defer mon.Stop()

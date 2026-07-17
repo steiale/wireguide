@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/steiale/wireguide/internal/diag"
-	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/ovpn"
 )
 
@@ -39,9 +38,20 @@ func (s *TunnelService) RunDNSLeakTest() (*DNSLeakResult, error) {
 	// Best-effort: find the active tunnel's DNS config to know which resolvers
 	// are expected to be in use. Ignore IPC errors — an empty expected set is
 	// still a valid (conservative) test.
+	//
+	// WireGuard's expected DNS is a static client-side directive, readable
+	// from the parsed .conf before ever connecting. OpenVPN has no such
+	// directive — DNS is pushed by the server at connect time — so
+	// tunnelStore.Load (a WireGuard-only .conf parser) always errored for an
+	// .ovpn tunnel, silently leaving expectedDNS empty and making every
+	// detected resolver look like a leak. status.DNSServers (populated from
+	// the server's actual PUSH_REPLY once connected — see
+	// ovpn/manager.go's applyPushedDNS) is the only place this is knowable.
 	var expectedDNS []string
 	if status, err := s.GetStatus(); err == nil && status != nil && status.TunnelName != "" {
-		if cfg, err := s.tunnelStore.Load(status.TunnelName); err == nil && cfg != nil {
+		if s.tunnelStore.IsOVPN(status.TunnelName) {
+			expectedDNS = status.DNSServers
+		} else if cfg, err := s.tunnelStore.Load(status.TunnelName); err == nil && cfg != nil {
 			expectedDNS = cfg.Interface.DNS
 		}
 	}
@@ -82,9 +92,14 @@ func (s *TunnelService) GetTunnelLatency(name string) int {
 		return -1
 	}
 
-	// Check whether this tunnel is currently active.
-	var active ipc.StringResponse
-	connected := s.call(ipc.MethodActiveName, nil, &active) == nil && active.Value == name
+	// Check whether this tunnel is currently active. isTunnelActive checks
+	// the full active-tunnel set (MethodActiveTunnels), not just the single
+	// "primary" name (MethodActiveName) — with 2+ WireGuard tunnels
+	// connected, a non-primary tunnel would otherwise always compare
+	// unequal to ActiveName and be treated as disconnected, pinging its
+	// public endpoint (which never replies while the tunnel is actually up)
+	// and reporting -1/unreachable on every poll.
+	connected, _ := s.isTunnelActive(name)
 
 	if connected {
 		// Ping each DNS server IP (skip search domains).

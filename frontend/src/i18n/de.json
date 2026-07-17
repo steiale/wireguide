@@ -64,7 +64,9 @@
     "zip_ok": "Fertig",
     "zip_none": "Keine .conf-Dateien im ZIP gefunden",
     "zip_summary": "{ok} importiert, {fail} fehlgeschlagen",
-    "zip_summary_ok": "{ok} importiert"
+    "zip_summary_ok": "{ok} importiert",
+    "qr_button": "Aus QR-Code importieren",
+    "qr_error": "QR-Code konnte nicht importiert werden"
   },
   "editor": {
     "title": "Tunnel bearbeiten: {name}",
@@ -272,10 +274,13 @@
   },
   "auth": {
     "title": "OpenVPN-Authentifizierung",
+    "challenge_title": "Verifizierung erforderlich",
     "subtitle": "Zugangsdaten für \"{name}\" eingeben.",
     "username": "Benutzername",
     "password": "Passwort",
     "password_hint": "OTP-Token anhängen, falls erforderlich",
+    "response": "Antwort",
+    "response_required": "Eine Antwort ist erforderlich",
     "save": "Benutzernamen speichern",
     "submit": "Verbinden",
     "cancel": "Abbrechen",

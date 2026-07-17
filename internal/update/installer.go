@@ -6,21 +6,23 @@ import (
 	"runtime"
 )
 
-// Install runs the OS-specific installer for the downloaded update.
-// The caller must pass the UpdateInfo whose HashVerified field was set by
-// DownloadUpdate. Install refuses to proceed if the hash was not verified.
-//
-// NOTE: On macOS, Install is currently never called from RunUpdate — Homebrew
-// installs go through `brew upgrade` and non-Homebrew installs open the GitHub
-// Releases page so the user can download/replace the app manually. The Install
-// path is kept here for Linux/Windows where the OS package manager can
-// actually consume the downloaded file. If a future macOS auto-update flow
-// wants to swap the app bundle in place, it MUST call DownloadUpdate first
-// (which runs SHA-256 verification) and then Install (which refuses to run
-// without HashVerified=true). Do not bypass the verifier.
+// Install runs the OS-specific installer for the downloaded update. The
+// caller must pass the UpdateInfo populated by DownloadUpdate, which sets
+// HashVerified and/or SignatureVerified depending on what was available and
+// what requireSignature demands (see checker.go). Install refuses to proceed
+// unless AT LEAST ONE of the two actually verified — checking only
+// HashVerified was wrong: no release in this project's history has ever
+// published a separate checksum file (see checker.go's DownloadUpdate
+// comment), so HashVerified is false for every real release today, and the
+// non-brew macOS path below WAS called from settings_ops.go's RunUpdate
+// (the comment previously claiming otherwise was stale) — meaning every
+// real update silently failed at this exact check. The Ed25519 signature
+// (SignatureVerified) is the actual cryptographic authenticity guarantee
+// here — it's what requireSignature enforces DownloadUpdate can't skip —
+// so it alone is sufficient; the checksum is optional defense-in-depth.
 func Install(filePath string, info *UpdateInfo) error {
-	if info == nil || !info.HashVerified {
-		return fmt.Errorf("refusing to install: checksum was not verified")
+	if info == nil || !(info.HashVerified || info.SignatureVerified) {
+		return fmt.Errorf("refusing to install: neither checksum nor signature was verified")
 	}
 	switch runtime.GOOS {
 	case "darwin":
