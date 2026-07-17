@@ -130,6 +130,19 @@ export class ConnectionStatus {
         }
         if (/** @type {any} */(false)) {
             /**
+             * DNSServers is the set of DNS resolver IPs actually applied for this
+             * tunnel. For OpenVPN, these come from the server's PUSH_REPLY
+             * dhcp-option DNS entries (there's no static client-side DNS directive
+             * to read before connecting — unlike WireGuard's `DNS = ...` config
+             * line, which the DNS leak test reads directly from the parsed
+             * .conf instead of via this field). Empty until CONNECTED.
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["dns_servers"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * ActiveTunnels lists the names of all currently connected (or connecting)
              * tunnels. Populated by the multi-tunnel manager so the frontend can show
              * which tunnels are active.
@@ -158,13 +171,17 @@ export class ConnectionStatus {
      */
     static createFrom($$source = {}) {
         const $$createField13_0 = $$createType0;
-        const $$createField14_0 = $$createType2;
+        const $$createField14_0 = $$createType0;
+        const $$createField15_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("dns_servers" in $$parsedSource) {
+            $$parsedSource["dns_servers"] = $$createField13_0($$parsedSource["dns_servers"]);
+        }
         if ("active_tunnels" in $$parsedSource) {
-            $$parsedSource["active_tunnels"] = $$createField13_0($$parsedSource["active_tunnels"]);
+            $$parsedSource["active_tunnels"] = $$createField14_0($$parsedSource["active_tunnels"]);
         }
         if ("tunnels" in $$parsedSource) {
-            $$parsedSource["tunnels"] = $$createField14_0($$parsedSource["tunnels"]);
+            $$parsedSource["tunnels"] = $$createField15_0($$parsedSource["tunnels"]);
         }
         return new ConnectionStatus(/** @type {Partial<ConnectionStatus>} */($$parsedSource));
     }

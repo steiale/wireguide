@@ -42,6 +42,20 @@ import * as application$0 from "../../../../wailsapp/wails/v3/pkg/application/mo
 import * as $models from "./models.js";
 
 /**
+ * ActiveTunnelNames returns every currently active tunnel name (WireGuard
+ * AND OpenVPN — the helper supports multiple concurrent tunnels). Exported
+ * for callers outside this package that need to act on the full active set
+ * rather than the single "primary" name MethodActiveName reports (e.g. the
+ * Wi-Fi auto-connect lifecycle's "disconnect everything" path).
+ * @returns {$CancellablePromise<string[]>}
+ */
+export function ActiveTunnelNames() {
+    return $Call.ByID(3482408702).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
  * BaseName extracts the filename without extension from a path.
  * @param {string} path
  * @returns {$CancellablePromise<string>}
@@ -60,7 +74,7 @@ export function BaseName(path) {
  */
 export function CheckConflicts(name) {
     return $Call.ByID(604900757, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
+        return $$createType2($result);
     }));
 }
 
@@ -70,7 +84,7 @@ export function CheckConflicts(name) {
  */
 export function CheckForUpdate() {
     return $Call.ByID(4127090372).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType4($result);
     }));
 }
 
@@ -164,7 +178,7 @@ export function ExportTunnel(name) {
  * FeedCredentials delivers credentials to an OpenVPN tunnel waiting on an auth
  * prompt. fullPassword must already be basePassword + the 6-digit TOTP code,
  * combined by the caller (the GUI prompts for the code on every connect).
- *
+ * 
  * response answers a challenge/response prompt (see the auth_prompt event's
  * challenge_kind): for a "dynamic" (CRV1) prompt it's the entire reply and
  * fullPassword is ignored; for a "static" (SCRV1) prompt it's paired with
@@ -197,7 +211,7 @@ export function GetConfigText(name) {
  */
 export function GetConnectionHistory() {
     return $Call.ByID(4142379542).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType5($result);
+        return $$createType6($result);
     }));
 }
 
@@ -217,7 +231,7 @@ export function GetCurrentSSID() {
  */
 export function GetRoutingTable() {
     return $Call.ByID(2660289744).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType8($result);
     }));
 }
 
@@ -230,7 +244,7 @@ export function GetRoutingTable() {
  */
 export function GetSavedCredentials(tunnelName) {
     return $Call.ByID(1122228093, tunnelName).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
+        return $$createType10($result);
     }));
 }
 
@@ -239,7 +253,7 @@ export function GetSavedCredentials(tunnelName) {
  */
 export function GetSettings() {
     return $Call.ByID(1159302687).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType11($result);
+        return $$createType12($result);
     }));
 }
 
@@ -251,7 +265,7 @@ export function GetSettings() {
  */
 export function GetStatus() {
     return $Call.ByID(3347375428).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType13($result);
+        return $$createType14($result);
     }));
 }
 
@@ -263,7 +277,7 @@ export function GetStatus() {
  */
 export function GetTunnelDetail(name) {
     return $Call.ByID(881582661, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType16($result);
     }));
 }
 
@@ -292,7 +306,7 @@ export function GetTunnelLatency(name) {
  */
 export function GetTunnelMeta(name) {
     return $Call.ByID(402927985, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType18($result);
     }));
 }
 
@@ -311,7 +325,7 @@ export function GetVersion() {
  */
 export function GetWifiRules() {
     return $Call.ByID(2048144510).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType19($result);
+        return $$createType20($result);
     }));
 }
 
@@ -324,7 +338,7 @@ export function GetWifiRules() {
  */
 export function ImportConfig(name, content) {
     return $Call.ByID(188679809, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
+        return $$createType22($result);
     }));
 }
 
@@ -339,7 +353,7 @@ export function ImportConfig(name, content) {
  */
 export function ImportFile(name, content, filename) {
     return $Call.ByID(2721946621, name, content, filename).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
+        return $$createType22($result);
     }));
 }
 
@@ -351,7 +365,7 @@ export function ImportFile(name, content, filename) {
  */
 export function ImportFoundConfigs(paths) {
     return $Call.ByID(1596298812, paths).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType23($result);
+        return $$createType24($result);
     }));
 }
 
@@ -364,7 +378,7 @@ export function ImportFoundConfigs(paths) {
  */
 export function ImportOVPN(name, content) {
     return $Call.ByID(3345483956, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
+        return $$createType22($result);
     }));
 }
 
@@ -392,14 +406,15 @@ export function ImportQRFromPath(path, name) {
 }
 
 /**
- * ImportZip extracts all .conf files from a zip archive and imports each one.
- * Returns per-file results; an error is only returned for zip-level failures.
+ * ImportZip extracts all .conf and .ovpn files from a zip archive and imports
+ * each one. Returns per-file results; an error is only returned for zip-level
+ * failures.
  * @param {string} path
  * @returns {$CancellablePromise<$models.ZipImportResult[]>}
  */
 export function ImportZip(path) {
     return $Call.ByID(2515408722, path).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType23($result);
+        return $$createType24($result);
     }));
 }
 
@@ -411,7 +426,7 @@ export function ImportZip(path) {
  */
 export function ImportZipData(data) {
     return $Call.ByID(368497186, data).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType23($result);
+        return $$createType24($result);
     }));
 }
 
@@ -439,7 +454,7 @@ export function IsHelperReady() {
  */
 export function ListTunnels() {
     return $Call.ByID(3011645541).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType24($result);
+        return $$createType25($result);
     }));
 }
 
@@ -454,7 +469,7 @@ export function ListTunnels() {
  */
 export function ListTunnelsLocal() {
     return $Call.ByID(3553304200).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType24($result);
+        return $$createType25($result);
     }));
 }
 
@@ -503,7 +518,11 @@ export function ReconcileHistoryFromStatus(activeNames, rxByTunnel, txByTunnel, 
 
 /**
  * RenameTunnel changes a tunnel's name. Rejects rename of the connected
- * tunnel since the interface name is derived from it.
+ * tunnel since the interface name is derived from it. For OpenVPN tunnels,
+ * also migrates any Keychain-stored credentials to the new name — otherwise
+ * they're silently orphaned under the old name (GetSavedCredentials(newName)
+ * comes back empty, forcing the user to re-enter them, while the stale
+ * old-name entry lingers in the Keychain forever with no deletion path).
  * @param {string} oldName
  * @param {string} newName
  * @returns {$CancellablePromise<void>}
@@ -538,7 +557,7 @@ export function ResizeToFit(tunnelCount) {
  */
 export function RunDNSLeakTest() {
     return $Call.ByID(2844578013).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType26($result);
+        return $$createType27($result);
     }));
 }
 
@@ -609,7 +628,7 @@ export function SaveWifiRules(rules) {
  */
 export function ScanForWireGuardConfigs() {
     return $Call.ByID(2588850719).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType28($result);
+        return $$createType29($result);
     }));
 }
 
@@ -709,38 +728,38 @@ export function UpdateConfig(name, content) {
  */
 export function ValidateConfig(content) {
     return $Call.ByID(3943944654, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType29($result);
+        return $$createType0($result);
     }));
 }
 
 // Private type creation functions
-const $$createType0 = tunnel$0.ConflictInfo.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = update$0.UpdateInfo.createFrom;
-const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = history$0.Session.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = $models.RouteEntry.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = $models.SavedCredentials.createFrom;
-const $$createType9 = $Create.Nullable($$createType8);
-const $$createType10 = storage$0.Settings.createFrom;
-const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = domain$0.ConnectionStatus.createFrom;
-const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = domain$0.WireGuardConfig.createFrom;
-const $$createType15 = $Create.Nullable($$createType14);
-const $$createType16 = storage$0.TunnelMeta.createFrom;
-const $$createType17 = $Create.Nullable($$createType16);
-const $$createType18 = wifi$0.Rules.createFrom;
-const $$createType19 = $Create.Nullable($$createType18);
-const $$createType20 = $models.TunnelInfo.createFrom;
-const $$createType21 = $Create.Nullable($$createType20);
-const $$createType22 = $models.ZipImportResult.createFrom;
-const $$createType23 = $Create.Array($$createType22);
-const $$createType24 = $Create.Array($$createType20);
-const $$createType25 = $models.DNSLeakResult.createFrom;
-const $$createType26 = $Create.Nullable($$createType25);
-const $$createType27 = $models.FoundConfig.createFrom;
-const $$createType28 = $Create.Array($$createType27);
-const $$createType29 = $Create.Array($Create.Any);
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = tunnel$0.ConflictInfo.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = update$0.UpdateInfo.createFrom;
+const $$createType4 = $Create.Nullable($$createType3);
+const $$createType5 = history$0.Session.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = $models.RouteEntry.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $models.SavedCredentials.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = storage$0.Settings.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = domain$0.ConnectionStatus.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = domain$0.WireGuardConfig.createFrom;
+const $$createType16 = $Create.Nullable($$createType15);
+const $$createType17 = storage$0.TunnelMeta.createFrom;
+const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = wifi$0.Rules.createFrom;
+const $$createType20 = $Create.Nullable($$createType19);
+const $$createType21 = $models.TunnelInfo.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
+const $$createType23 = $models.ZipImportResult.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = $Create.Array($$createType21);
+const $$createType26 = $models.DNSLeakResult.createFrom;
+const $$createType27 = $Create.Nullable($$createType26);
+const $$createType28 = $models.FoundConfig.createFrom;
+const $$createType29 = $Create.Array($$createType28);

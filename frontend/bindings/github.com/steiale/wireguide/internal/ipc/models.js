@@ -9,6 +9,14 @@ import { Create as $Create } from "@wailsio/runtime";
 /**
  * AuthPromptEventPayload is broadcast (helper → GUI) when an OpenVPN tunnel is
  * waiting for the user to enter credentials.
+ * 
+ * ChallengeKind is empty for a plain username/password prompt, "static"
+ * (SCRV1 — collect a challenge response alongside the password, in the same
+ * prompt) or "dynamic" (CRV1 — collect a response in a SEPARATE prompt,
+ * after the base password already succeeded; the GUI should show a
+ * response-only form with no username/password fields in this case). The
+ * server-issued opaque state ID for a dynamic challenge is an internal
+ * wire-protocol detail the frontend never needs and is not included here.
  */
 export class AuthPromptEventPayload {
     /**
@@ -23,33 +31,33 @@ export class AuthPromptEventPayload {
              */
             this["tunnel_name"] = "";
         }
-        if (!("challenge_kind" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["challenge_kind"] = "";
+            this["challenge_kind"] = undefined;
         }
-        if (!("challenge_text" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["challenge_text"] = "";
+            this["challenge_text"] = undefined;
         }
-        if (!("challenge_echo" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {boolean}
+             * @type {boolean | undefined}
              */
-            this["challenge_echo"] = false;
+            this["challenge_echo"] = undefined;
         }
-        if (!("challenge_concat" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {boolean}
+             * @type {boolean | undefined}
              */
-            this["challenge_concat"] = false;
+            this["challenge_concat"] = undefined;
         }
 
         Object.assign(this, $$source);
