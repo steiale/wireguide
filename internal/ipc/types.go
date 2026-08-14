@@ -53,14 +53,6 @@ type AuthPromptEventPayload struct {
 	ChallengeConcat bool   `json:"challenge_concat,omitempty"`
 }
 
-// SaveCredentialsRequest is the parameter for Ovpn.SaveCredentials. The helper
-// persists username + base password (never the TOTP code) in the Keychain.
-type SaveCredentialsRequest struct {
-	TunnelName   string `json:"tunnel_name"`
-	Username     string `json:"username"`
-	BasePassword string `json:"base_password"`
-}
-
 // FeedCredentialsRequest is the parameter for Ovpn.FeedCredentials. FullPassword
 // is basePassword + the 6-digit TOTP code, combined by the GUI just before the
 // call so the helper forwards it verbatim to openvpn.

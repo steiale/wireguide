@@ -572,9 +572,19 @@ export function RunUpdate(info) {
 }
 
 /**
- * SaveCredentials stores OpenVPN credentials (username + base password) in the
- * helper-side Keychain. The TOTP code is never stored — only the static base
+ * SaveCredentials stores OpenVPN credentials (username + base password) in
+ * the Keychain. The TOTP code is never stored — only the static base
  * password the user enters once.
+ * 
+ * Done directly in the GUI process (not via IPC to the root helper), same as
+ * GetSavedCredentials/DeleteCredentials/the rename-migration path below —
+ * Keychain access works fine from here, and previously being the ONE
+ * credentials call routed through the helper meant the item got written by
+ * root (which macOS's Security framework, with no per-user login-keychain
+ * context to target, silently defaults to the admin-managed "System"
+ * keychain) while every read happened here as the regular user — a
+ * cross-keychain mismatch that made macOS demand an administrator password
+ * to read back a per-user VPN credential on every single connect.
  * @param {string} tunnelName
  * @param {string} username
  * @param {string} basePassword

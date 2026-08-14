@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -26,6 +27,28 @@ type Engine struct {
 	uapiListener net.Listener
 	ifaceName    string
 	closeOnce    sync.Once
+
+	// closing is set to true by Close() BEFORE it tears anything down, so the
+	// died watcher goroutine (below) can tell an intentional shutdown apart
+	// from wireguard-go killing itself (device/send.go calls `go
+	// device.Close()` on a fatal TUN read error — see its doc comment) and
+	// not fire Died() for a close WE initiated.
+	closing atomic.Bool
+
+	// died is closed exactly once when wgDevice.Wait() returns AND that
+	// closure was not triggered by our own Close(). Callers select on
+	// Died() to detect wireguard-go silently self-destructing the device —
+	// e.g. after "Failed to read packet from TUN device" — which otherwise
+	// leaves routes/DNS/firewall/UI believing the tunnel is still up while
+	// it is actually dead and passing no traffic (the "VPN just freezes"
+	// symptom).
+	died chan struct{}
+
+	// stopped is closed exactly once, unconditionally, whenever
+	// wgDevice.Wait() returns — whether that's from our own Close() or from
+	// wireguard-go self-destructing. See Stopped's doc comment for why a
+	// caller needs this in addition to died.
+	stopped chan struct{}
 
 	// resolvedEndpointIPs caches the IP address each peer endpoint was
 	// resolved to during NewEngine. The network adapter uses these when
@@ -158,7 +181,25 @@ func NewEngine(cfg *config.WireGuardConfig) (*Engine, error) {
 		ifaceName:           ifaceName,
 		resolvedEndpointIPs: resolvedEndpointIPs,
 		resolvedEndpoints:   resolvedEndpoints,
+		died:                make(chan struct{}),
+		stopped:             make(chan struct{}),
 	}
+
+	// Watch for wireguard-go tearing the device down on its own (fatal TUN
+	// I/O error) rather than via our Close(). Wait() also returns on a
+	// normal Close(), so this only signals Died() when closing is still
+	// false at that point. stopped is closed unconditionally either way —
+	// callers (Manager.watchEngineDeath) select on both so a NORMAL
+	// shutdown lets the watcher goroutine exit instead of blocking on
+	// Died() forever, which never fires again once this engine is closed.
+	go func() {
+		<-wgDev.Wait()
+		if !engine.closing.Load() {
+			slog.Warn("WireGuard device closed itself unexpectedly (not via Close())", "interface", ifaceName)
+			close(engine.died)
+		}
+		close(engine.stopped)
+	}()
 
 	// Apply config using IpcSet (in-process, no UAPI socket needed)
 	ipcCfg, err := buildIpcConfig(&resolvedCfg)
@@ -229,6 +270,10 @@ func (e *Engine) ResolvedEndpoints() []string {
 // turn closes the TUN). Safe for concurrent and repeated calls.
 func (e *Engine) Close() {
 	e.closeOnce.Do(func() {
+		// Set BEFORE tearing anything down so the died-watcher goroutine
+		// (started in NewEngine) recognizes wgDevice.Wait() returning as
+		// OUR shutdown rather than wireguard-go self-destructing.
+		e.closing.Store(true)
 		if e.uapiListener != nil {
 			e.uapiListener.Close()
 		}
@@ -236,6 +281,27 @@ func (e *Engine) Close() {
 			e.wgDevice.Close()
 		}
 	})
+}
+
+// Died returns a channel that is closed if wireguard-go tears the device
+// down on its own — e.g. after a fatal "Failed to read packet from TUN
+// device" error — without anyone calling Close(). It never fires for a
+// normal, caller-initiated shutdown. Callers (the tunnel Manager) select on
+// this alongside their other work to detect a tunnel that looks connected
+// but is actually dead, instead of leaving it silently stuck.
+func (e *Engine) Died() <-chan struct{} {
+	return e.died
+}
+
+// Stopped returns a channel that is closed once wireguard-go's device loop
+// has actually exited, for ANY reason — a normal Close() included. A watcher
+// that only selected on Died() would block forever after a normal shutdown
+// (died never fires in that case), leaking one goroutine — and everything it
+// holds a reference to (the device, its TUN fd, peer/handshake state) — per
+// connect/disconnect cycle for the rest of the process's lifetime. Select on
+// both: Died() to react to an unexpected death, Stopped() to exit cleanly.
+func (e *Engine) Stopped() <-chan struct{} {
+	return e.stopped
 }
 
 // buildIpcConfig creates the WireGuard IPC config string.

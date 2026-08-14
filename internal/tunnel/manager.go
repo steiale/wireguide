@@ -12,6 +12,7 @@ package tunnel
 import (
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -60,6 +61,25 @@ type Manager struct {
 	// engineFactory creates the WireGuard engine. Defaults to NewEngine.
 	// Overridable in tests to avoid requiring root / TUN device access.
 	engineFactory func(cfg *domain.WireGuardConfig) (*Engine, error)
+
+	// onEngineDied is called (outside m.mu) after a connected tunnel's
+	// engine dies on its own — see Engine.Died's doc comment — and this
+	// Manager has finished tearing down its now-stale routes/DNS/state.
+	// Set via SetOnEngineDied; wired by the helper to the reconnect
+	// monitor so auto-reconnect-enabled tunnels recover instead of
+	// silently staying disconnected.
+	onEngineDied func(name string)
+}
+
+// SetOnEngineDied registers a callback invoked when a connected tunnel's
+// engine dies unexpectedly (wireguard-go tearing itself down after a fatal
+// TUN error, rather than a caller-initiated Disconnect). Not safe to call
+// concurrently with Connect on the same Manager instance in production —
+// call once during helper startup, before any tunnels connect.
+func (m *Manager) SetOnEngineDied(fn func(name string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onEngineDied = fn
 }
 
 // Additional transient states used internally. Exposed on the wire as the
@@ -189,7 +209,70 @@ func (m *Manager) Connect(cfg *domain.WireGuardConfig) error {
 	entry.connectedAt = time.Now()
 	entry.state = domain.StateConnected
 	m.mu.Unlock()
+	go m.watchEngineDeath(name, engine)
 	return nil
+}
+
+// watchEngineDeath blocks until the engine's device loop exits for ANY
+// reason (Stopped(), which — unlike Died() — always fires, including on a
+// normal Close()) and then checks whether that exit was an unexpected death.
+//
+// This deliberately does NOT `select` on Died() and Stopped() together: both
+// channels can be closed by the time this goroutine gets scheduled, and a
+// select with two simultaneously-ready cases picks between them uniformly at
+// RANDOM — a 50% chance of silently skipping handleEngineDied on a genuine
+// death. Waiting on Stopped() alone and then checking Died() with a
+// non-blocking select is race-free instead: engine.go's watcher closes died
+// (if applicable) strictly before it closes stopped, in that order, in the
+// same goroutine — so by the time Stopped() has been observed as closed,
+// Died()'s closed-or-not state is already decided and visible, no race.
+func (m *Manager) watchEngineDeath(name string, engine *Engine) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("watchEngineDeath panic (recovered)",
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()))
+		}
+	}()
+	<-engine.Stopped()
+	select {
+	case <-engine.Died():
+		m.handleEngineDied(name, engine)
+	default:
+		// Normal, caller-initiated Close() — nothing to do.
+	}
+}
+
+// handleEngineDied tears down a tunnel whose engine died on its own. Mirrors
+// DisconnectTunnel's snapshot-then-unlock-then-teardown structure.
+func (m *Manager) handleEngineDied(name string, engine *Engine) {
+	m.mu.Lock()
+	entry, ok := m.tunnels[name]
+	// entry.engine != engine guards against a stale watcher from a PRIOR
+	// engine instance for this tunnel name (e.g. it died, this handler is
+	// still queued behind m.mu, and meanwhile the tunnel was manually
+	// reconnected with a fresh engine before we got the lock) — don't tear
+	// down the new, healthy connection.
+	if !ok || entry.engine != engine || entry.state != domain.StateConnected {
+		m.mu.Unlock()
+		return
+	}
+	slog.Warn("tunnel engine died unexpectedly, tearing down stale state", "tunnel", name)
+	cfg := entry.cfg
+	netMgr := entry.netMgr
+	entry.state = stateDisconnecting
+	m.mu.Unlock()
+
+	m.disconnectPhases(cfg, engine, netMgr)
+
+	m.mu.Lock()
+	m.removeEntry(name)
+	onDied := m.onEngineDied
+	m.mu.Unlock()
+
+	if onDied != nil {
+		onDied(name)
+	}
 }
 
 // Disconnect tears down the first connected tunnel. Kept for backward

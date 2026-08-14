@@ -584,6 +584,25 @@ func (m *Monitor) sleepWakeLoop() {
 	}
 }
 
+// NotifyTunnelDied is called by the helper when the tunnel manager detects a
+// connected tunnel's engine died on its own (wireguard-go self-closing after
+// a fatal TUN error — see tunnel.Engine.Died's doc comment) rather than via a
+// user-initiated disconnect. It's the same trigger path as a stale-handshake
+// or wake reconnect, gated by the same per-tunnel shouldReconnectFn, so a
+// tunnel without auto-reconnect enabled is simply left disconnected instead
+// of retrying against the user's wishes.
+func (m *Monitor) NotifyTunnelDied(tunnelName string) {
+	m.mu.Lock()
+	shouldFn := m.shouldReconnectFn
+	m.mu.Unlock()
+	if shouldFn == nil || !shouldFn(tunnelName) {
+		slog.Warn("tunnel engine died, auto-reconnect disabled for this tunnel — leaving disconnected", "tunnel", tunnelName)
+		return
+	}
+	slog.Warn("tunnel engine died unexpectedly, triggering reconnect", "tunnel", tunnelName)
+	m.triggerReconnectTunnel(tunnelName)
+}
+
 func (m *Monitor) notifyStatus(state State) {
 	if m.statusFn != nil {
 		m.statusFn(state)

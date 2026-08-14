@@ -81,6 +81,15 @@ type entry struct {
 	authCh     chan authReply // buffered(1); FeedCredentials sends here
 	dnsApplied bool           // true once applyPushedDNS has set DNS for this tunnel
 
+	// awaitingCredentials is true while onMgmtAuthPrompt is blocked waiting
+	// for the user to answer an auth prompt (up to its own 10-minute
+	// timeout). Checked by IsAwaitingCredentials so a caller with a much
+	// shorter bound of its own — helper.reconnectOVPN's connect-timeout
+	// poll — can tell "still waiting on a human to type something" apart
+	// from "actually stuck", instead of tearing the attempt down out from
+	// under an in-progress credential prompt.
+	awaitingCredentials bool
+
 	// lastUsername is the username most recently sent to the management
 	// socket. Reused when responding to a CRV1 dynamic challenge, whose
 	// prompt carries no username field of its own (the frontend shows a
@@ -112,6 +121,13 @@ type entry struct {
 	// remote directive or DNS resolution failed.
 	remoteAddr  string
 	remoteProto string
+
+	// userInitiated is set by Disconnect before it signals openvpn to shut
+	// down. cleanup reads it to tell an intentional disconnect apart from
+	// the process dying/wedging on its own (crash, or the management
+	// socket going silent — see management.go's read deadline) —
+	// only the latter should invoke onDied and offer to reconnect.
+	userInitiated bool
 }
 
 // RemoteEndpoint describes one connected OpenVPN tunnel's resolved remote
@@ -216,6 +232,20 @@ type Manager struct {
 	// fired on every status update — onStatus/emitStatus also fires once a
 	// second for bytecount, which would rebuild pf rules needlessly often.
 	onActiveChange func(tunnelName string, active bool)
+
+	// onDied is called after cleanup for a tunnel that was StateConnected
+	// and died on its own — process crash, or supervise's management-socket
+	// read deadline expiring (see management.go) — rather than via a
+	// user-initiated Disconnect. Set via SetOnDied; the helper wires it to
+	// the reconnect monitor so auto-reconnect-enabled tunnels recover.
+	onDied func(name string)
+}
+
+// SetOnDied registers a callback invoked when a connected OpenVPN tunnel
+// dies unexpectedly. Call once during helper startup, before any tunnel
+// connects — not safe to call concurrently with Connect.
+func (m *Manager) SetOnDied(fn func(name string)) {
+	m.onDied = fn
 }
 
 // NewManager constructs an OpenVPN Manager. binaryPath is the absolute path to
@@ -326,7 +356,7 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 	// instead of silently killing the tunnel — a strictly better default
 	// for a GUI-driven client (our own 10-minute per-prompt timeout in
 	// onMgmtAuthPrompt still bounds how long any single retry can hang).
-	cmd := exec.Command(m.binaryPath,
+	args := []string{
 		"--config", cfgPath,
 		"--management", sockPath, "unix",
 		"--management-hold",
@@ -334,7 +364,35 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 		"--script-security", "1",
 		"--setenv", "IV_SSO", "webauth,crtext",
 		"--auth-retry", "interact",
-	)
+	}
+	// --persist-tun keeps the SAME utun interface across ANY internal
+	// restart — our own --ping-restart floor below, a server-pushed
+	// `keepalive`, or a `remote` failover. Unconditional (not just when we
+	// inject the floor): without it, every internal restart tears down and
+	// recreates the utun under a new name/index, silently invalidating the
+	// kill switch's `pass quick on utunN` rule for the old one.
+	args = append(args, "--persist-tun")
+	// Floor for dead-peer detection: without ping/ping-restart (directly, or
+	// via a pushed `keepalive`), a peer that silently drops off the network
+	// (sleep/wake, Wi-Fi roam, a wedged remote) is never noticed by openvpn
+	// itself — the tunnel just sits there forever showing "Connected" while
+	// passing no traffic. Only inject this when the profile doesn't already
+	// set one: --config is args[0], parsed before these later CLI flags, and
+	// OpenVPN applies later occurrences of the same directive last — so
+	// unconditionally adding this would silently override a provider's own
+	// deliberately-tuned value.
+	if !HasKeepaliveDirective(ovpnContent) {
+		args = append(args, "--ping", "10", "--ping-restart", "60")
+	}
+	// Clamp TCP MSS so segments (e.g. RDP screen updates) fit under the
+	// tunnel's path MTU instead of routinely IP-fragmenting — see
+	// HasMTUDirective's doc comment. Client-local and one-sided: no server
+	// agreement needed, unlike --fragment (which must match on both ends
+	// and is deliberately NOT set here for that reason).
+	if !HasMTUDirective(ovpnContent) {
+		args = append(args, "--mssfix", "1300")
+	}
+	cmd := exec.Command(m.binaryPath, args...)
 	cmd.Dir = m.runtimeDir
 	// Stdout is scanned for the negotiated cipher (see scanOutput) and
 	// forwarded through slog at Debug level. Stderr is piped straight to
@@ -404,7 +462,16 @@ func (m *Manager) supervise(name string, e *entry) {
 		func() { /* readLoop done — handled below */ },
 	)
 
-	// Management connection ended → openvpn is shutting down or dead. Reap it.
+	// The read loop returns either because openvpn's management connection
+	// closed cleanly (process already exiting) or because a read deadline
+	// expired — the socket went silent for longer than management.go's
+	// current bound (30s once CONNECTED, more generous before that) while
+	// the process itself never exited (wedged event loop, stuck syscall).
+	// Kill() before Wait()
+	// so the latter case is actually reaped instead of blocking Wait()
+	// forever on a hung-but-alive process; Kill() on an already-exited
+	// process is a harmless, ignored error.
+	_ = e.cmd.Process.Kill()
 	_ = e.cmd.Wait()
 	slog.Info("ovpn: tunnel process exited", "tunnel", name)
 	m.cleanup(name)
@@ -626,11 +693,15 @@ func (m *Manager) onMgmtAuthPrompt(name string, e *entry, sc *AuthChallenge) {
 		}
 	}
 
+	m.mu.Lock()
+	e.awaitingCredentials = true
+	m.mu.Unlock()
 	select {
 	case reply := <-e.authCh:
 		m.mu.Lock()
 		mgmt := e.mgmt
 		e.pendingChallenge = nil
+		e.awaitingCredentials = false
 		lastUsername := e.lastUsername
 		m.mu.Unlock()
 		if mgmt == nil {
@@ -673,13 +744,29 @@ func (m *Manager) onMgmtAuthPrompt(name string, e *entry, sc *AuthChallenge) {
 		// goroutine (and thus readLoop) would stay blocked here for up to
 		// the full 10-minute timeout below even though nothing is left to
 		// wait for, leaving the tunnel showing "connecting" the whole time.
+		m.mu.Lock()
+		e.awaitingCredentials = false
+		m.mu.Unlock()
 		slog.Info("ovpn: tunnel disconnected while awaiting credentials", "tunnel", name)
 		return
 	case <-time.After(10 * time.Minute):
+		m.mu.Lock()
+		e.awaitingCredentials = false
+		m.mu.Unlock()
 		slog.Warn("ovpn: timed out waiting for credentials", "tunnel", name)
 		m.setError(name, "timed out waiting for credentials")
 		m.Disconnect(name)
 	}
+}
+
+// IsAwaitingCredentials reports whether the named tunnel is currently
+// blocked waiting for the user to answer an OpenVPN auth prompt (see
+// onMgmtAuthPrompt). Returns false for an unknown tunnel.
+func (m *Manager) IsAwaitingCredentials(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.tunnels[name]
+	return ok && e.awaitingCredentials
 }
 
 // onMgmtDynamicChallenge is invoked when the server rejects the base
@@ -759,6 +846,10 @@ func (m *Manager) Disconnect(name string) error {
 	if !ok {
 		return fmt.Errorf("openvpn tunnel %q is not active", name)
 	}
+
+	m.mu.Lock()
+	e.userInitiated = true
+	m.mu.Unlock()
 
 	// Unblock onMgmtAuthPrompt if it's currently waiting on user input —
 	// see closeCh's doc comment on entry.
@@ -874,6 +965,7 @@ func (m *Manager) cleanup(name string) {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
 	wasConnected := ok && e.status.State == domain.StateConnected
+	diedUnexpectedly := wasConnected && ok && !e.userInitiated
 	delete(m.tunnels, name)
 	m.mu.Unlock()
 
@@ -903,5 +995,15 @@ func (m *Manager) cleanup(name string) {
 			TunnelName: name,
 			Protocol:   domain.ProtocolOpenVPN,
 		})
+	}
+
+	// Last: onDied can reach a synchronous reconnect (helper.reconnectOVPN
+	// polls up to 90s) that reuses this same tunnel name — the socket/config
+	// files above must already be gone and DNS already restored before that
+	// can happen, or a fast-enough reconnect could collide with cleanup
+	// still in flight for the OLD instance.
+	if diedUnexpectedly && m.onDied != nil {
+		slog.Warn("ovpn: tunnel died unexpectedly", "tunnel", name)
+		m.onDied(name)
 	}
 }

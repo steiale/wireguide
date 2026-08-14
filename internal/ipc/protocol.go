@@ -54,14 +54,16 @@ const (
 	MethodDisconnect       = "Tunnel.Disconnect"
 	MethodStatus           = "Tunnel.Status"
 	MethodIsConnected      = "Tunnel.IsConnected"
-	MethodActiveName    = "Tunnel.ActiveName"
-	MethodActiveTunnels = "Tunnel.ActiveTunnels"
+	MethodActiveName       = "Tunnel.ActiveName"
+	MethodActiveTunnels    = "Tunnel.ActiveTunnels"
 	MethodSetKillSwitch    = "Firewall.SetKillSwitch"
 	MethodSetDNSProtection = "Firewall.SetDNSProtection"
 	MethodSetHealthCheck   = "Monitor.SetHealthCheck"
 	MethodSetPinInterface  = "Network.SetPinInterface"
-	// OpenVPN credential methods (GUI → helper).
-	MethodSaveCredentials = "Ovpn.SaveCredentials"
+	// OpenVPN credential methods (GUI → helper). SaveCredentials/GetSavedCredentials
+	// are handled entirely in the GUI process now (direct Keychain access —
+	// see TunnelService.SaveCredentials' doc comment) — only feeding a
+	// pending auth prompt still needs to reach the helper.
 	MethodFeedCredentials = "Ovpn.FeedCredentials"
 )
 

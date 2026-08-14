@@ -36,6 +36,89 @@ func normalizeDirective(field string) string {
 	return strings.ToLower(strings.TrimPrefix(field, "--"))
 }
 
+// HasKeepaliveDirective reports whether the raw .ovpn content already
+// configures OpenVPN's own dead-peer detection — directly via
+// `ping`/`ping-restart`, or via `keepalive N M` (the shorthand OpenVPN
+// expands to `ping N` + `ping-restart 2*M` itself, and what a server's
+// PUSH_REPLY typically uses). Connect uses this to decide whether to inject
+// a floor of its own: without ANY of these, a dropped peer never notices and
+// the tunnel wedges forever with no self-healing, but a profile that already
+// sets one deliberately (e.g. a longer restart window tuned for a
+// high-latency link) must not be silently overridden.
+func HasKeepaliveDirective(data []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	inInlineBlock := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "<") && strings.HasSuffix(line, ">") {
+			if strings.HasPrefix(line, "</") {
+				inInlineBlock = false
+			} else if strings.ToLower(line) != "<connection>" {
+				inInlineBlock = true
+			}
+			continue
+		}
+		if inInlineBlock {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch normalizeDirective(fields[0]) {
+		case "ping", "ping-restart", "keepalive":
+			return true
+		}
+	}
+	return false
+}
+
+// HasMTUDirective reports whether the raw .ovpn content already tunes
+// fragmentation behaviour via `mssfix`, `fragment`, `tun-mtu`, or `link-mtu`.
+// Connect uses this to decide whether to inject its own `--mssfix` floor —
+// see the CLI args comment there for why. Without any of these, OpenVPN's
+// bundled 2.6 defaults to a 1500 tun-mtu with no MSS clamp, so a
+// full-size inner TCP segment (e.g. an RDP screen update) plus tunnel
+// overhead routinely exceeds the path MTU and gets IP-fragmented — which
+// then depends on middleboxes/firewalls handling fragments correctly to
+// arrive at all (see the kill switch's own fragment-handling fix in
+// internal/firewall/darwin.go for a concrete way that goes wrong locally).
+func HasMTUDirective(data []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	inInlineBlock := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "<") && strings.HasSuffix(line, ">") {
+			if strings.HasPrefix(line, "</") {
+				inInlineBlock = false
+			} else if strings.ToLower(line) != "<connection>" {
+				inInlineBlock = true
+			}
+			continue
+		}
+		if inInlineBlock {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch normalizeDirective(fields[0]) {
+		case "mssfix", "fragment", "tun-mtu", "link-mtu":
+			return true
+		}
+	}
+	return false
+}
+
 // ParseOVPN scans the lines of an .ovpn file for the directives LockPlus
 // needs. It is intentionally lenient: unknown directives are ignored and the
 // raw bytes are what actually gets handed to openvpn.

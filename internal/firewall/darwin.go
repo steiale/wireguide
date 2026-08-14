@@ -163,6 +163,23 @@ func (f *DarwinFirewall) EnableKillSwitch(interfaceName string, _ []string, endp
 	// modifying the main ruleset at all.
 	var rules strings.Builder
 	rules.WriteString("# WireGuide kill switch rules\n")
+
+	// Reassemble IP fragments before any pass/block rule sees them. Without
+	// this, pf.conf(5)'s documented fragment behaviour applies: "fragments
+	// cannot create new or match existing state table entries" and are
+	// filtered on IP header fields alone — so a fragment of an otherwise
+	// allowed VPN packet (large screen updates, file transfers — anything
+	// over the path MTU) can fail to match our port-qualified `pass` rules
+	// and fall through to the `block drop` rules below, in EITHER
+	// direction. That silently and intermittently blackholes exactly the
+	// large/bursty packets a remote-desktop session produces, while small
+	// packets (handshakes, keepalives) keep flowing — the tunnel looks
+	// "connected" the whole time. `fragment reassemble` makes pf hold and
+	// reassemble fragments into a full packet first, so the rules below see
+	// one normal packet instead of un-matchable fragments.
+	rules.WriteString("scrub in all fragment reassemble\n")
+	rules.WriteString("scrub out all fragment reassemble\n")
+
 	rules.WriteString("# Allow loopback\n")
 	rules.WriteString("pass quick on lo0 all\n")
 

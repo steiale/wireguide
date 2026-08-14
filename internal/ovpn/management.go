@@ -138,7 +138,18 @@ func (c *mgmtClient) send(cmd string) error {
 
 // writeLocked writes a single command followed by a newline. Caller must
 // hold mu.
+//
+// A write deadline is set on every call because, without one, a wedged
+// openvpn process that stops draining its management-socket input can fill
+// the socket send buffer and block this Write forever — while holding mu,
+// which then blocks EVERY other caller (signalTerm from Disconnect,
+// holdRelease from readLoop, sendCredentials) indefinitely too. Timing out
+// converts that hang into an error the caller can react to (e.g. Disconnect
+// falling back to Process.Kill()).
 func (c *mgmtClient) writeLocked(cmd string) error {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
 	_, err := c.conn.Write([]byte(cmd + "\n"))
 	return err
 }
@@ -220,7 +231,27 @@ func (c *mgmtClient) readLoop(
 	_ = c.send("state on")
 	_ = c.send("bytecount 1")
 
+	// A read deadline turns a wedged-but-not-exited openvpn (or a stuck
+	// management socket) into a detected failure instead of an indefinite
+	// hang. "bytecount 1" above only guarantees a line every second once
+	// the tunnel has actually reached CONNECTED — before that (TCP
+	// connect, DNS retry, TLS handshake), openvpn can go completely silent
+	// on the management socket for as long as its own --connect-timeout
+	// (120s by default) while a legitimate attempt is still in progress.
+	// So: a generous bound pre-CONNECTED that's comfortably above that
+	// default, tightened to the aggressive 30s bound only once CONNECTED
+	// actually guarantees per-second traffic. Any deadline-exceeded error
+	// falls through to the `return` below, which runs onDone() via the
+	// deferred call at the top of this function — the same path a closed
+	// connection already takes.
+	const preConnectDeadline = 150 * time.Second
+	const connectedDeadline = 30 * time.Second
+	readDeadline := preConnectDeadline
+
 	for {
+		if err := c.conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
+			return
+		}
 		line, err := c.r.ReadString('\n')
 		if err != nil {
 			return
@@ -245,6 +276,18 @@ func (c *mgmtClient) readLoop(
 					remoteAddr = net.JoinHostPort(parts[4], parts[5])
 				}
 				onState(parts[1], localIP, remoteAddr)
+			}
+			// Tighten the read deadline once actually CONNECTED (bytecount
+			// now guarantees per-second traffic), and relax it again for
+			// any other state — RECONNECTING/TCP_CONNECT/WAIT/etc. can all
+			// go quiet for a while during a legitimate in-progress
+			// (re)connect, exactly like the initial connect above.
+			if len(parts) >= 2 {
+				if parts[1] == "CONNECTED" {
+					readDeadline = connectedDeadline
+				} else {
+					readDeadline = preConnectDeadline
+				}
 			}
 
 		case strings.HasPrefix(line, ">BYTECOUNT:"):

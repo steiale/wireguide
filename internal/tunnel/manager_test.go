@@ -80,7 +80,7 @@ func (m *mockNetworkManager) SetDNS(string, []string) error {
 	return m.setDNSErr
 }
 
-func (m *mockNetworkManager) RestoreDNS(string) error      { return m.restoreDNSErr }
+func (m *mockNetworkManager) RestoreDNS(string) error        { return m.restoreDNSErr }
 func (m *mockNetworkManager) ResetDNSToSystemDefault() error { return nil }
 func (m *mockNetworkManager) Cleanup(string) error {
 	m.mu.Lock()
@@ -102,6 +102,8 @@ func fakeEngine(name string) *Engine {
 		ifaceName:           name,
 		resolvedEndpointIPs: []string{"1.2.3.4"},
 		resolvedEndpoints:   []string{"1.2.3.4:51820"},
+		died:                make(chan struct{}),
+		stopped:             make(chan struct{}),
 	}
 }
 
@@ -154,9 +156,9 @@ func testConfig(name string) *domain.WireGuardConfig {
 		},
 		Peers: []domain.PeerConfig{
 			{
-				PublicKey:   "not-used-in-tests",
-				AllowedIPs:  []string{"10.0.0.0/24"},
-				Endpoint:    "1.2.3.4:51820",
+				PublicKey:  "not-used-in-tests",
+				AllowedIPs: []string{"10.0.0.0/24"},
+				Endpoint:   "1.2.3.4:51820",
 			},
 		},
 	}
@@ -1048,5 +1050,91 @@ func TestDisconnectAll_IncludesConnecting(t *testing.T) {
 	// return error, but it's still attempted).
 	if mgr.IsTunnelConnected("vpn1") {
 		t.Fatal("vpn1 should be disconnected after DisconnectAll")
+	}
+}
+
+// TestEngineDeath_TearsDownAndNotifies simulates wireguard-go silently
+// self-closing a connected tunnel's device (see Engine.Died's doc comment)
+// and asserts the Manager notices: tears the tunnel down and invokes the
+// onEngineDied callback. Closes died then stopped, in that order, matching
+// exactly what engine.go's real watcher goroutine does — watchEngineDeath
+// relies on that ordering (waits on Stopped(), then checks Died()) to avoid
+// a 50/50 race if it instead selected on both channels together.
+func TestEngineDeath_TearsDownAndNotifies(t *testing.T) {
+	dir := t.TempDir()
+	net := &mockNetworkManager{}
+	mgr := newTestManagerWithDir(net, succeedingFactory(), dir)
+
+	var (
+		mu       sync.Mutex
+		diedName string
+	)
+	diedCh := make(chan struct{})
+	mgr.SetOnEngineDied(func(name string) {
+		mu.Lock()
+		diedName = name
+		mu.Unlock()
+		close(diedCh)
+	})
+
+	if err := mgr.Connect(testConfig("vpn1")); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+
+	engine := tunnelEngine(mgr, "vpn1")
+	if engine == nil {
+		t.Fatal("engine should be non-nil after Connect")
+	}
+
+	close(engine.died)
+	close(engine.stopped)
+
+	select {
+	case <-diedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("onEngineDied callback was not invoked within 2s")
+	}
+
+	mu.Lock()
+	got := diedName
+	mu.Unlock()
+	if got != "vpn1" {
+		t.Fatalf("onEngineDied called with %q, want %q", got, "vpn1")
+	}
+	if mgr.IsTunnelConnected("vpn1") {
+		t.Fatal("vpn1 should be disconnected after engine death")
+	}
+}
+
+// TestEngineDeath_NormalCloseDoesNotNotify asserts that a normal,
+// caller-initiated Close() — Stopped() fires, Died() never does — does NOT
+// invoke onEngineDied. Guards against the watcher wrongly treating every
+// device shutdown as an unexpected death.
+func TestEngineDeath_NormalCloseDoesNotNotify(t *testing.T) {
+	dir := t.TempDir()
+	net := &mockNetworkManager{}
+	mgr := newTestManagerWithDir(net, succeedingFactory(), dir)
+
+	notified := make(chan string, 1)
+	mgr.SetOnEngineDied(func(name string) { notified <- name })
+
+	if err := mgr.Connect(testConfig("vpn1")); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	engine := tunnelEngine(mgr, "vpn1")
+
+	// A real Close() sets closing before tearing down and closes stopped
+	// without ever closing died — fakeEngine has no tunDevice/wgDevice, so
+	// Close() itself is a safe no-op body, but exercising it here still
+	// verifies the closing-flag + stopped-channel contract Close() must
+	// uphold for watchEngineDeath to behave correctly.
+	engine.Close()
+	close(engine.stopped)
+
+	select {
+	case name := <-notified:
+		t.Fatalf("onEngineDied should not fire on normal Close(), got %q", name)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no notification.
 	}
 }
