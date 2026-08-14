@@ -21,7 +21,9 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,8 +36,9 @@ func main() {
 	keyEnv := flag.String("key-env", "", "environment variable holding the base64-encoded Ed25519 private key")
 	gen := flag.Bool("gen", false, "generate a fresh Ed25519 keypair and print both keys (base64)")
 	out := flag.String("o", "", "output path for the signature (default: <input>.sig)")
+	version := flag.String("version", "", "release version (without leading 'v') to bind into the signature — REQUIRED for release signing; see checker.go's signedMessage for why")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: sign [--key path | --key-env NAME] <file>\n       sign --gen\n\n")
+		fmt.Fprintf(os.Stderr, "usage: sign --version X.Y.Z [--key path | --key-env NAME] <file>\n       sign --gen\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -54,6 +57,10 @@ func main() {
 		os.Exit(2)
 	}
 	target := args[0]
+	if *version == "" {
+		fmt.Fprintln(os.Stderr, "error: --version is required — a signature not bound to a version lets an attacker who can publish a new release replay an old, still-validly-signed asset as a fake \"upgrade\" (see checker.go's signedMessage)")
+		os.Exit(2)
+	}
 
 	priv, err := loadPrivateKey(*keyPath, *keyEnv)
 	if err != nil {
@@ -67,7 +74,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	sig := ed25519.Sign(priv, data)
+	// Sign "<version>\n<sha256-hex-of-file>" rather than the raw file bytes.
+	// Must match internal/update/checker.go's signedMessage exactly.
+	sum := sha256.Sum256(data)
+	message := []byte(*version + "\n" + hex.EncodeToString(sum[:]))
+	sig := ed25519.Sign(priv, message)
 
 	outPath := *out
 	if outPath == "" {

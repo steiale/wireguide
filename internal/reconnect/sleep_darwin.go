@@ -113,7 +113,8 @@ func NewSleepDetector() SleepDetector {
 func (d *darwinSleepDetector) Start() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.stopCh = make(chan struct{})
+	stopCh := make(chan struct{})
+	d.stopCh = stopCh
 
 	d.handle = registerDetector(d)
 	// Cast the numeric handle to unsafe.Pointer — it is an opaque integer
@@ -125,7 +126,12 @@ func (d *darwinSleepDetector) Start() {
 		slog.Warn("IOKit power watcher failed to start; relying on poll fallback")
 	}
 
-	go d.poll()
+	// Pass stopCh by value rather than having poll() read d.stopCh on every
+	// tick — a later Start() call reassigns d.stopCh under d.mu while
+	// poll()'s loop reads it unsynchronized, a data race that (beyond being
+	// undefined behavior) can leave a stale poll() goroutine waiting on a
+	// channel nothing will ever close again, leaking it forever.
+	go d.poll(stopCh)
 }
 
 func (d *darwinSleepDetector) Stop() {
@@ -157,7 +163,7 @@ func (d *darwinSleepDetector) sendWake() {
 	}
 }
 
-func (d *darwinSleepDetector) poll() {
+func (d *darwinSleepDetector) poll(stopCh chan struct{}) {
 	lastCheck := time.Now()
 	const pollInterval = 10 * time.Second
 	const sleepThreshold = 30 * time.Second
@@ -167,7 +173,7 @@ func (d *darwinSleepDetector) poll() {
 
 	for {
 		select {
-		case <-d.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			now := time.Now()

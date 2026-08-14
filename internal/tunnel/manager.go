@@ -150,30 +150,45 @@ func (m *Manager) Connect(cfg *domain.WireGuardConfig) error {
 
 	// --- Phase 3: commit final state under the lock ---
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	entry = m.getOrCreateEntry(name) // re-fetch under lock
 	if err != nil {
 		// Phases failed — roll back to disconnected. connectPhases has
 		// already cleaned up its partial network state via its internal
 		// rollback helper.
 		m.removeEntry(name)
+		m.mu.Unlock()
 		return err
 	}
 	// Re-validate state: a Disconnect may have landed while we were outside
 	// the lock. If so, discard the engine we just created.
+	//
+	// In practice DisconnectTunnel POLLS until a tunnel leaves
+	// StateConnecting before touching it (it never mutates a connecting
+	// entry directly) and Connect calls are already serialized upstream
+	// (helper.connectMu), so this branch should be unreachable today — but
+	// it's cheap to check and kept as a safety net against a future change
+	// to either of those invariants. It does NOT hold m.mu across the slow
+	// network cleanup calls below (a previous version did, via this
+	// function's now-removed top-level `defer m.mu.Unlock()`) — doing so
+	// would block every other Status()/IsConnected() caller for as long as
+	// RemoveRoutes/RestoreDNS/Cleanup's networksetup/route fan-out takes.
 	if entry.state != domain.StateConnecting {
-		// A Disconnect landed while we were outside the lock.
-		// Clean up the network state that connectPhases just installed.
+		m.mu.Unlock()
+		// Clean up the network state that connectPhases just installed —
+		// outside the lock, see comment above.
 		netMgr.RemoveRoutes(engine.InterfaceName(), nil, cfg.IsFullTunnel())
 		netMgr.RestoreDNS(engine.InterfaceName())
 		netMgr.Cleanup(engine.InterfaceName())
 		engine.Close()
+		m.mu.Lock()
 		m.removeEntry(name)
+		m.mu.Unlock()
 		return newTunnelError(ErrStateCorrupt, "connect aborted: state changed during setup", nil)
 	}
 	entry.engine = engine
 	entry.connectedAt = time.Now()
 	entry.state = domain.StateConnected
+	m.mu.Unlock()
 	return nil
 }
 

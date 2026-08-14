@@ -48,7 +48,9 @@ func installMacAutostart(appPath string) error {
 		return fmt.Errorf("cannot determine home directory: %w", err)
 	}
 	plistDir := filepath.Join(home, "Library", "LaunchAgents")
-	os.MkdirAll(plistDir, 0755)
+	if err := os.MkdirAll(plistDir, 0755); err != nil {
+		return fmt.Errorf("creating LaunchAgents dir: %w", err)
+	}
 
 	// XML-escape appPath to prevent plist injection from special characters.
 	var b strings.Builder
@@ -79,7 +81,13 @@ func removeMacAutostart() error {
 	if err != nil {
 		return fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return os.Remove(filepath.Join(home, "Library", "LaunchAgents", "io.github.steiale.lockplus.gui.plist"))
+	// Tolerate "never installed" — matches removeWindowsAutostart's
+	// tolerance of "not found", so uninstalling an autostart entry that
+	// was never enabled isn't itself an error.
+	if err := os.Remove(filepath.Join(home, "Library", "LaunchAgents", "io.github.steiale.lockplus.gui.plist")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // --- Linux: XDG autostart ---
@@ -94,7 +102,9 @@ func installLinuxAutostart(appPath string) error {
 		configHome = filepath.Join(home, ".config")
 	}
 	autostartDir := filepath.Join(configHome, "autostart")
-	os.MkdirAll(autostartDir, 0755)
+	if err := os.MkdirAll(autostartDir, 0755); err != nil {
+		return fmt.Errorf("creating autostart dir: %w", err)
+	}
 
 	// Quote the Exec path per Desktop Entry Spec to handle spaces/special chars.
 	quotedPath := `"` + strings.ReplaceAll(appPath, `"`, `\"`) + `"`
@@ -114,10 +124,21 @@ X-GNOME-Autostart-enabled=true
 func removeLinuxAutostart() error {
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
-		home, _ := os.UserHomeDir()
+		// Checked, unlike a previous version of this function — an ignored
+		// error here left home empty, silently turning configHome into the
+		// relative path ".config" instead of an absolute one and failing
+		// to find the real file to remove.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("cannot determine home directory: %w", err)
+		}
 		configHome = filepath.Join(home, ".config")
 	}
-	return os.Remove(filepath.Join(configHome, "autostart", "lockplus.desktop"))
+	// Tolerate "never installed", matching removeMacAutostart/removeWindowsAutostart.
+	if err := os.Remove(filepath.Join(configHome, "autostart", "lockplus.desktop")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // --- Windows: Registry Run key ---

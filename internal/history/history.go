@@ -95,7 +95,6 @@ func (s *Store) RecordDisconnect(id string, rx, tx int64, reason string) {
 				changed = true
 				break
 			}
-			sessions[i].EndTime = &end
 			sessions[i].DurationSec = dur
 			sessions[i].RxBytes = rx
 			sessions[i].TxBytes = tx

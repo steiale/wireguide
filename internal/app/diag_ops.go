@@ -38,22 +38,9 @@ func (s *TunnelService) RunDNSLeakTest() (*DNSLeakResult, error) {
 	// Best-effort: find the active tunnel's DNS config to know which resolvers
 	// are expected to be in use. Ignore IPC errors — an empty expected set is
 	// still a valid (conservative) test.
-	//
-	// WireGuard's expected DNS is a static client-side directive, readable
-	// from the parsed .conf before ever connecting. OpenVPN has no such
-	// directive — DNS is pushed by the server at connect time — so
-	// tunnelStore.Load (a WireGuard-only .conf parser) always errored for an
-	// .ovpn tunnel, silently leaving expectedDNS empty and making every
-	// detected resolver look like a leak. status.DNSServers (populated from
-	// the server's actual PUSH_REPLY once connected — see
-	// ovpn/manager.go's applyPushedDNS) is the only place this is knowable.
 	var expectedDNS []string
-	if status, err := s.GetStatus(); err == nil && status != nil && status.TunnelName != "" {
-		if s.tunnelStore.IsOVPN(status.TunnelName) {
-			expectedDNS = status.DNSServers
-		} else if cfg, err := s.tunnelStore.Load(status.TunnelName); err == nil && cfg != nil {
-			expectedDNS = cfg.Interface.DNS
-		}
+	if status, err := s.GetStatus(); err == nil && status != nil {
+		expectedDNS = s.expectedDNSFor(status.TunnelName)
 	}
 
 	r := diag.RunDNSLeakTest(expectedDNS)

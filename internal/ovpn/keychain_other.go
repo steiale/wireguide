@@ -1,9 +1,21 @@
+//go:build !darwin
+
+// Non-darwin fallback: shells out to the macOS `security` CLI, which
+// doesn't exist on these platforms, so every call here will fail at
+// runtime. Kept only so the ovpn package still compiles cross-platform
+// (network/firewall/elevate all have real per-platform implementations;
+// this one never had a functional non-macOS backend to begin with — OpenVPN
+// credential storage on Linux/Windows would need its own native
+// implementation, e.g. libsecret or DPAPI, which is out of scope here).
+// See keychain_darwin.go for the real (native Security.framework) macOS
+// implementation.
 package ovpn
 
 import (
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -12,6 +24,13 @@ import (
 // keychainService is the generic-password service name under which all OpenVPN
 // credentials are stored. Each tunnel is a separate account within this service.
 const keychainService = "io.github.steiale.lockplus.ovpn"
+
+// ErrCredentialsNotFound distinguishes "nothing stored for this tunnel"
+// (expected, not an error worth surfacing) from a genuine Keychain failure
+// (permission denied, locked/corrupted keychain, `security` missing) —
+// callers previously couldn't tell these apart and treated every failure as
+// "no saved creds", masking real problems as an empty-fields state.
+var ErrCredentialsNotFound = errors.New("no credentials stored for this tunnel")
 
 // Credentials holds an OpenVPN username and the *base* password (the static
 // part the user typed once). For TOTP servers the actual password sent to the
@@ -28,6 +47,21 @@ type Credentials struct {
 // separator), which broke the earlier format. The new format is:
 //
 //	"b64:" + base64(username + "\n" + basePassword)
+//
+// KNOWN LIMITATION: the secret is passed as a `security` CLI argument, which
+// is visible (briefly, for the life of this subprocess) to other processes
+// on the same machine via `ps`/`/proc`. `security`'s own `--help` suggests
+// passing `-w` as the last flag with no value to get an interactive
+// getpass()-style prompt instead — verified empirically that this does NOT
+// work here: getpass() reads directly from /dev/tty, bypassing stdin
+// redirection entirely, and this code runs inside a root LaunchDaemon with
+// no controlling terminal, so the prompt would block forever waiting for
+// input that can never arrive. Properly avoiding argv exposure (and
+// getting proper kSecAttrAccessibleWhenUnlockedThisDeviceOnly-style ACL
+// hardening — also not exposed by the `security` CLI) requires calling the
+// Security framework's SecItemAdd/SecItemCopyMatching directly via CGo
+// instead of shelling out — a larger rewrite intentionally left for a
+// dedicated follow-up rather than a rushed change here.
 func StoreCredentials(tunnelName, username, basePassword string) error {
 	secret := "b64:" + base64.StdEncoding.EncodeToString([]byte(username+"\n"+basePassword))
 	cmd := exec.Command("security", "add-generic-password",
@@ -63,6 +97,9 @@ func LoadCredentials(tunnelName string) (*Credentials, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if strings.Contains(stderr.String(), "could not be found") {
+			return nil, ErrCredentialsNotFound
+		}
 		return nil, fmt.Errorf("loading ovpn credentials for %q: %w (%s)", tunnelName, err, strings.TrimSpace(stderr.String()))
 	}
 	// `security -w` appends a trailing newline; strip exactly one.

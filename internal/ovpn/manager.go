@@ -17,6 +17,7 @@ import (
 
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/network"
+	"github.com/steiale/wireguide/internal/storage"
 )
 
 // cipherLogRe matches OpenVPN's own startup log line announcing the
@@ -242,6 +243,14 @@ func (m *Manager) logPath(name string) string    { return filepath.Join(m.runtim
 // the actual CONNECTED transition (and any auth prompt) happens asynchronously
 // and is reported via onStatus / onAuthNeeded.
 func (m *Manager) Connect(name string, ovpnContent []byte) error {
+	// name is interpolated directly into configPath/sockPath/logPath below
+	// with no further sanitization — reject anything unsafe for filesystem
+	// use here too, not just at the IPC handler layer, so this manager is
+	// safe to call directly (e.g. from cmd/test) without relying on every
+	// caller to have already validated the name.
+	if err := storage.ValidateTunnelName(name); err != nil {
+		return fmt.Errorf("invalid tunnel name: %w", err)
+	}
 	m.mu.Lock()
 	if _, ok := m.tunnels[name]; ok {
 		m.mu.Unlock()
@@ -327,10 +336,10 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 		"--auth-retry", "interact",
 	)
 	cmd.Dir = m.runtimeDir
-	// Stdout is scanned for the negotiated cipher (see scanOutput) and then
-	// echoed to the helper's stderr so the full log still ends up in
-	// /var/log/lockplus-helper.log alongside the Go logs. Stderr is piped
-	// there directly since openvpn's own diagnostics go through stdout.
+	// Stdout is scanned for the negotiated cipher (see scanOutput) and
+	// forwarded through slog at Debug level. Stderr is piped straight to
+	// os.Stderr since openvpn's own diagnostics go through stdout — stderr
+	// only ever carries the rare fatal-before-fork message.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("attaching openvpn stdout: %w", err)
@@ -401,8 +410,11 @@ func (m *Manager) supervise(name string, e *entry) {
 	m.cleanup(name)
 }
 
-// scanOutput reads openvpn's stdout line by line, forwarding everything to
-// the helper's stderr log (preserving the previous direct-pipe behaviour)
+// scanOutput reads openvpn's stdout line by line, routing everything through
+// slog at Debug level (so it only reaches disk/the log viewer when the user
+// has actually turned on debug logging — the imported .ovpn profile's own
+// `verb` setting is honored verbatim, and at higher verbosities OpenVPN logs
+// per-packet diagnostics that scale with traffic, not a fixed interval)
 // while also watching for the "Data Channel: cipher '...'" line that reveals
 // the negotiated cipher, and the PUSH_REPLY line that carries server-pushed
 // DNS — information the management interface itself never exposes.
@@ -410,7 +422,7 @@ func (m *Manager) scanOutput(name string, r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		fmt.Fprintln(os.Stderr, line)
+		slog.Debug("ovpn: "+line, "tunnel", name)
 		if match := cipherLogRe.FindStringSubmatch(line); match != nil {
 			m.setCipher(name, match[1])
 		}
@@ -643,7 +655,11 @@ func (m *Manager) onMgmtAuthPrompt(name string, e *entry, sc *AuthChallenge) {
 			m.mu.Unlock()
 		}
 
-		slog.Info("ovpn: sending credentials to management socket", "tunnel", name, "username", username, "challenge_kind", challengeKindOf(challenge))
+		// Username at Debug, not Info — it's credential-adjacent PII that
+		// would otherwise land in the default-level log stream (and
+		// Console.app, since the helper's log level defaults to Info) on
+		// every single auth attempt. The password is correctly never logged.
+		slog.Debug("ovpn: sending credentials to management socket", "tunnel", name, "username", username, "challenge_kind", challengeKindOf(challenge))
 		if err := mgmt.sendCredentials(username, password); err != nil {
 			slog.Error("ovpn: sending credentials failed", "tunnel", name, "error", err)
 			m.setError(name, fmt.Sprintf("sending credentials failed: %v", err))

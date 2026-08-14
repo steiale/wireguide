@@ -17,6 +17,15 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+// expectedDaemonBinary is the path the privileged helper should be running
+// from. Used to detect a stale daemon left over from before a binary path
+// change (see the version-agnostic structural check this backs, per the
+// project's "identity, not just version" hardening). Declared once here
+// rather than as a local const in each check — two independent local
+// copies previously existed and could silently drift apart if only one
+// were updated.
+const expectedDaemonBinary = "/Library/PrivilegedHelperTools/io.github.steiale.lockplus.helper"
+
 // ensureHelper connects to an existing helper (via socket) or spawns a new
 // one with privilege elevation. Polls for readiness until the context expires.
 func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
@@ -56,7 +65,6 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 			// passes, leaving the old NSWorkspace-based reconnect code path
 			// running as root LaunchDaemon (which the v1.0.23 IOKit rewrite
 			// was specifically meant to replace).
-			const expectedDaemonBinary = "/Library/PrivilegedHelperTools/io.github.steiale.lockplus.helper"
 			binaryMismatch := resp.BinaryPath != "" && resp.BinaryPath != expectedDaemonBinary
 			if helperAppVersion == guiVersion && !binaryMismatch {
 				slog.Info("connected to existing helper",
@@ -138,7 +146,6 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 			}
 			// Also verify the running daemon is the standalone helper binary,
 			// not the leftover combined GUI binary from a stale install.
-			const expectedDaemonBinary = "/Library/PrivilegedHelperTools/io.github.steiale.lockplus.helper"
 			if forceReinstall && resp.BinaryPath != "" && resp.BinaryPath != expectedDaemonBinary {
 				slog.Debug("polling: still old helper binary path", "got", resp.BinaryPath)
 				client.Close()

@@ -343,23 +343,76 @@ func keyToHex(b64Key string) (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
+// dataPathErrorSubstrings match wireguard-go Errorf messages that fire from
+// the per-packet-batch send/receive workers (send.go/receive.go) rather than
+// the control plane. Under sustained high packet rates — e.g. a remote
+// desktop session over the tunnel — a transient socket condition like
+// ENOBUFS can trip these hundreds of times per second. Each call serializes
+// on the shared slog handler's mutex and its synchronous log-file write, so
+// left unthrottled they stall the very goroutines moving packets. Every
+// other Errorf (peer rejection, bad packet format, rekey failure) stays
+// immediate — those are rare and are exactly what a user needs to see.
+var dataPathErrorSubstrings = []string{
+	"Failed to send data packets",
+	"Failed to read packet from TUN device",
+	"Failed to write packets to TUN device",
+}
+
+const errorThrottleWindow = 5 * time.Second
+
+// errorThrottle allows one log line per distinct message per window, and
+// folds any suppressed repeats into the next line that gets through.
+type errorThrottle struct {
+	mu       sync.Mutex
+	lastSeen map[string]time.Time
+	dropped  map[string]int
+}
+
+func (t *errorThrottle) allow(key string) (ok bool, suppressed int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	if last, seen := t.lastSeen[key]; seen && now.Sub(last) < errorThrottleWindow {
+		t.dropped[key]++
+		return false, 0
+	}
+	suppressed = t.dropped[key]
+	t.dropped[key] = 0
+	t.lastSeen[key] = now
+	return true, suppressed
+}
 
 // newWireguardSlogLogger builds a wireguard-go logger that routes Errorf to
 // our structured log stream at Warn level, and DISCARDS Verbosef. The latter
 // is called by wireguard-go on per-packet events (key rotations, idle
 // detection, keepalive ticks) and would easily produce hundreds of log
 // lines per second on a busy tunnel — enough to bury every other log the
-// user might care about. We keep Errorf loud because that's where peer
-// rejections, bad packet formats, and rekey failures surface, which ARE
-// the things a user needs to see when debugging a broken tunnel.
+// user might care about.
 func newWireguardSlogLogger(ifaceName string) *device.Logger {
 	prefix := "[wg:" + ifaceName + "] "
+	throttle := &errorThrottle{lastSeen: map[string]time.Time{}, dropped: map[string]int{}}
 	return &device.Logger{
 		Verbosef: func(format string, args ...any) {
 			// intentional no-op — see function comment
 		},
 		Errorf: func(format string, args ...any) {
-			slog.Warn(prefix + fmt.Sprintf(format, args...))
+			msg := fmt.Sprintf(format, args...)
+			for _, substr := range dataPathErrorSubstrings {
+				if !strings.Contains(msg, substr) {
+					continue
+				}
+				ok, suppressed := throttle.allow(substr)
+				if !ok {
+					return
+				}
+				if suppressed > 0 {
+					slog.Warn(fmt.Sprintf("%s%s (suppressed %d similar in last %s)", prefix, msg, suppressed, errorThrottleWindow))
+				} else {
+					slog.Warn(prefix + msg)
+				}
+				return
+			}
+			slog.Warn(prefix + msg)
 		},
 	}
 }

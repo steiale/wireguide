@@ -170,6 +170,18 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 // Subscribe opens a second connection and subscribes to events.
 // The handler is called for each event notification received.
 func (c *Client) Subscribe(handler EventHandler) error {
+	// Close any previous event connection first — calling Subscribe again
+	// on the same Client (e.g. a resubscribe retry after a transient
+	// failure) previously just overwrote c.eventConn, leaking the old
+	// socket and its still-running eventLoop goroutine indefinitely.
+	c.eventMu.Lock()
+	staleConn := c.eventConn
+	c.eventConn = nil
+	c.eventMu.Unlock()
+	if staleConn != nil {
+		staleConn.Close()
+	}
+
 	conn, err := Dial(c.addr)
 	if err != nil {
 		return fmt.Errorf("dial event conn: %w", err)

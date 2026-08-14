@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/makiuchi-d/gozxing"
+	"github.com/makiuchi-d/gozxing/qrcode"
 	"github.com/steiale/wireguide/internal/config"
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/ovpn"
 	"github.com/steiale/wireguide/internal/storage"
-	"github.com/makiuchi-d/gozxing"
-	"github.com/makiuchi-d/gozxing/qrcode"
 )
 
 // ZipImportResult holds the outcome of importing one .conf entry from a zip.
@@ -100,10 +100,20 @@ func (s *TunnelService) importZipReader(r *zip.Reader) ([]ZipImportResult, error
 			results = append(results, ZipImportResult{Name: filepath.Base(f.Name), Error: err.Error()})
 			continue
 		}
-		data, err := io.ReadAll(rc)
+		// Cap each entry's DECOMPRESSED size, same bound as ReadFile — a
+		// .conf/.ovpn is always a few KB, so a crafted entry with a high
+		// compression ratio (zip bomb) reading far beyond this is not a
+		// real config. Reading one extra byte past the limit lets us
+		// distinguish "legitimately hit the cap" from "exactly at it".
+		limited := io.LimitReader(rc, maxReadFileSize+1)
+		data, err := io.ReadAll(limited)
 		rc.Close()
 		if err != nil {
 			results = append(results, ZipImportResult{Name: filepath.Base(f.Name), Error: err.Error()})
+			continue
+		}
+		if len(data) > maxReadFileSize {
+			results = append(results, ZipImportResult{Name: filepath.Base(f.Name), Error: fmt.Sprintf("entry too large (max %d bytes)", maxReadFileSize)})
 			continue
 		}
 		name := s.zipUniqueName(baseName)
@@ -300,10 +310,30 @@ func (s *TunnelService) ImportQRFromPath(path, name string) error {
 	return s.ImportQRFromBytes(data, name)
 }
 
+// maxQRImageBytes bounds the raw input to ImportQRFromBytes. A legitimate
+// QR code screenshot or phone photo is a few MB at most.
+const maxQRImageBytes = 20 << 20
+
+// maxQRImagePixels bounds decoded image area, checked via image.DecodeConfig
+// (header-only, cheap) BEFORE the full pixel decode. Without this, a small
+// file with a crafted header declaring an enormous width/height can make
+// the decoder allocate memory proportional to the DECLARED dimensions, not
+// the input file size — a decompression-bomb-style DoS. 8000x8000 is far
+// beyond any real QR photo.
+const maxQRImagePixels = 8000 * 8000
+
 // ImportQRFromBytes decodes a QR code from raw image bytes and imports the
 // WireGuard config under the given name. Used by the file-picker path where
 // the browser API provides bytes rather than a filesystem path.
 func (s *TunnelService) ImportQRFromBytes(data []byte, name string) error {
+	if len(data) > maxQRImageBytes {
+		return fmt.Errorf("image too large (%d bytes, max %d)", len(data), maxQRImageBytes)
+	}
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+		if pixels := int64(cfg.Width) * int64(cfg.Height); pixels > maxQRImagePixels {
+			return fmt.Errorf("image dimensions too large (%dx%d)", cfg.Width, cfg.Height)
+		}
+	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("cannot decode image: %w", err)
@@ -333,9 +363,9 @@ func (s *TunnelService) ExportTunnel(name string) (string, error) {
 	isOvpn := s.tunnelStore.IsOVPN(name)
 	dlg := s.app.Dialog.SaveFile()
 	if isOvpn {
-		dlg = dlg.SetFilename(name + ".ovpn").AddFilter("OpenVPN Config", "*.ovpn")
+		dlg = dlg.SetFilename(name+".ovpn").AddFilter("OpenVPN Config", "*.ovpn")
 	} else {
-		dlg = dlg.SetFilename(name + ".conf").AddFilter("WireGuard Config", "*.conf")
+		dlg = dlg.SetFilename(name+".conf").AddFilter("WireGuard Config", "*.conf")
 	}
 	path, err := dlg.PromptForSingleSelection()
 	if err != nil {

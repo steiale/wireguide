@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,7 +29,7 @@ const (
 	// bundle's Info.plist cannot be read (e.g. unit tests, non-darwin
 	// builds, or running the bare binary without an enclosing .app).
 	// Keep this in sync with build/darwin/Info.plist on each release.
-	fallbackVersion = "1.0.64"
+	fallbackVersion = "1.0.65"
 
 	// minAssetSize is the minimum acceptable size for a release asset.
 	// A macOS .dmg/.zip containing WireGuide.app is always well over 1 MB;
@@ -165,6 +166,26 @@ type UpdateInfo struct {
 	SignatureVerified bool   `json:"signature_verified"`      // set to true after successful Ed25519 verification
 }
 
+// isTrustedAssetURL rejects anything that isn't HTTPS to a GitHub-operated
+// host. The GitHub API response is otherwise trusted verbatim for these
+// URLs — defense in depth in case that response is ever attacker-influenced
+// (a compromised API response, a misbehaving proxy) independent of the
+// Ed25519 signature check that's the actual authenticity guarantee for the
+// asset content itself. github.com serves the release page/redirect;
+// release assets are actually downloaded from GitHub's object storage CDN.
+func isTrustedAssetURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "github.com" || strings.HasSuffix(host, ".github.com") ||
+		strings.HasSuffix(host, ".githubusercontent.com")
+}
+
 // CheckForUpdate queries GitHub Releases API for newer version.
 func CheckForUpdate() (*UpdateInfo, error) {
 	cur := CurrentVersion()
@@ -205,6 +226,10 @@ func CheckForUpdate() (*UpdateInfo, error) {
 	signatureURL := ""
 	wantSigName := strings.ToLower(assetName + ".sig")
 	for _, a := range release.Assets {
+		if !isTrustedAssetURL(a.BrowserDownloadURL) {
+			slog.Warn("ignoring release asset with untrusted download URL", "asset", a.Name, "url", a.BrowserDownloadURL)
+			continue
+		}
 		if a.Name == assetName {
 			downloadURL = a.BrowserDownloadURL
 			assetSize = a.Size
@@ -218,6 +243,9 @@ func CheckForUpdate() (*UpdateInfo, error) {
 		if lower == wantSigName {
 			signatureURL = a.BrowserDownloadURL
 		}
+	}
+	if downloadURL == "" {
+		return nil, fmt.Errorf("no trustworthy download URL found for asset %s", assetName)
 	}
 
 	// Reject assets with a zero or suspiciously small size reported by the
@@ -339,7 +367,10 @@ func DownloadUpdate(info *UpdateInfo) (string, error) {
 
 	// Ed25519 signature verification. The signing key is kept offline, so a
 	// compromised GitHub release alone cannot forge a valid signature.
-	if err := verifySignature(destPath, info, client); err != nil {
+	// Reuses the hash computed during download instead of re-reading the
+	// whole (potentially ~100MB) file into memory a second time.
+	assetHashHex := hex.EncodeToString(hasher.Sum(nil))
+	if err := verifySignature(assetHashHex, info, client); err != nil {
 		os.Remove(destPath)
 		return "", err
 	}
@@ -352,7 +383,24 @@ func DownloadUpdate(info *UpdateInfo) (string, error) {
 // false, missing signatures (e.g. on legacy releases) only log a warning so
 // the update can still proceed; signatures that ARE present must always
 // verify successfully.
-func verifySignature(filePath string, info *UpdateInfo, client *http.Client) error {
+// signedMessage builds the exact byte sequence the release signing key signs
+// — see cmd/sign's --version flag. Binding the asset's version into the
+// signed message (not just its hash) closes a rollback/downgrade attack: an
+// Ed25519 signature over raw file bytes alone authenticates "this exact
+// file was signed by us" but says nothing about WHICH release it belongs
+// to, so an attacker who could publish a new GitHub release (e.g. a stolen
+// token) could tag it with a high version number and attach an OLD,
+// genuinely-signed-by-us-but-since-patched asset + its real old .sig — the
+// signature would verify, and the client would "upgrade" into a known
+// vulnerable build. Requiring the signed message to name the specific
+// version being installed means replaying an old (version, hash) pair
+// under a new tag fails verification, since the embedded version won't
+// match what the client believes it's installing.
+func signedMessage(version, assetHashHex string) []byte {
+	return []byte(version + "\n" + assetHashHex)
+}
+
+func verifySignature(assetHashHex string, info *UpdateInfo, client *http.Client) error {
 	pub, err := loadEmbeddedPublicKey()
 	if err != nil {
 		// A broken embedded key is a programmer error; refuse to install.
@@ -381,13 +429,8 @@ func verifySignature(filePath string, info *UpdateInfo, client *http.Client) err
 		return fmt.Errorf("Ed25519 signature has wrong size: got %d bytes, want %d", len(sig), ed25519.SignatureSize)
 	}
 
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("re-reading downloaded asset for signature check: %w", err)
-	}
-
-	if !ed25519.Verify(pub, data, sig) {
-		return fmt.Errorf("Ed25519 signature verification FAILED for %s — possible tampering", info.AssetName)
+	if !ed25519.Verify(pub, signedMessage(info.Version, assetHashHex), sig) {
+		return fmt.Errorf("Ed25519 signature verification FAILED for %s — possible tampering or a rollback attempt", info.AssetName)
 	}
 	info.SignatureVerified = true
 	slog.Info("Ed25519 signature verified", "asset", info.AssetName, "version", info.Version)

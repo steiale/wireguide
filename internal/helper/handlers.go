@@ -12,6 +12,7 @@ import (
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/ovpn"
+	"github.com/steiale/wireguide/internal/storage"
 	"github.com/steiale/wireguide/internal/tunnel"
 	"github.com/steiale/wireguide/internal/update"
 )
@@ -95,6 +96,15 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	if req.Config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
+	// The tunnel name flows straight into filesystem paths (state files,
+	// UAPI socket lookups) — reject anything ValidateTunnelName wouldn't
+	// accept as a saved tunnel's name, same as the storage layer requires
+	// on save/rename. This helper runs as root and must not trust the
+	// caller's name to already be safe (see the equivalent check on the
+	// OpenVPN path in connectOpenVPN, added for the same reason).
+	if err := storage.ValidateTunnelName(req.Config.Name); err != nil {
+		return nil, fmt.Errorf("invalid tunnel name: %w", err)
+	}
 	// Re-validate config server-side (don't trust client).
 	if result := config.Validate(req.Config); !result.IsValid() {
 		return nil, fmt.Errorf("invalid config: %s", strings.Join(result.ErrorMessages(), "; "))
@@ -175,14 +185,20 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 	h.connectMu.Lock()
 	defer h.connectMu.Unlock()
 
-	// Parse optional tunnel name from request.
+	// Parse optional tunnel name from request. Genuinely empty params means
+	// a legacy caller with no tunnel name — disconnect the first active
+	// tunnel (backward compat). But params that ARE present and fail to
+	// unmarshal are a malformed request, not "no name given" — silently
+	// falling through to the nameless path previously meant a garbled
+	// request tore down an arbitrary (first) tunnel instead of surfacing
+	// the actual error.
 	var tunnelName string
 	if len(params) > 0 {
 		var req ipc.DisconnectRequest
-		if err := json.Unmarshal(params, &req); err == nil {
-			tunnelName = req.TunnelName
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, fmt.Errorf("invalid disconnect request: %w", err)
 		}
-		// If unmarshal fails (e.g. empty params), disconnect first tunnel (backward compat).
+		tunnelName = req.TunnelName
 	}
 
 	// Cancel any in-flight reconnect backoff first — otherwise the monitor
@@ -362,6 +378,15 @@ func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
 	if req.TunnelName == "" {
 		return nil, fmt.Errorf("tunnel_name is required for OpenVPN")
 	}
+	// The name is interpolated directly into runtime file paths in
+	// ovpn.Manager (configPath/sockPath/logPath) with no sanitization of
+	// its own — reject anything ValidateTunnelName wouldn't accept as a
+	// saved tunnel's name before it ever reaches that code, or a name like
+	// "../../../etc/foo" lets a caller make this root process write an
+	// attacker-controlled file outside its runtime dir.
+	if err := storage.ValidateTunnelName(req.TunnelName); err != nil {
+		return nil, fmt.Errorf("invalid tunnel name: %w", err)
+	}
 	if req.OVPNConfig == "" {
 		return nil, fmt.Errorf("ovpn_config is required for OpenVPN")
 	}
@@ -395,6 +420,9 @@ func (h *Helper) handleSaveCredentials(params json.RawMessage) (interface{}, err
 	}
 	if req.TunnelName == "" {
 		return nil, fmt.Errorf("tunnel_name is required")
+	}
+	if err := storage.ValidateTunnelName(req.TunnelName); err != nil {
+		return nil, fmt.Errorf("invalid tunnel name: %w", err)
 	}
 	if err := ovpn.StoreCredentials(req.TunnelName, req.Username, req.BasePassword); err != nil {
 		return nil, err

@@ -10,12 +10,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
 
 // validIfaceName matches typical macOS interface names like utun4, en0, lo0.
 var validIfaceName = regexp.MustCompile(`^[a-z]+[0-9]+$`)
+
+// validatePort rejects anything that isn't a bare 1-65535 port number.
+// net.SplitHostPort only splits on the last colon and does no validation of
+// its own — an attacker-controlled endpoint string (e.g. a malicious
+// imported .conf/.ovpn "endpoint"/"remote" value) could otherwise smuggle a
+// newline plus extra pf directives straight into the kill-switch ruleset
+// before it's loaded with `pfctl -a ... -f -`.
+func validatePort(port string) error {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("invalid port %q", port)
+	}
+	return nil
+}
 
 // anchorName is the pf anchor where WireGuide loads its rules.  macOS ships
 // with `anchor "com.apple/*" all` in pf.conf — note the SLASH, not a dot.
@@ -167,6 +182,9 @@ func (f *DarwinFirewall) EnableKillSwitch(interfaceName string, _ []string, endp
 			return fmt.Errorf("invalid endpoint IP %q", ip)
 		}
 		if port != "" {
+			if err := validatePort(port); err != nil {
+				return err
+			}
 			fmt.Fprintf(&rules, "pass out quick proto udp to %s port %s\n", ip, port)
 		} else {
 			// No port info — allow all UDP to this IP (WireGuard is always UDP)
@@ -206,6 +224,9 @@ func (f *DarwinFirewall) EnableKillSwitch(interfaceName string, _ []string, endp
 				flags = " flags any"
 			}
 			if port != "" {
+				if err := validatePort(port); err != nil {
+					return err
+				}
 				fmt.Fprintf(&rules, "pass out quick proto %s to %s port %s%s\n", proto, ip, port, flags)
 			} else {
 				fmt.Fprintf(&rules, "pass out quick proto %s to %s%s\n", proto, ip, flags)

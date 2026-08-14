@@ -214,18 +214,31 @@ func (s *TunnelStore) List() ([]string, error) {
 		}
 		return nil, err
 	}
+	// A tunnel can end up with both a .conf and .ovpn file coexisting (see
+	// Rename's and Delete's comments — a legacy/weird coexistence case they
+	// already clean up best-effort). Dedup here too so such a tunnel
+	// surfaces once, not twice.
+	seen := make(map[string]bool)
 	var names []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		name := e.Name()
+		var base string
 		switch {
 		case strings.HasSuffix(name, ".conf"):
-			names = append(names, strings.TrimSuffix(name, ".conf"))
+			base = strings.TrimSuffix(name, ".conf")
 		case strings.HasSuffix(name, ".ovpn"):
-			names = append(names, strings.TrimSuffix(name, ".ovpn"))
+			base = strings.TrimSuffix(name, ".ovpn")
+		default:
+			continue
 		}
+		if seen[base] {
+			continue
+		}
+		seen[base] = true
+		names = append(names, base)
 	}
 	return names, nil
 }
@@ -360,6 +373,8 @@ func (s *TunnelStore) metaPath(name string) string {
 
 // LoadMeta reads per-tunnel metadata. Returns empty defaults if not found.
 func (s *TunnelStore) LoadMeta(name string) (*TunnelMeta, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	data, err := os.ReadFile(s.metaPath(name))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -392,6 +407,13 @@ func (s *TunnelStore) SaveMeta(name string, meta *TunnelMeta) error {
 		return err
 	}
 
+	// Rename() also moves this file and holds s.mu for the duration —
+	// without taking the same lock here, a SaveMeta racing a Rename of the
+	// same tunnel could write to the OLD path just after Rename already
+	// moved it away, silently orphaning the update as a stray sidecar file.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	dst := s.metaPath(name)
 	dir := filepath.Dir(dst)
 
@@ -416,7 +438,7 @@ func (s *TunnelStore) SaveMeta(name string, meta *TunnelMeta) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, dst); err != nil {
+	if err := atomicRename(tmpPath, dst); err != nil {
 		os.Remove(tmpPath)
 		return err
 	}
@@ -430,5 +452,7 @@ func (s *TunnelStore) SaveMeta(name string, meta *TunnelMeta) error {
 
 // DeleteMeta removes the metadata sidecar file (called when tunnel is deleted).
 func (s *TunnelStore) DeleteMeta(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	os.Remove(s.metaPath(name))
 }

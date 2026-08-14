@@ -49,6 +49,10 @@ func (m *Manager) connectPhases(cfg *domain.WireGuardConfig, netMgr network.Netw
 		}
 		_ = netMgr.Cleanup(ifaceName)
 		engine.Close()
+		// Undo the pre-DNS crash-recovery record (see the SaveActiveState
+		// call between routes and DNS below) — a failed connect must not
+		// leave a state file claiming this tunnel is up.
+		_ = ClearActiveState(m.dataDir, cfg.Name)
 		return primary
 	}
 
@@ -92,6 +96,31 @@ func (m *Manager) connectPhases(cfg *domain.WireGuardConfig, netMgr network.Netw
 		return nil, rollback(newTunnelError(ErrNetwork, "adding routes", err))
 	}
 
+	// 6.5. Persist a crash-recovery record BEFORE the DNS mutation below —
+	// every phase up to here (engine, MTU, address, bring-up, routes) has
+	// already succeeded, so this is no longer the "tunnel never actually
+	// came up" case the original single end-of-function write was guarding
+	// against. Without this, a crash between SetDNS succeeding and the old
+	// end-of-function SaveActiveState call left DNS permanently overridden
+	// with NO recovery record at all — RecoverFromCrash never ran. This
+	// first write has no PreModDNS yet (SetDNS captures that baseline);
+	// RecoverFromCrash already falls back to the coarse
+	// ResetDNSToSystemDefault when PreModDNS is empty, so a crash in the
+	// narrow window before the precise snapshot is captured still recovers,
+	// just less precisely. rollback() below clears this record again if
+	// SetDNS itself fails, so a rolled-back connect doesn't leave a false
+	// "tunnel is up" entry.
+	if err := SaveActiveState(m.dataDir, &ActiveTunnelState{
+		TunnelName:    cfg.Name,
+		InterfaceName: ifaceName,
+		DNSServers:    cfg.Interface.DNS,
+		FullTunnel:    fullTunnel,
+		Table:         cfg.Interface.Table,
+		FwMark:        cfg.Interface.FwMark,
+	}); err != nil {
+		slog.Warn("failed to persist pre-DNS crash recovery state", "error", err)
+	}
+
 	// 7. DNS — fatal when DNS servers are explicitly configured (matching
 	// wg-quick's behaviour). A silent DNS failure leaves the user on their
 	// ISP's resolver, which is a privacy leak for VPN users.
@@ -128,12 +157,13 @@ func (m *Manager) connectPhases(cfg *domain.WireGuardConfig, netMgr network.Netw
 		slog.Warn("failed to set DNS", "error", err)
 	}
 
-	// 8. Crash recovery state — persisted AFTER all fallible phases so a
-	// mid-connect failure doesn't leave an orphan state file pointing at a
-	// tunnel that was never actually brought up. Non-fatal: if we can't
+	// 8. Upgrade the crash-recovery record written in step 6.5 with the
+	// precise pre-modification DNS snapshot, now that SetDNS has captured
+	// it — RecoverFromCrash prefers this over the coarse
+	// ResetDNSToSystemDefault fallback when present. Non-fatal: if we can't
 	// write the recovery file (disk full, permissions) the tunnel is still
-	// up, we just won't be able to recover automatically next boot.
-	// Capture pre-modification DNS snapshot for precise crash recovery.
+	// up and the step-6.5 record (without PreModDNS) still exists, so a
+	// crash still recovers via the coarse fallback.
 	var preModDNS map[string][]string
 	if provider, ok := netMgr.(network.DNSSnapshotProvider); ok {
 		preModDNS = provider.SavedDNSSnapshot()
@@ -181,13 +211,20 @@ func (m *Manager) disconnectPhases(cfg *domain.WireGuardConfig, engine *Engine, 
 	remainingDNS := m.AllDNSServers()
 	hasOtherTunnels := len(remainingDNS) > 0
 
-	// Network cleanup — each tunnel has its own netMgr, so Cleanup only
-	// affects this tunnel's state (route monitor, bypass routes, DNS snapshot).
+	// Network cleanup — each tunnel has its own netMgr, so the monitor/route
+	// teardown inside Cleanup only affects this tunnel's own state. Called
+	// unconditionally regardless of hasOtherTunnels: Cleanup's nested
+	// RestoreDNS call is now safe to call even when other tunnels remain —
+	// it only releases THIS interface's hold on the shared DNS baseline
+	// (internal/network/darwin.go's dnsActiveIfaces) and is a no-op on
+	// actual system DNS as long as another tunnel's interface still holds
+	// it. Previously this was skipped whenever hasOtherTunnels was true,
+	// which leaked this tunnel's hold forever — the remaining tunnel(s)
+	// would eventually release theirs too, but this interface's entry
+	// never would, permanently pinning DNS overridden with no tunnel left
+	// to have caused it.
 	if netMgr != nil {
-		if !hasOtherTunnels {
-			// Last tunnel — full cleanup including DNS restore.
-			_ = netMgr.Cleanup(ifaceName)
-		}
+		_ = netMgr.Cleanup(ifaceName)
 	}
 
 	// If other tunnels remain, re-apply their DNS union via one of the

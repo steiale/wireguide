@@ -808,14 +808,18 @@ func TestDownloadUpdate_SignatureValid(t *testing.T) {
 	for i := range body {
 		body[i] = byte(i % 256)
 	}
-	sig := ed25519.Sign(priv, body)
 	h := sha256.Sum256(body)
 	expectedHash := hex.EncodeToString(h[:])
+	const version = "1.2.3"
+	// Signature covers "<version>\n<sha256-hex>", not the raw bytes — must
+	// match signedMessage in checker.go / cmd/sign's --version signing.
+	sig := ed25519.Sign(priv, signedMessage(version, expectedHash))
 
 	srv := signedAssetServer(t, body, sig)
 	defer srv.Close()
 
 	info := &UpdateInfo{
+		Version:      version,
 		DownloadURL:  srv.URL + "/asset.zip",
 		AssetName:    "asset.zip",
 		AssetSize:    int64(bodySize),

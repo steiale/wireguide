@@ -18,14 +18,17 @@ const legacyAppName = "wireguide-plus"
 // canWriteDir tests whether the current process can create files in dir by
 // writing and immediately removing a temp file. Used by EnsureDirs to
 // distinguish "can't chmod but can still use" from "truly inaccessible".
+// Uses a randomized name (os.CreateTemp) rather than a fixed one — the GUI
+// and the privileged helper both call EnsureDirs at startup and could race
+// on create/remove of the same fixed-name probe file otherwise.
 func canWriteDir(dir string) bool {
-	tmp := filepath.Join(dir, ".wireguide-write-test")
-	f, err := os.Create(tmp)
+	f, err := os.CreateTemp(dir, ".wireguide-write-test-*")
 	if err != nil {
 		return false
 	}
+	name := f.Name()
 	f.Close()
-	os.Remove(tmp)
+	os.Remove(name)
 	return true
 }
 

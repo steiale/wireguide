@@ -4,6 +4,7 @@ package elevate
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
@@ -100,16 +101,34 @@ func installAndLoadDaemon(args Args) error {
 </plist>
 `, xmlEscape(daemonLabel), xmlEscape(daemonBinary), xmlEscape(args.SocketPath), uid, xmlEscape(args.DataDir))
 
-	tmpPlist := filepath.Join(os.TempDir(), daemonLabel+".plist")
-	if err := os.WriteFile(tmpPlist, []byte(plist), 0644); err != nil {
-		return fmt.Errorf("write temp plist: %w", err)
+	// Validate plist syntax using a throwaway file at an unpredictable path
+	// (os.CreateTemp, not a fixed name) purely for our own linting — it is
+	// NEVER referenced by the privileged shell script below. Writing the
+	// real plist to a fixed, predictable, user-owned path and then having
+	// root's shell `cp` it moments later (the previous approach) was a
+	// TOCTOU: any other process running as the same user could swap the
+	// file's contents in that window and get root to install an
+	// attacker-controlled LaunchDaemon. Instead we base64-embed the
+	// in-memory plist string directly into the root-run shell script, so
+	// root never trusts a path a co-located process could have raced.
+	lintFile, err := os.CreateTemp("", daemonLabel+"-lint-*.plist")
+	if err != nil {
+		return fmt.Errorf("create lint temp file: %w", err)
 	}
-	defer os.Remove(tmpPlist)
-
-	// Validate plist syntax before attempting install.
-	if out, err := exec.Command("plutil", "-lint", tmpPlist).CombinedOutput(); err != nil {
+	lintPath := lintFile.Name()
+	_, writeErr := lintFile.Write([]byte(plist))
+	closeErr := lintFile.Close()
+	defer os.Remove(lintPath)
+	if writeErr != nil {
+		return fmt.Errorf("write lint temp file: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close lint temp file: %w", closeErr)
+	}
+	if out, err := exec.Command("/usr/bin/plutil", "-lint", lintPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("plist validation failed: %s", strings.TrimSpace(string(out)))
 	}
+	plistB64 := base64.StdEncoding.EncodeToString([]byte(plist))
 
 	// If the app bundle ships an openvpn binary (Contents/MacOS/openvpn), copy
 	// it to /Library/PrivilegedHelperTools/openvpn so the helper can find it
@@ -152,6 +171,12 @@ func installAndLoadDaemon(args Args) error {
 	// real success from a partial one.
 	shellScript := fmt.Sprintf(
 		`set -e; `+
+			// Pin PATH to the standard system directories before running
+			// anything else. Without this, every bare command below (cp, rm,
+			// chown, launchctl, ...) resolves via the invoking user's PATH —
+			// a same-user process could plant a malicious binary earlier in
+			// PATH and have it silently execute as root inside this script.
+			`export PATH="/usr/bin:/bin:/usr/sbin:/sbin"; `+
 			`launchctl bootout system/`+daemonLabel+` 2>/dev/null || true; `+
 			`launchctl bootout system/com.wireguide.helper 2>/dev/null || true; `+
 			`rm -f /Library/LaunchDaemons/com.wireguide.helper.plist; `+
@@ -164,7 +189,11 @@ func installAndLoadDaemon(args Args) error {
 			`xattr -d com.apple.quarantine %s 2>/dev/null || true; `+
 			`chown root:wheel %s; `+
 			`chmod 755 %s; `+
-			`cp -f %s %s; `+
+			// Decode the plist directly to its destination from the
+			// base64 blob embedded in this script — root never reads a
+			// path a co-located user process could have raced (see the
+			// lintFile comment above).
+			`printf '%%s' %s | base64 -d > %s; `+
 			`chown root:wheel %s; `+
 			`chmod 644 %s; `+
 			ovpnSnippet+
@@ -188,13 +217,13 @@ func installAndLoadDaemon(args Args) error {
 		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
-		shellQuote(tmpPlist), shellQuote(daemonPlist),
+		shellQuote(plistB64), shellQuote(daemonPlist),
 		shellQuote(daemonPlist),
 		shellQuote(daemonPlist),
-		daemonLabel,   // enable system/%s
-		daemonLabel,   // kickstart -k system/%s
+		daemonLabel,             // enable system/%s
+		daemonLabel,             // kickstart -k system/%s
 		shellQuote(daemonPlist), // bootstrap system %s
-		daemonLabel,   // print system/%s
+		daemonLabel,             // print system/%s
 	)
 
 	escaped := strings.ReplaceAll(shellScript, `\`, `\\`)

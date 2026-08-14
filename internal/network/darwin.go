@@ -14,17 +14,33 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl"
 )
 
+// dnsState is the shared, process-wide DNS override baseline used by EVERY
+// DarwinManager instance. WireGuard creates one manager per tunnel and
+// OpenVPN shares a single manager across all of its tunnels — but macOS DNS
+// (`networksetup -setdnsservers`) is one global machine resource, not
+// scoped to a network interface or a Go object. Snapshotting/restoring it
+// per-manager-instance (the previous design) meant a second tunnel
+// connecting while a first was already active would capture the FIRST
+// tunnel's VPN DNS as if it were the user's real pre-VPN baseline — and
+// disconnecting one tunnel while another remained active would wipe DNS
+// entirely (or worse, wipe it to that poisoned baseline), regardless of
+// protocol. Tracking active consumers by interface name here makes the
+// baseline capture-once/restore-once-nothing-remains, and makes a repeat
+// SetDNS call for an interface that's already active a no-op that doesn't
+// distort the consumer count (see connect_phases.go's remaining-tunnel
+// DNS re-push after a sibling disconnects, which re-calls SetDNS on an
+// interface that was already active).
+var (
+	dnsStateMu      sync.Mutex
+	dnsSavedDNS     = make(map[string][]string) // service name → original DNS list
+	dnsSavedSearch  = make(map[string][]string) // service name → original search domains
+	dnsActiveIfaces = make(map[string]bool)     // interface names currently holding a DNS override
+)
+
 // DarwinManager implements NetworkManager for macOS, modeled after wg-quick's
 // darwin.bash script (github.com/WireGuard/wireguard-tools/src/wg-quick/darwin.bash).
 type DarwinManager struct {
 	mu sync.Mutex
-
-	// DNS state — saved per service (matches wg-quick collect_new_service_dns).
-	// wg-quick sets DNS on EVERY network service, not just the primary one,
-	// because macOS can switch primary between Wi-Fi and Ethernet mid-session.
-	savedDNS    map[string][]string // service name → original DNS list
-	savedSearch map[string][]string // service name → original search domains
-	dnsActive   bool
 
 	// Endpoint bypass route state — tracked for cleanup.
 	bypassEndpoints []string // IPs we added host routes for
@@ -75,10 +91,7 @@ func (m *DarwinManager) SetPinInterface(enabled bool) {
 }
 
 func NewPlatformManager() NetworkManager {
-	return &DarwinManager{
-		savedDNS:    make(map[string][]string),
-		savedSearch: make(map[string][]string),
-	}
+	return &DarwinManager{}
 }
 
 // AssignAddress uses wg-quick's form: `ifconfig <if> inet <ip/cidr> <ip> alias`.
@@ -736,16 +749,56 @@ func (m *DarwinManager) SetDNS(ifaceName string, entries []string) error {
 		return fmt.Errorf("no network services found")
 	}
 
-	// Check/update `dnsActive` under the lock — this field is also read by
-	// RestoreDNS and (potentially) by reapply via applyDNS, so touching it
-	// without the lock is a data race.
-	m.mu.Lock()
-	alreadyActive := m.dnsActive
-	m.mu.Unlock()
+	// Reserve ifaceName as an active consumer AND decide firstActivation in
+	// the same critical section. Splitting these into a "peek now, commit
+	// later" pattern (as an earlier version of this function did) leaves a
+	// multi-second window — the networksetup fan-out below is not
+	// instant — during which a concurrent SetDNS/RestoreDNS on another
+	// interface can interleave: two callers can both see "not yet active"
+	// and both snapshot (the second overwrites the first's snapshot with
+	// already-VPN-overridden DNS, poisoning the baseline), or a
+	// RestoreDNS can see the map empty out from under an in-flight SetDNS
+	// that hasn't committed yet, wiping the baseline before it's used. Both
+	// the decision and the map mutation must happen atomically. If DNS
+	// application fails below, rollbackReservation() undoes this.
+	dnsStateMu.Lock()
+	firstActivation := len(dnsActiveIfaces) == 0
+	alreadyReserved := dnsActiveIfaces[ifaceName]
+	dnsActiveIfaces[ifaceName] = true
+	dnsStateMu.Unlock()
+	rollbackReservation := func() {
+		if alreadyReserved {
+			return // was already active before this call; not ours to release
+		}
+		dnsStateMu.Lock()
+		delete(dnsActiveIfaces, ifaceName)
+		if len(dnsActiveIfaces) > 0 {
+			// Another interface still holds an active reservation — leave
+			// system DNS as-is (best effort; we don't track per-holder
+			// desired state to reconstruct exactly what it should be) and
+			// let that other interface's own eventual RestoreDNS do the
+			// final release.
+			dnsStateMu.Unlock()
+			slog.Warn("DNS verification failed while another interface also holds an active override; system DNS may not reflect that interface's servers until its own disconnect", "iface", ifaceName)
+			return
+		}
+		// We were the only (or last) holder. applyDNSToServices already
+		// pushed the new, now-known-broken entries to the system before
+		// verifyDNS failed — merely dropping the reservation without also
+		// restoring would leave system DNS permanently pinned to dead VPN
+		// resolvers with no consumer left to ever release it.
+		savedDNS := dnsSavedDNS
+		savedSearch := dnsSavedSearch
+		dnsSavedDNS = make(map[string][]string)
+		dnsSavedSearch = make(map[string][]string)
+		dnsStateMu.Unlock()
+		restoreDNSBaseline(savedDNS, savedSearch)
+	}
 
-	// Save original DNS for each service before overriding (only on first apply).
-	// Parallelised: each networksetup -getdnsservers call is ~100–200 ms.
-	if !alreadyActive {
+	// Save original DNS for each service before overriding (only the very
+	// first time ANY tunnel activates DNS). Parallelised: each
+	// networksetup -getdnsservers call is ~100–200 ms.
+	if firstActivation {
 		type savedEntry struct {
 			svc    string
 			dns    []string
@@ -764,12 +817,12 @@ func (m *DarwinManager) SetDNS(ifaceName string, entries []string) error {
 			}()
 		}
 		wg.Wait()
-		m.mu.Lock()
+		dnsStateMu.Lock()
 		for _, e := range saved {
-			m.savedDNS[e.svc] = e.dns
-			m.savedSearch[e.svc] = e.search
+			dnsSavedDNS[e.svc] = e.dns
+			dnsSavedSearch[e.svc] = e.search
 		}
-		m.mu.Unlock()
+		dnsStateMu.Unlock()
 	}
 
 	// Push the new DNS to every service in parallel.
@@ -783,6 +836,7 @@ func (m *DarwinManager) SetDNS(ifaceName string, entries []string) error {
 	if len(servers) > 0 {
 		if err := m.verifyDNS(services, servers); err != nil {
 			slog.Warn("DNS verification failed", "error", err)
+			rollbackReservation()
 			return fmt.Errorf("DNS applied but verification failed: %w", err)
 		}
 	}
@@ -794,7 +848,6 @@ func (m *DarwinManager) SetDNS(ifaceName string, entries []string) error {
 
 	m.mu.Lock()
 	m.lastDNS = entries
-	m.dnsActive = true
 	m.mu.Unlock()
 	return nil
 }
@@ -809,15 +862,15 @@ func (m *DarwinManager) applyDNS(entries []string) error {
 	// Collect the list of services needing DNS capture under the lock, then
 	// release the lock once, do all network calls, and re-lock once to store.
 	var newServices []string
-	m.mu.Lock()
-	if m.dnsActive {
+	dnsStateMu.Lock()
+	if len(dnsActiveIfaces) > 0 {
 		for _, svc := range services {
-			if _, exists := m.savedDNS[svc]; !exists {
+			if _, exists := dnsSavedDNS[svc]; !exists {
 				newServices = append(newServices, svc)
 			}
 		}
 	}
-	m.mu.Unlock()
+	dnsStateMu.Unlock()
 
 	// Fetch DNS for newly discovered services without holding the lock.
 	if len(newServices) > 0 {
@@ -840,15 +893,15 @@ func (m *DarwinManager) applyDNS(entries []string) error {
 		}
 		wg.Wait()
 
-		m.mu.Lock()
+		dnsStateMu.Lock()
 		for _, e := range fetched {
-			if _, exists := m.savedDNS[e.svc]; !exists {
-				m.savedDNS[e.svc] = e.dns
-				m.savedSearch[e.svc] = e.search
+			if _, exists := dnsSavedDNS[e.svc]; !exists {
+				dnsSavedDNS[e.svc] = e.dns
+				dnsSavedSearch[e.svc] = e.search
 				slog.Info("discovered new network service, saving DNS", "service", e.svc)
 			}
 		}
-		m.mu.Unlock()
+		dnsStateMu.Unlock()
 	}
 
 	m.applyDNSToServices(entries, services)
@@ -981,28 +1034,51 @@ func (m *DarwinManager) ResetDNSToSystemDefault() error {
 	return nil
 }
 
-// RestoreDNS restores original DNS for every service we touched. Parallel
-// across services — each networksetup call is ~200 ms, and with 5+ services
-// the serial version added a full second to every Disconnect.
+// RestoreDNS releases ifaceName's hold on the shared DNS baseline. Only
+// once EVERY interface that activated DNS has released it does this
+// actually restore the original DNS to the system — while any other
+// tunnel (same protocol or not, since this state is shared across every
+// DarwinManager instance) still holds an active override, releasing one
+// interface must not touch system DNS at all. Parallel across services —
+// each networksetup call is ~200 ms, and with 5+ services the serial
+// version added a full second to every Disconnect.
 func (m *DarwinManager) RestoreDNS(ifaceName string) error {
-	// Snapshot saved state under the lock, then reset it in the same
-	// critical section so any racing SetDNS doesn't see a half-cleared
-	// view. dnsActive/savedDNS/savedSearch all live under m.mu.
 	m.mu.Lock()
-	if !m.dnsActive {
-		m.mu.Unlock()
-		return nil
-	}
-	savedDNS := m.savedDNS
-	savedSearch := m.savedSearch
-	m.savedDNS = make(map[string][]string)
-	m.savedSearch = make(map[string][]string)
-	m.dnsActive = false
 	m.lastDNS = nil
 	m.mu.Unlock()
 
-	// Fan out networksetup calls in parallel — each is ~200ms, so for 5+
-	// services we save multiple seconds vs serial.
+	dnsStateMu.Lock()
+	if !dnsActiveIfaces[ifaceName] {
+		dnsStateMu.Unlock()
+		return nil
+	}
+	delete(dnsActiveIfaces, ifaceName)
+	if len(dnsActiveIfaces) > 0 {
+		// Other interfaces still need VPN DNS active — leave system DNS
+		// alone and keep the baseline around for whoever releases last.
+		dnsStateMu.Unlock()
+		return nil
+	}
+	savedDNS := dnsSavedDNS
+	savedSearch := dnsSavedSearch
+	dnsSavedDNS = make(map[string][]string)
+	dnsSavedSearch = make(map[string][]string)
+	dnsStateMu.Unlock()
+
+	restoreDNSBaseline(savedDNS, savedSearch)
+	return nil
+}
+
+// restoreDNSBaseline pushes savedDNS/savedSearch back to every service in
+// parallel — the shared tail of RestoreDNS's normal release path AND
+// SetDNS's failure-rollback path (see rollbackReservation in SetDNS): if
+// SetDNS's verifyDNS check fails, applyDNSToServices has ALREADY pushed the
+// new (broken) DNS to the system, so merely deleting the map reservation
+// without actually restoring would leave the system pinned to dead VPN
+// resolvers with no consumer left to ever release it. Each networksetup
+// call is ~200ms, so for 5+ services fanning out saves multiple seconds vs
+// serial.
+func restoreDNSBaseline(savedDNS, savedSearch map[string][]string) {
 	var wg sync.WaitGroup
 	for svc, orig := range savedDNS {
 		svc, orig := svc, orig
@@ -1032,19 +1108,19 @@ func (m *DarwinManager) RestoreDNS(ifaceName string) error {
 	}
 	wg.Wait()
 	flushDNSCache()
-	return nil
 }
 
-// SavedDNSSnapshot returns the current per-service DNS snapshot for
-// persistence to the crash recovery journal. Thread-safe.
+// SavedDNSSnapshot returns the current shared DNS baseline for persistence
+// to the crash recovery journal. Thread-safe. Shared across every
+// DarwinManager instance — see the dnsState doc comment.
 func (m *DarwinManager) SavedDNSSnapshot() map[string][]string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.dnsActive || len(m.savedDNS) == 0 {
+	dnsStateMu.Lock()
+	defer dnsStateMu.Unlock()
+	if len(dnsActiveIfaces) == 0 || len(dnsSavedDNS) == 0 {
 		return nil
 	}
-	snapshot := make(map[string][]string, len(m.savedDNS))
-	for svc, dns := range m.savedDNS {
+	snapshot := make(map[string][]string, len(dnsSavedDNS))
+	for svc, dns := range dnsSavedDNS {
 		cp := make([]string, len(dns))
 		copy(cp, dns)
 		snapshot[svc] = cp
@@ -1102,8 +1178,15 @@ func (m *DarwinManager) Cleanup(ifaceName string) error {
 
 func run(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	// Force C locale so parsing English sentinels like "There aren't any DNS Servers"
-	// works on non-English macOS systems. wg-quick uses `export LC_ALL=C` at script top.
+	// LC_ALL/LANG affect POSIX tools' own output, but networksetup and
+	// friends are Cocoa/CoreFoundation tools that localize via
+	// AppleLanguages instead — this does NOT make their English sentinel
+	// strings ("There aren't any DNS Servers...") reliable to match on.
+	// getCurrentDNS/getCurrentSearchDomains parse locale-independently
+	// instead (filtering by whether a line looks like an IP/hostname).
+	// Set anyway in case any other command run through here is a real
+	// POSIX tool that does honor it. wg-quick sets this for the same
+	// reason at its script's top.
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1254,38 +1337,45 @@ func getAllNetworkServices() []string {
 	return services
 }
 
+// getCurrentDNS returns the DNS servers currently configured on service.
+// networksetup's "no servers configured" response is a localized English
+// sentence ("There aren't any DNS Servers...") that follows the system's
+// AppleLanguages setting — LC_ALL=C (see run()) has no effect on it, since
+// this is a Cocoa/CoreFoundation tool, not a POSIX one. Matching that
+// sentinel string only works on an English system; on any other locale the
+// whole sentence would be treated as a "DNS server" and saved into the
+// original-DNS baseline. Instead, keep only lines that actually parse as an
+// IP address — locale-independent by construction.
 func getCurrentDNS(service string) ([]string, error) {
 	out, err := runOut("networksetup", "-getdnsservers", service)
 	if err != nil {
 		return nil, err
 	}
 	output := strings.TrimSpace(string(out))
-	if strings.Contains(output, "There aren't any DNS Servers") {
-		return nil, nil
-	}
 	var servers []string
 	for _, line := range strings.Split(output, "\n") {
 		s := strings.TrimSpace(line)
-		if s != "" {
+		if s != "" && net.ParseIP(s) != nil {
 			servers = append(servers, s)
 		}
 	}
 	return servers, nil
 }
 
+// getCurrentSearchDomains returns the search domains currently configured on
+// service. Same locale caveat as getCurrentDNS applies to the "no search
+// domains" sentinel — a real search domain never contains whitespace, so
+// filtering on that instead of an English string is locale-independent.
 func getCurrentSearchDomains(service string) ([]string, error) {
 	out, err := runOut("networksetup", "-getsearchdomains", service)
 	if err != nil {
 		return nil, err
 	}
 	output := strings.TrimSpace(string(out))
-	if strings.Contains(output, "There aren't any Search Domains") {
-		return nil, nil
-	}
 	var domains []string
 	for _, line := range strings.Split(output, "\n") {
 		s := strings.TrimSpace(line)
-		if s != "" {
+		if s != "" && !strings.ContainsAny(s, " \t") {
 			domains = append(domains, s)
 		}
 	}

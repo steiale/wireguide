@@ -95,16 +95,33 @@ type Helper struct {
 	fwSavedKillSwitch    bool
 	fwSavedDNSProtection bool
 	fwSavedDNSServers    []string // DNS servers to re-enable on resume
-	// fwSuspended is true from the first suspendFirewall() call in a retry
-	// sequence until resumeFirewall() actually finishes restoring (or
-	// determines there was nothing to restore). A failed reconnect attempt
-	// calls suspendFirewall() again before the next retry; without this
-	// flag that second call would re-snapshot IsKillSwitchEnabled() —
-	// which is already false from the FIRST suspend — permanently
-	// forgetting that the kill switch was ever on. See resumeFirewall for
-	// the other half of this fix: it now only clears fwSaved*/fwSuspended
-	// once restore actually succeeds, not unconditionally on every call.
-	fwSuspended bool
+	// fwSuspendedTunnels is the set of tunnel names (retry sequences)
+	// currently holding a firewall suspend — non-empty from the first
+	// suspendFirewall() call across ALL concurrently-reconnecting tunnels
+	// until every one of them has released via resumeFirewall(). A single
+	// shared bool here previously meant tunnel A's resume would prematurely
+	// clear the suspend (and restore/re-arm the firewall) while tunnel B
+	// was still mid-reconnect, and — separately — meant a second
+	// suspendFirewall() call within ONE tunnel's own retry sequence (a
+	// failed attempt calls suspend again before the next retry) would
+	// re-snapshot IsKillSwitchEnabled() — already false from the FIRST
+	// suspend — permanently forgetting that the kill switch was ever on.
+	// Tracking membership by tunnel name fixes both: only the transition
+	// from empty to non-empty snapshots/disables, and only the transition
+	// back to empty (every holder released) actually restores. See
+	// resumeFirewall for the release-and-check-if-last-out side of this.
+	fwSuspendedTunnels map[string]bool
+
+	// fwRestoring is true for the (last-holder) duration of a resumeFirewall
+	// call, from the moment it decides "I'm the last one out" to the moment
+	// its restore attempt finishes (success or not). Without this, a BRAND
+	// NEW tunnel's suspendFirewall call landing in that narrow window would
+	// see fwSuspendedTunnels already empty (firstActivation==true) and
+	// snapshot the CURRENTLY-still-disabled firewall state as if it were
+	// the true original — the restore that was already in flight hasn't
+	// actually re-armed anything yet. Checked alongside
+	// len(fwSuspendedTunnels)==0 in suspendFirewall's firstActivation gate.
+	fwRestoring bool
 
 	// shutdownTimer is a singleton grace-window timer. When the control
 	// connection drops we Reset it; when the GUI reconnects we Stop it. This
@@ -503,7 +520,7 @@ func (h *Helper) killSwitchExtraTunnels() []firewall.KillSwitchTunnel {
 // some later, unrelated resume eventually fires.
 func (h *Helper) clearFirewallSuspendState() {
 	h.mu.Lock()
-	h.fwSuspended = false
+	h.fwSuspendedTunnels = nil
 	h.fwSavedKillSwitch = false
 	h.fwSavedDNSProtection = false
 	h.fwSavedDNSServers = nil
@@ -513,20 +530,30 @@ func (h *Helper) clearFirewallSuspendState() {
 // suspendFirewall saves the current firewall state and disables all firewall
 // rules. Called by the reconnect monitor before Disconnect so that old pf rules
 // referencing the previous utun interface name don't block the new connection.
-func (h *Helper) suspendFirewall() error {
+// tunnelName identifies the calling retry sequence — see fwSuspendedTunnels.
+func (h *Helper) suspendFirewall(tunnelName string) error {
 	h.mu.Lock()
-	alreadySuspended := h.fwSuspended
+	if h.fwSuspendedTunnels == nil {
+		h.fwSuspendedTunnels = make(map[string]bool)
+	}
+	// See fwRestoring's doc comment: a resume in flight for the last
+	// previous holder counts as "not first activation" too, even though
+	// the set is momentarily empty during that window.
+	firstActivation := len(h.fwSuspendedTunnels) == 0 && !h.fwRestoring
+	h.fwSuspendedTunnels[tunnelName] = true
 	h.mu.Unlock()
-	if alreadySuspended {
-		// A previous suspend in this same retry sequence never got a chance
-		// to resume successfully (failed attempt, or the new interface
-		// wasn't ready yet — see resumeFirewall). The firewall is already
-		// down from that earlier suspend, so re-reading
-		// IsKillSwitchEnabled()/IsDNSProtectionEnabled() now would capture
-		// "false" (the CURRENT, suspended state) instead of the TRUE
-		// original state we still need to restore — permanently losing it.
-		// fwSaved* already holds the real original values; leave them alone.
-		slog.Debug("suspendFirewall: already suspended from a previous attempt in this retry sequence, not re-snapshotting")
+	if !firstActivation {
+		// Either this same tunnel's own earlier attempt in this retry
+		// sequence never got a chance to resume successfully (failed
+		// attempt, or the new interface wasn't ready yet — see
+		// resumeFirewall), or a DIFFERENT tunnel's retry sequence already
+		// holds the suspend. Either way the firewall is already down, so
+		// re-reading IsKillSwitchEnabled()/IsDNSProtectionEnabled() now
+		// would capture "false" (the CURRENT, suspended state) instead of
+		// the TRUE original state we still need to restore — permanently
+		// losing it. fwSaved* already holds the real original values from
+		// whichever call first activated the suspend; leave them alone.
+		slog.Debug("suspendFirewall: already suspended (this or another tunnel's retry sequence), not re-snapshotting", "tunnel", tunnelName)
 		return nil
 	}
 
@@ -536,7 +563,6 @@ func (h *Helper) suspendFirewall() error {
 	h.mu.Lock()
 	h.fwSavedKillSwitch = ksEnabled
 	h.fwSavedDNSProtection = dnsEnabled
-	h.fwSuspended = ksEnabled || dnsEnabled
 	// H2: Union DNS lists from ALL active configs (not just the first one
 	// with a non-empty DNS list). With multi-tunnel setups, breaking on the
 	// first match silently dropped DNS servers belonging to other tunnels
@@ -602,8 +628,54 @@ func (h *Helper) suspendFirewall() error {
 // resumeFirewall re-enables firewall rules that were active before the
 // reconnect suspend. It reads the NEW interface name and endpoints from the
 // tunnel manager so the pf rules match the newly created utun interface.
-func (h *Helper) resumeFirewall() error {
+// tunnelName must match the value passed to the corresponding
+// suspendFirewall call — see fwSuspendedTunnels.
+func (h *Helper) resumeFirewall(tunnelName string) error {
+	// Deliberately does NOT remove tunnelName from fwSuspendedTunnels until
+	// we know this is the last (or only) holder, and even then not until
+	// the restore actually completes (ksDone && dnsDone below). A reconnect
+	// attempt that fails before the new interface exists (the common case:
+	// suspend → disconnect → reconnect fails → resume, with no interface
+	// yet) must keep this tunnel's membership so its NEXT suspendFirewall
+	// call still sees firstActivation==false and doesn't re-snapshot the
+	// CURRENTLY-disabled state as if it were the true original.
 	h.mu.Lock()
+	othersStillSuspended := false
+	for name := range h.fwSuspendedTunnels {
+		if name != tunnelName {
+			othersStillSuspended = true
+			break
+		}
+	}
+	if othersStillSuspended {
+		// Another tunnel's retry sequence still holds the suspend — the
+		// firewall must stay down until every holder has released,
+		// otherwise disconnecting/reconnecting tunnel A would prematurely
+		// re-arm rules (referencing A's possibly-still-changing interface)
+		// while tunnel B is still mid-reconnect and unprotected by them.
+		//
+		// Release THIS tunnel's own hold before returning — safe precisely
+		// because othersStillSuspended==true guarantees the set stays
+		// non-empty either way, so the anti-re-snapshot guard in
+		// suspendFirewall (firstActivation) still holds for every
+		// remaining holder. Not releasing it here (an earlier version of
+		// this function didn't) meant a tunnel could never leave the set
+		// once a second one joined: both A and B's eventual resume calls
+		// would each see "the other is still in the set" and defer forever,
+		// permanently disabling the kill switch/DNS protection with no
+		// tunnel left to ever release it (short of a manual toggle).
+		delete(h.fwSuspendedTunnels, tunnelName)
+		h.mu.Unlock()
+		slog.Debug("resumeFirewall: other tunnels still hold the suspend, deferring restore", "tunnel", tunnelName)
+		return nil
+	}
+	// This tunnel is the last (or only) holder. Mark a restore as in
+	// flight for the rest of this call — see fwRestoring's doc comment —
+	// so a BRAND NEW tunnel's suspendFirewall call landing in the window
+	// between here and the actual EnableKillSwitch/EnableDNSProtection
+	// calls below doesn't see fwSuspendedTunnels as momentarily empty and
+	// snapshot the still-disabled state as if it were the true original.
+	h.fwRestoring = true
 	restoreKS := h.fwSavedKillSwitch
 	restoreDNS := h.fwSavedDNSProtection
 	savedDNSServers := h.fwSavedDNSServers
@@ -612,11 +684,19 @@ func (h *Helper) resumeFirewall() error {
 		ifaceAddresses = append(ifaceAddresses, cfg.Interface.Address...)
 	}
 	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.fwRestoring = false
+		h.mu.Unlock()
+	}()
 
 	if !restoreKS && !restoreDNS {
-		// Nothing was suspended, so there's nothing to lose — safe to clear.
+		// Nothing was ever actually suspended for this tunnel (or a
+		// previous call already fully restored and cleared it) — release
+		// this tunnel's membership, if any, since there's nothing left to
+		// preserve it for.
 		h.mu.Lock()
-		h.fwSuspended = false
+		delete(h.fwSuspendedTunnels, tunnelName)
 		h.mu.Unlock()
 		slog.Debug("resumeFirewall: no firewall rules to restore")
 		return nil
@@ -688,7 +768,7 @@ func (h *Helper) resumeFirewall() error {
 		h.fwSavedKillSwitch = false
 		h.fwSavedDNSProtection = false
 		h.fwSavedDNSServers = nil
-		h.fwSuspended = false
+		delete(h.fwSuspendedTunnels, tunnelName)
 		h.mu.Unlock()
 	} else {
 		slog.Debug("resumeFirewall: restore incomplete, keeping saved state for next attempt",
@@ -713,9 +793,15 @@ func (h *Helper) cleanup() {
 		}
 		h.monitor.Stop()
 		h.firewall.Cleanup()
-		if h.manager.IsConnected() {
-			h.manager.DisconnectAll()
-		}
+		// Unconditional, not gated on IsConnected(): a tunnel still in
+		// StateConnecting (not yet StateConnected) has already installed
+		// routes/DNS by the time this runs concurrently with a slow
+		// connect, but IsConnected() only reports true tunnels — gating on
+		// it skipped teardown entirely for an in-flight connect, leaving
+		// its DNS override in place with the process about to exit.
+		// DisconnectAll already handles both states and is a no-op if
+		// nothing is active.
+		h.manager.DisconnectAll()
 		if h.ovpnManager != nil {
 			h.ovpnManager.Stop()
 		}

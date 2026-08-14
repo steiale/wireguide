@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -101,6 +102,14 @@ func parseStaticChallenge(payload string) *AuthChallenge {
 type mgmtClient struct {
 	conn net.Conn
 	r    *bufio.Reader
+
+	// mu serializes writes. sendCredentials writes two lines that must
+	// reach openvpn back-to-back (the management protocol has no way to
+	// associate them otherwise) — without this, a concurrent send() from
+	// another goroutine (e.g. signalTerm from the reconnect monitor, or
+	// holdRelease from readLoop) could land between the username and
+	// password lines and corrupt the auth handshake.
+	mu sync.Mutex
 }
 
 // dialManagement connects to the OpenVPN management socket, retrying for up to
@@ -119,8 +128,17 @@ func dialManagement(sockPath string) (*mgmtClient, error) {
 	return nil, fmt.Errorf("dial management socket %q: %w", sockPath, lastErr)
 }
 
-// send writes a single command followed by a newline.
+// send writes a single command followed by a newline. Safe for concurrent
+// use — serialized against other send/sendCredentials calls via mu.
 func (c *mgmtClient) send(cmd string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writeLocked(cmd)
+}
+
+// writeLocked writes a single command followed by a newline. Caller must
+// hold mu.
+func (c *mgmtClient) writeLocked(cmd string) error {
 	_, err := c.conn.Write([]byte(cmd + "\n"))
 	return err
 }
@@ -135,10 +153,13 @@ func (c *mgmtClient) sendCredentials(username, password string) error {
 	if strings.ContainsAny(username, "\r\n") || strings.ContainsAny(password, "\r\n") {
 		return fmt.Errorf("credentials contain illegal newline characters")
 	}
-	if err := c.send(fmt.Sprintf("username \"Auth\" %s", mgmtQuote(username))); err != nil {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Hold mu across both writes — see the mu field comment for why.
+	if err := c.writeLocked(fmt.Sprintf("username \"Auth\" %s", mgmtQuote(username))); err != nil {
 		return err
 	}
-	return c.send(fmt.Sprintf("password \"Auth\" %s", mgmtQuote(password)))
+	return c.writeLocked(fmt.Sprintf("password \"Auth\" %s", mgmtQuote(password)))
 }
 
 // mgmtQuote wraps s in double quotes and escapes backslashes and double quotes,

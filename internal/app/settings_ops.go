@@ -105,6 +105,33 @@ func (s *TunnelService) SetKillSwitch(enabled bool) error {
 	return s.call(ipc.MethodSetKillSwitch, ipc.KillSwitchRequest{Enabled: enabled}, nil)
 }
 
+// expectedDNSFor returns the DNS servers a tunnel is expected to be using.
+// WireGuard's DNS list is a static client-side directive, readable straight
+// from the parsed .conf before ever connecting. OpenVPN has no such
+// directive — DNS is pushed by the server at connect time — so
+// tunnelStore.Load (a WireGuard-only .conf parser) always errors for an
+// .ovpn tunnel; status.DNSServers (populated from the server's actual
+// PUSH_REPLY once connected — see ovpn/manager.go's applyPushedDNS) is the
+// only place this is knowable for OpenVPN. Shared by SetDNSProtection and
+// RunDNSLeakTest, which each used to reimplement this dispatch separately
+// and had already drifted out of sync once (the OVPN gap was fixed in one
+// but not the other).
+func (s *TunnelService) expectedDNSFor(tunnelName string) []string {
+	if tunnelName == "" {
+		return nil
+	}
+	if s.tunnelStore.IsOVPN(tunnelName) {
+		if status, err := s.GetStatus(); err == nil && status != nil {
+			return status.DNSServers
+		}
+		return nil
+	}
+	if cfg, err := s.tunnelStore.Load(tunnelName); err == nil && cfg != nil {
+		return cfg.Interface.DNS
+	}
+	return nil
+}
+
 // SetDNSProtection asks the helper to lock DNS to the active tunnel's servers.
 // When enabling, we look up the active tunnel's DNS list from local storage
 // and pass it along (the helper never touches user-space storage).
@@ -115,23 +142,7 @@ func (s *TunnelService) SetDNSProtection(enabled bool) error {
 		if err := s.call(ipc.MethodActiveName, nil, &active); err != nil {
 			return fmt.Errorf("cannot verify tunnel state: %w", err)
 		}
-		if active.Value != "" {
-			if s.tunnelStore.IsOVPN(active.Value) {
-				// WireGuard's DNS list is a static client-side directive,
-				// readable straight from the parsed .conf. OpenVPN has no
-				// such directive — DNS is pushed by the server at connect
-				// time — so tunnelStore.Load (WireGuard-only) always
-				// errored here for an .ovpn tunnel, silently leaving
-				// dnsServers empty (same root cause, and same fix, as
-				// RunDNSLeakTest's OVPN gap: read the actually-applied
-				// PUSH_REPLY DNS servers off the live status instead).
-				if status, err := s.GetStatus(); err == nil && status != nil {
-					dnsServers = status.DNSServers
-				}
-			} else if cfg, err := s.tunnelStore.Load(active.Value); err == nil {
-				dnsServers = cfg.Interface.DNS
-			}
-		}
+		dnsServers = s.expectedDNSFor(active.Value)
 	}
 	return s.call(ipc.MethodSetDNSProtection, ipc.DNSProtectionRequest{
 		Enabled:    enabled,
@@ -163,9 +174,9 @@ var allowedOpenURLs = map[string]struct{}{
 	// The frontend currently points at the steiale/wireguide org; both
 	// owners' canonical pages are listed so the existing UI keeps working
 	// without silently breaking.
-	"https://github.com/steiale/wireguide":                       {},
-	"https://github.com/steiale/wireguide/issues":                {},
-	"https://github.com/steiale/wireguide/blob/main/LICENSE":     {},
+	"https://github.com/steiale/wireguide":                   {},
+	"https://github.com/steiale/wireguide/issues":            {},
+	"https://github.com/steiale/wireguide/blob/main/LICENSE": {},
 	// Ko-fi donation page — linked from Settings About and the one-time banner.
 	"https://ko-fi.com/steiale": {},
 }

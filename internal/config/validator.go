@@ -6,6 +6,7 @@ import (
 	"net"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // hostnameRegex matches RFC 1035 hostnames (single-label or FQDN).
@@ -94,6 +95,47 @@ func validateInterface(iface *InterfaceConfig, result *ValidationResult) {
 	if iface.ListenPort != 0 && (iface.ListenPort < 1 || iface.ListenPort > 65535) {
 		result.addError("Interface.ListenPort", fmt.Sprintf("ListenPort must be between 1 and 65535, got %d", iface.ListenPort))
 	}
+
+	// Table: optional. wg-quick accepts "off", "auto", or a table number.
+	// The network managers already parse this defensively (macOS only
+	// string-compares against "off"; Linux parses to an int and falls back
+	// to "auto" on anything unparseable) so a bad value can't reach a
+	// command unsanitized — this rejects it up front instead of silently
+	// falling back, since a typo'd table value silently becoming "auto" is
+	// a confusing way to find out routing didn't do what the config asked.
+	if t := iface.Table; t != "" && !strings.EqualFold(t, "off") && !strings.EqualFold(t, "auto") {
+		if _, err := strconv.Atoi(t); err != nil {
+			result.addError("Interface.Table", fmt.Sprintf("must be \"off\", \"auto\", or a table number, got %q", t))
+		}
+	}
+
+	// FwMark: optional. wg-quick accepts "off" or a decimal/0x-prefixed hex
+	// 32-bit value. Same defensive-parsing-downstream rationale as Table.
+	if fw := iface.FwMark; fw != "" && !strings.EqualFold(fw, "off") {
+		if _, err := parseDecimalOrHex(fw); err != nil {
+			result.addError("Interface.FwMark", fmt.Sprintf("must be \"off\" or a decimal/hex number, got %q", fw))
+		}
+	}
+
+	// ExtraKeys: unrecognized Interface directives preserved verbatim for
+	// round-tripping (export). Reject embedded newlines — this config can
+	// be re-exported and fed to a real wg-quick, which DOES interpret
+	// PostUp/PreDown and other script directives; a value containing "\n"
+	// could smuggle an extra directive line into that export.
+	for k, v := range iface.ExtraKeys {
+		if strings.ContainsAny(v, "\r\n") {
+			result.addError("Interface.ExtraKeys", fmt.Sprintf("value for %q contains a newline", k))
+		}
+	}
+}
+
+// parseDecimalOrHex parses a decimal or "0x"-prefixed hexadecimal integer,
+// matching wg-quick's accepted FwMark syntax.
+func parseDecimalOrHex(s string) (int64, error) {
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		return strconv.ParseInt(s[2:], 16, 64)
+	}
+	return strconv.ParseInt(s, 10, 64)
 }
 
 func validatePeer(peer *PeerConfig, index int, result *ValidationResult) {
@@ -134,6 +176,14 @@ func validatePeer(peer *PeerConfig, index int, result *ValidationResult) {
 		result.addError(prefix+".PersistentKeepalive",
 			fmt.Sprintf("must be between 0 and 65535, got %d", peer.PersistentKeepalive))
 	}
+
+	// ExtraKeys: same round-trip/export injection rationale as
+	// Interface.ExtraKeys above.
+	for k, v := range peer.ExtraKeys {
+		if strings.ContainsAny(v, "\r\n") {
+			result.addError(prefix+".ExtraKeys", fmt.Sprintf("value for %q contains a newline", k))
+		}
+	}
 }
 
 func isValidWireGuardKey(key string) bool {
@@ -153,6 +203,17 @@ func validateEndpoint(endpoint string) error {
 	if host == "" {
 		return fmt.Errorf("endpoint host is empty")
 	}
+	// net.SplitHostPort only splits on the last colon — it doesn't validate
+	// the host component at all, so a value like "1.2.3.4\nPostUp = evil"
+	// previously passed straight through as long as SOMETHING after the
+	// last colon parsed as a port number. This config is stored verbatim
+	// and can later be re-exported (Serialize) for use with a real
+	// wg-quick, which DOES execute PostUp/PreDown — so an embedded newline
+	// here is a real script-injection vector one hop removed from this
+	// app itself. Require the host to be a valid IP or hostname.
+	if net.ParseIP(host) == nil && !hostnameRegex.MatchString(host) {
+		return fmt.Errorf("invalid endpoint host (not an IP or hostname): %q", host)
+	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("invalid endpoint port: %q", portStr)
@@ -168,4 +229,3 @@ func (r *ValidationResult) ErrorMessages() []string {
 	}
 	return msgs
 }
-

@@ -46,7 +46,11 @@ func Parse(content string) (*WireGuardConfig, error) {
 		// Key = Value pairs
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("line %d: invalid syntax: %q", lineNum, line)
+			// Deliberately don't echo the line content: a malformed key
+			// line (e.g. a PrivateKey value with a typo'd/missing "=")
+			// could otherwise leak key material into this error, which
+			// callers log and display to the user.
+			return nil, fmt.Errorf("line %d: expected \"key = value\" syntax", lineNum)
 		}
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])

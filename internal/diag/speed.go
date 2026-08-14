@@ -25,7 +25,11 @@ func RunSpeedTest() *SpeedTestResult {
 	// deadline and will hang forever if the network drops mid-handshake.
 	latencyClient := &http.Client{Timeout: 10 * time.Second}
 	start := time.Now()
-	req, _ := http.NewRequest("HEAD", "https://www.google.com", nil)
+	req, err := http.NewRequest("HEAD", "https://www.google.com", nil)
+	if err != nil {
+		result.Error = fmt.Sprintf("building latency request: %v", err)
+		return result
+	}
 	resp, err := latencyClient.Do(req)
 	if err != nil {
 		result.Error = fmt.Sprintf("connectivity check failed: %v", err)
@@ -47,8 +51,16 @@ func RunSpeedTest() *SpeedTestResult {
 	}
 	defer dlResp.Body.Close()
 
-	bytes, _ := io.Copy(io.Discard, dlResp.Body)
+	bytes, copyErr := io.Copy(io.Discard, dlResp.Body)
 	elapsed := time.Since(start).Seconds()
+	if copyErr != nil {
+		// io.Copy returns the count copied so far even on error — a
+		// connection drop mid-download would otherwise silently compute a
+		// speed from a partial, interrupted transfer instead of reporting
+		// the test as failed.
+		result.Error = fmt.Sprintf("download test interrupted: %v", copyErr)
+		return result
+	}
 
 	if elapsed > 0 && bytes > 0 {
 		result.DownloadMbps = float64(bytes) * 8 / elapsed / 1_000_000

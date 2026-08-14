@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // Listen creates a Unix socket listener at addr.
@@ -59,9 +60,25 @@ func Listen(addr string, ownerUID int) (net.Listener, error) {
 		}
 	}
 
-	// Unconditionally remove any existing socket/file at the path.
+	// Refuse to hijack a socket a live process is still accepting
+	// connections on. Without this, a second helper instance (e.g. started
+	// while an earlier one is still running due to a launchd race, a
+	// manual second invocation, or crash-recovery running against a
+	// daemon that never actually died) would silently unlink the first
+	// instance's socket and bind its own — new IPC connections would go to
+	// the second instance while the first kept running unaware, and
+	// crash-recovery cleanup (ResetDNSToSystemDefault, RemoveRoutes,
+	// firewall.Cleanup) would then run against state a still-live daemon
+	// believes it owns, tearing down a working tunnel's kill switch/DNS
+	// out from under it.
+	if conn, err := net.DialTimeout("unix", addr, 200*time.Millisecond); err == nil {
+		conn.Close()
+		return nil, fmt.Errorf("refusing to bind %s: another process is already listening on it", addr)
+	}
+
 	// The parent directory (0700, ownership-verified) is the real security
-	// boundary — no TOCTOU-prone Lstat check needed here.
+	// boundary for the socket itself — no TOCTOU-prone Lstat check needed
+	// on top of the liveness probe above.
 	if err := os.Remove(addr); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("remove stale socket %s: %w", addr, err)
 	}

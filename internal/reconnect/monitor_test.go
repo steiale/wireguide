@@ -101,8 +101,8 @@ func newMockSleepDetector() *mockSleepDetector {
 	}
 }
 
-func (d *mockSleepDetector) Start() { d.started.Store(true) }
-func (d *mockSleepDetector) Stop()  { d.stopped.Store(true) }
+func (d *mockSleepDetector) Start()                    { d.started.Store(true) }
+func (d *mockSleepDetector) Stop()                     { d.stopped.Store(true) }
 func (d *mockSleepDetector) WakeChan() <-chan struct{} { return d.wakeCh }
 
 func (d *mockSleepDetector) sendWake() {
@@ -409,8 +409,8 @@ func TestFirewallCallbacks_CalledInOrder(t *testing.T) {
 	mgr.setConnected(true, "test-tunnel")
 
 	mon.SetFirewallCallbacks(
-		func() error { record("suspend"); return nil },
-		func() error { record("resume"); return nil },
+		func(string) error { record("suspend"); return nil },
+		func(string) error { record("resume"); return nil },
 	)
 
 	mon.mu.Lock()
@@ -446,8 +446,14 @@ func TestFirewallCallbacks_CalledInOrder(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Expected order: suspend -> reconnect -> resume
-	expected := []string{"suspend", "reconnect", "resume"}
+	// Expected order: suspend -> reconnect -> resume -> resume. The second
+	// resume is reconnectWithBackoff's unconditional backstop (a deferred
+	// call at function entry, guaranteeing the firewall gets a resume
+	// attempt no matter how the retry sequence exits — see its doc
+	// comment). It fires here IN ADDITION TO the explicit
+	// resume-after-success call, since fwResumeFn/resumeFirewall is a safe
+	// no-op when nothing is actually suspended.
+	expected := []string{"suspend", "reconnect", "resume", "resume"}
 	if len(order) != len(expected) {
 		t.Fatalf("expected %v, got %v", expected, order)
 	}
@@ -474,8 +480,8 @@ func TestFirewallCallbacks_ResumedOnFailure(t *testing.T) {
 	mgr.setConnected(true, "test-tunnel")
 
 	mon.SetFirewallCallbacks(
-		func() error { suspendCalls.Add(1); return nil },
-		func() error { resumeCalls.Add(1); return nil },
+		func(string) error { suspendCalls.Add(1); return nil },
+		func(string) error { resumeCalls.Add(1); return nil },
 	)
 
 	mon.mu.Lock()
@@ -491,9 +497,15 @@ func TestFirewallCallbacks_ResumedOnFailure(t *testing.T) {
 	// Give a moment for post-attempt cleanup.
 	time.Sleep(50 * time.Millisecond)
 
-	if suspendCalls.Load() != resumeCalls.Load() {
-		t.Fatalf("suspend (%d) and resume (%d) calls should match",
-			suspendCalls.Load(), resumeCalls.Load())
+	// resumeCalls = suspendCalls + 1: the explicit resume-after-failed-attempt
+	// call, PLUS reconnectWithBackoff's unconditional backstop resume that
+	// now fires once when the whole retry sequence exits (see that
+	// function's doc comment) — a safe no-op on top of the already-resumed
+	// state, added so cancel/stop/max-attempts exit paths that previously
+	// had no resume call at all are guaranteed one too.
+	if want := suspendCalls.Load() + 1; resumeCalls.Load() != want {
+		t.Fatalf("expected resume calls (%d) to be suspend calls (%d) + 1, got %d",
+			want, suspendCalls.Load(), resumeCalls.Load())
 	}
 }
 

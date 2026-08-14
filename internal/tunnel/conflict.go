@@ -82,12 +82,16 @@ func isWireGuardLike(name string) bool {
 
 // identifyOwner determines who created this interface by checking UAPI sockets.
 func identifyOwner(ifaceName string) string {
-	// Check LockPlus socket
-	if socketExists("/var/run/lockplus/" + ifaceName + ".sock") {
-		return "LockPlus"
-	}
-
-	// Check WireGuard socket
+	// This app's own engine (uapi_unix.go) creates its UAPI socket at the
+	// same standard /var/run/wireguard/<iface>.sock path any wireguard-go
+	// tool uses — there's no separate "/var/run/lockplus/" socket to check
+	// (a previous version of this function checked one, but nothing ever
+	// creates a socket there, so that check could never match and every
+	// one of this app's own interfaces was always falling through to the
+	// generic "WireGuard" label below anyway). Distinguishing "created by
+	// THIS app" from "created by some other wireguard-go-based tool" isn't
+	// possible from the socket path alone; "WireGuard" is the accurate
+	// label for either case.
 	if socketExists("/var/run/wireguard/" + ifaceName + ".sock") {
 		return "WireGuard"
 	}

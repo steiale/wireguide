@@ -246,8 +246,14 @@ type SavedCredentials struct {
 func (s *TunnelService) GetSavedCredentials(tunnelName string) (*SavedCredentials, error) {
 	creds, err := ovpn.LoadCredentials(tunnelName)
 	if err != nil {
-		// "could not be found" is not an error condition for the modal.
-		return nil, nil //nolint:nilerr
+		if errors.Is(err, ovpn.ErrCredentialsNotFound) {
+			// Not an error condition for the modal — just show empty fields.
+			return nil, nil //nolint:nilerr
+		}
+		// A genuine Keychain failure (permission denied, locked/corrupted
+		// keychain) — surface it instead of silently masking it as "no
+		// saved creds", which previously made real problems invisible.
+		return nil, err
 	}
 	return &SavedCredentials{
 		Username:     creds.Username,

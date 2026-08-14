@@ -53,18 +53,17 @@ func init() {
 	trayOffIcon = pngWith144DPI(trayLockOffPNG)
 }
 
-
 // pngWith144DPI splices a pHYs chunk (144 DPI = 5669 pixels/metre) into a PNG
 // immediately after its IHDR chunk. NSImage uses this metadata to determine
 // the image's point size, enabling correct @2x Retina rendering without any
 // explicit setSize call.
 func pngWith144DPI(data []byte) []byte {
-	const ppm = 5669     // pixels per metre ≈ 144 DPI
-	const insertAt = 33  // byte offset right after PNG sig (8) + IHDR (25)
+	const ppm = 5669    // pixels per metre ≈ 144 DPI
+	const insertAt = 33 // byte offset right after PNG sig (8) + IHDR (25)
 	if len(data) < insertAt {
 		return data
 	}
-	chunk := make([]byte, 21) // 4 len + 4 type + 4 x + 4 y + 1 unit + 4 crc
+	chunk := make([]byte, 21)                // 4 len + 4 type + 4 x + 4 y + 1 unit + 4 crc
 	binary.BigEndian.PutUint32(chunk[0:], 9) // data length
 	copy(chunk[4:], "pHYs")
 	binary.BigEndian.PutUint32(chunk[8:], ppm)
@@ -80,7 +79,6 @@ func pngWith144DPI(data []byte) []byte {
 	out = append(out, data[insertAt:]...)
 	return out
 }
-
 
 // formatSpeedFixed renders bytes/sec as exactly 4 chars + "K", padded with
 // U+2007 FIGURE SPACE (digit-width in SF Pro) so the string always renders
@@ -451,8 +449,16 @@ func (t *trayManager) rebuildMenu() {
 	})
 	m.AddSeparator()
 	m.Add("Quit").OnClick(func(_ *application.Context) {
+		// doShutdown is sync.Once-guarded, safe to call here even though
+		// app.Quit() below also triggers it via
+		// ApplicationWillTerminate (gui.go) — calling it here too just
+		// starts shutdown promptly rather than waiting on that event.
+		// tray.Destroy() is NOT also called here, though: unlike
+		// doShutdown, the underlying native destroy is not guaranteed
+		// idempotent, and ApplicationWillTerminate's handler already
+		// destroys the same tray once app.Quit() below fires it — calling
+		// Destroy() from both places double-destroyed the same NSStatusItem.
 		t.doShutdown()
-		t.tray.Destroy()
 		t.app.Quit()
 	})
 	t.tray.SetMenu(m)
