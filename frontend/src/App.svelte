@@ -614,7 +614,12 @@
         try {
           await TunnelService.SaveCredentials(authTunnelName, authUsername, '');
         } catch (e) {
+          // Non-fatal — the connect itself still proceeds below via
+          // FeedCredentials — but silent-only (console.warn) meant the user
+          // had no way to know their username wasn't actually remembered
+          // and would need retyping every time, with no visible signal why.
           console.warn('SaveCredentials failed:', e);
+          showToast('Could not save username: ' + errText(e));
         }
       }
       await TunnelService.FeedCredentials(

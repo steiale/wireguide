@@ -11,6 +11,37 @@
 // failure) so callers get a real OSStatus-shaped value instead of a crash.
 static const int kBadParam = -50;
 
+// defaultKeychainSearchList returns an array containing just the caller's
+// default keychain (normally login.keychain for a GUI-process caller), or
+// nil if it can't be resolved. Used as kSecMatchSearchList on read/delete
+// queries so a stale item elsewhere in the keychain search list — e.g. one a
+// ROOT process's SecItemAdd once defaulted into the admin-managed System
+// keychain, before credential writes moved to run as the regular user (see
+// keychainStoreGenericPassword's doc comment) — is treated as simply not
+// present instead of requiring an OS administrator-authorization prompt just
+// to notice it exists. A caller falling back to an unrestricted search on
+// nil is safer than failing outright; it just means that one call reverts
+// to the old (correct, just not migration-silent) behavior.
+//
+// SecKeychainCopyDefault is deprecated (macOS 10.10+) in favor of the
+// data-protection keychain APIs — expected and left as-is here, same as
+// kSecUseDataProtectionKeychain being deliberately unset above: this whole
+// file targets the legacy file-based keychain on purpose, for compatibility
+// with items `security`-CLI-based code already created there.
+static NSArray *defaultKeychainSearchList(void) {
+	SecKeychainRef defaultKeychain = NULL;
+	OSStatus status = SecKeychainCopyDefault(&defaultKeychain);
+	if (status != errSecSuccess || defaultKeychain == NULL) {
+		return nil;
+	}
+	NSArray *list = @[(__bridge id)defaultKeychain];
+	// NSArray's literal syntax retains its elements independent of this
+	// file's ARC setting, so releasing our own Create-Rule reference here is
+	// safe — the array already holds its own.
+	CFRelease(defaultKeychain);
+	return list;
+}
+
 // keychainStoreGenericPassword adds or updates a generic-password Keychain
 // item. Returns 0 on success, or an OSStatus error code on failure.
 //
@@ -47,29 +78,52 @@ int keychainStoreGenericPassword(const char *service, const char *account, const
 			(__bridge id)kSecAttrAccount: acct,
 		};
 
-		NSDictionary *attributesToUpdate = @{
-			(__bridge id)kSecValueData: data,
-		};
-
-		OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attributesToUpdate);
-		if (status == errSecItemNotFound) {
-			// mutableCopy follows the Copy Rule (+1 owned reference), unlike
-			// the @{} literals and factory methods above — this file is
-			// compiled without ARC, so it needs an explicit release or it
-			// leaks one NSMutableDictionary per first-time credential save.
-			NSMutableDictionary *addQuery = [query mutableCopy];
-			addQuery[(__bridge id)kSecValueData] = data;
-			addQuery[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
-			status = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-			if (status == errSecDuplicateItem) {
-				// TOCTOU: another call created the item between our
-				// SecItemUpdate (not-found) and this SecItemAdd. Retry as
-				// an update now that it genuinely exists instead of
-				// surfacing a spurious "duplicate item" error.
-				status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attributesToUpdate);
-			}
-			[addQuery release];
+		// Delete any existing item in the DEFAULT keychain BEFORE adding,
+		// rather than updating one in place if found. SecItemUpdate modifies
+		// an item wherever it already lives and never relocates it — for
+		// years this code (and the root helper process that used to be the
+		// sole writer) could leave an item stuck in a keychain the CURRENT
+		// caller doesn't actually have standing access to (e.g. an item a
+		// root process's SecItemAdd defaulted into the admin-managed System
+		// keychain), so every subsequent save just kept re-authorizing into
+		// and updating that same wrong keychain forever instead of ever
+		// migrating it. Delete (harmless no-op via errSecItemNotFound when
+		// nothing exists there) + fresh Add always lands the item in the
+		// CALLER's own default keychain, self-healing that kind of stale
+		// placement on the very next save.
+		//
+		// Restricted to the default keychain (not the full search list) so
+		// this never touches — and never needs to re-authorize into — a
+		// stale copy sitting in the System keychain from before credential
+		// writes moved to run as the regular user: that old item is simply
+		// left behind as an orphan (it's already unreachable via the read
+		// path below, which has the same restriction) rather than costing
+		// the user one more admin prompt to migrate away.
+		NSMutableDictionary *deleteQuery = [query mutableCopy];
+		NSArray *searchList = defaultKeychainSearchList();
+		if (searchList != nil) {
+			deleteQuery[(__bridge id)kSecMatchSearchList] = searchList;
 		}
+		OSStatus status = SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+		[deleteQuery release];
+		if (status != errSecSuccess && status != errSecItemNotFound) {
+			return (int)status;
+		}
+
+		NSMutableDictionary *addQuery = [query mutableCopy];
+		addQuery[(__bridge id)kSecValueData] = data;
+		addQuery[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
+		status = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+		if (status == errSecDuplicateItem) {
+			// TOCTOU: another call (or the unscoped-search-list fallback
+			// above, if SecKeychainCopyDefault failed) recreated/left a
+			// matching item between our delete and this add. Overwrite it in
+			// place rather than surfacing a spurious "duplicate item" error.
+			status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)@{
+				(__bridge id)kSecValueData: data,
+			});
+		}
+		[addQuery release];
 		return (int)status;
 	}
 }
@@ -86,16 +140,28 @@ int keychainLoadGenericPassword(const char *service, const char *account, unsign
 			return kBadParam;
 		}
 
-		NSDictionary *query = @{
+		NSMutableDictionary *query = [@{
 			(__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
 			(__bridge id)kSecAttrService: svc,
 			(__bridge id)kSecAttrAccount: acct,
 			(__bridge id)kSecReturnData: @YES,
 			(__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
-		};
+		} mutableCopy];
+		// Restricted to the default keychain — see
+		// defaultKeychainSearchList's doc comment. Without this, a stale
+		// item left in the System keychain (from before credential writes
+		// moved to run as the regular user) makes EVERY connect attempt
+		// trigger an OS administrator-authorization prompt just to read a
+		// value this call doesn't even need to succeed at (the caller
+		// treats "not found" as "show an empty field", not an error).
+		NSArray *searchList = defaultKeychainSearchList();
+		if (searchList != nil) {
+			query[(__bridge id)kSecMatchSearchList] = searchList;
+		}
 
 		CFTypeRef result = NULL;
 		OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+		[query release];
 		if (status != errSecSuccess) {
 			return (int)status;
 		}
@@ -132,12 +198,22 @@ int keychainDeleteGenericPassword(const char *service, const char *account) {
 		if (svc == nil || acct == nil) {
 			return kBadParam;
 		}
-		NSDictionary *query = @{
+		NSMutableDictionary *query = [@{
 			(__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
 			(__bridge id)kSecAttrService: svc,
 			(__bridge id)kSecAttrAccount: acct,
-		};
+		} mutableCopy];
+		// Same default-keychain restriction as the read/store paths — a
+		// plain tunnel deletion or rename shouldn't cost the user an OS
+		// administrator prompt just to clean up a credential that (from
+		// this caller's perspective, running as the regular user) may not
+		// even be reachable without one.
+		NSArray *searchList = defaultKeychainSearchList();
+		if (searchList != nil) {
+			query[(__bridge id)kSecMatchSearchList] = searchList;
+		}
 		OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+		[query release];
 		if (status == errSecItemNotFound) {
 			return 0;
 		}

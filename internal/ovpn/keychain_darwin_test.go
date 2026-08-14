@@ -54,7 +54,7 @@ func TestNativeKeychain_Update(t *testing.T) {
 		t.Fatalf("LoadCredentials: %v", err)
 	}
 	if creds.Username != "bob" || creds.BasePassword != "second-password" {
-		t.Errorf("got (%q, %q), want (%q, %q) — SecItemUpdate should have overwritten the first item, not created a duplicate",
+		t.Errorf("got (%q, %q), want (%q, %q) — the second store should have replaced the first item, not created a duplicate",
 			creds.Username, creds.BasePassword, "bob", "second-password")
 	}
 }
