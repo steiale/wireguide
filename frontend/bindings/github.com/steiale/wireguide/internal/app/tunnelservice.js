@@ -156,6 +156,17 @@ export function DisconnectTunnel(name) {
 }
 
 /**
+ * ExportAllTunnels bundles every stored tunnel's config into a single zip
+ * (mirroring ImportZip's format, so the result can be re-imported directly)
+ * via a native save dialog. Returns the saved path, or empty string if the
+ * user cancelled or there are no tunnels to export.
+ * @returns {$CancellablePromise<string>}
+ */
+export function ExportAllTunnels() {
+    return $Call.ByID(2165041110);
+}
+
+/**
  * ExportConfig returns the serialized text for display in the export dialog.
  * @param {string} name
  * @returns {$CancellablePromise<string>}

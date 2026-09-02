@@ -381,3 +381,70 @@ func (s *TunnelService) ExportTunnel(name string) (string, error) {
 	}
 	return path, nil
 }
+
+// ExportAllTunnels bundles every stored tunnel's config into a single zip
+// (mirroring ImportZip's format, so the result can be re-imported directly)
+// via a native save dialog. Returns the saved path, or empty string if the
+// user cancelled or there are no tunnels to export.
+func (s *TunnelService) ExportAllTunnels() (string, error) {
+	names, err := s.tunnelStore.List()
+	if err != nil {
+		return "", err
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("no tunnels to export")
+	}
+	if s.app == nil {
+		return "", fmt.Errorf("app not initialized")
+	}
+
+	path, err := s.app.Dialog.SaveFile().
+		SetFilename("lockplus-tunnels.zip").
+		AddFilter("Zip Archive", "*.zip").
+		PromptForSingleSelection()
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", nil // user cancelled
+	}
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	usedNames := make(map[string]bool, len(names))
+	for _, name := range names {
+		content, err := s.GetConfigText(name)
+		if err != nil {
+			continue // skip tunnels that fail to serialize rather than aborting the whole export
+		}
+		ext := ".conf"
+		if s.tunnelStore.IsOVPN(name) {
+			ext = ".ovpn"
+		}
+		entryName := name + ext
+		for i := 1; usedNames[entryName]; i++ {
+			entryName = fmt.Sprintf("%s-%d%s", name, i, ext)
+		}
+		usedNames[entryName] = true
+
+		w, err := zw.Create(entryName)
+		if err != nil {
+			zw.Close()
+			return "", err
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			zw.Close()
+			return "", err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return "", err
+	}
+
+	// The zip contains private keys/credentials for every tunnel — write
+	// with 0600, same as a single-tunnel export.
+	if err := os.WriteFile(path, buf.Bytes(), 0600); err != nil {
+		return "", err
+	}
+	return path, nil
+}

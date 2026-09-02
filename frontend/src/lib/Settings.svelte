@@ -1,6 +1,6 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
-  import { t, setLanguage, getLanguage, detectLanguage } from '../i18n/index.js';
+  import { t, tPlain, setLanguage, getLanguage, detectLanguage } from '../i18n/index.js';
   import { applyTheme } from '../stores/theme.js';
   import { connectionStatus, tunnels } from '../stores/tunnels.js';
   import WifiRules from './WifiRules.svelte';
@@ -13,6 +13,21 @@
   let aboutUpdating = false;
   let aboutShowVpnWarn = false;
   let saveError = '';
+  let exportAllStatus = '';
+  let exportAllBusy = false;
+
+  async function exportAllTunnels() {
+    exportAllStatus = '';
+    exportAllBusy = true;
+    try {
+      const path = await TunnelService.ExportAllTunnels();
+      if (path) exportAllStatus = tPlain('settings.export_all_success', { path });
+    } catch (e) {
+      exportAllStatus = e?.message ?? String(e);
+    } finally {
+      exportAllBusy = false;
+    }
+  }
 
   function aboutRequestUpdate() {
     if ($connectionStatus?.state === 'connected') {
@@ -321,6 +336,16 @@
             <label for="auto-start">{$t('settings.auto_start')}</label>
             <input id="auto-start" type="checkbox" checked={settings.auto_start} on:change={onAutoStartChange} />
           </div>
+
+          <div class="setting-row">
+            <label for="export-all-btn">{$t('settings.export_all')}</label>
+            <button id="export-all-btn" class="link-btn" on:click={exportAllTunnels} disabled={exportAllBusy}>
+              {$t('tunnel.export')}
+            </button>
+          </div>
+          <p class="setting-hint">
+            {exportAllStatus || $t('settings.export_all_hint')}
+          </p>
 
         {:else if activeTab === 'advanced'}
           <div class="setting-row">
