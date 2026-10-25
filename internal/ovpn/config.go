@@ -46,48 +46,95 @@ func normalizeDirective(field string) string {
 // sets one deliberately (e.g. a longer restart window tuned for a
 // high-latency link) must not be silently overridden.
 func HasKeepaliveDirective(data []byte) bool {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	inInlineBlock := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		if strings.HasPrefix(line, "<") && strings.HasSuffix(line, ">") {
-			if strings.HasPrefix(line, "</") {
-				inInlineBlock = false
-			} else if strings.ToLower(line) != "<connection>" {
-				inInlineBlock = true
-			}
-			continue
-		}
-		if inInlineBlock {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
+	found := false
+	forEachTopLevelDirective(data, func(fields []string) bool {
 		switch normalizeDirective(fields[0]) {
 		case "ping", "ping-restart", "keepalive":
-			return true
+			found = true
 		}
-	}
-	return false
+		return !found
+	})
+	return found
 }
 
 // HasMTUDirective reports whether the raw .ovpn content already tunes
 // fragmentation behaviour via `mssfix`, `fragment`, `tun-mtu`, or `link-mtu`.
 // Connect uses this to decide whether to inject its own `--mssfix` floor —
 // see the CLI args comment there for why. Without any of these, OpenVPN's
-// bundled 2.6 defaults to a 1500 tun-mtu with no MSS clamp, so a
+// bundled 2.7 (unchanged from 2.6) defaults to a 1500 tun-mtu with no MSS clamp, so a
 // full-size inner TCP segment (e.g. an RDP screen update) plus tunnel
 // overhead routinely exceeds the path MTU and gets IP-fragmented — which
 // then depends on middleboxes/firewalls handling fragments correctly to
 // arrive at all (see the kill switch's own fragment-handling fix in
 // internal/firewall/darwin.go for a concrete way that goes wrong locally).
 func HasMTUDirective(data []byte) bool {
+	found := false
+	forEachTopLevelDirective(data, func(fields []string) bool {
+		switch normalizeDirective(fields[0]) {
+		case "mssfix", "fragment", "tun-mtu", "link-mtu":
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// defaultDataCiphers is OpenVPN 2.7's built-in --data-ciphers default.
+const defaultDataCiphers = "AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305"
+
+// LegacyDataCiphers returns a --data-ciphers value that restores OpenVPN
+// 2.6's implicit behaviour for profiles that still set `cipher X` without
+// `data-ciphers`: 2.6 appended X to the negotiable list, 2.7 silently ignores
+// it, so a server that only speaks X (e.g. AES-256-CBC) stops connecting
+// after the upgrade. Modern servers still negotiate GCM first. Returns "" when
+// no shim is needed. BF-CBC is skipped because 2.7 still translates an
+// explicit `cipher BF-CBC` itself; `none` is never re-enabled.
+func LegacyDataCiphers(data []byte) string {
+	var cipher string
+	explicit := false
+	forEachTopLevelDirective(data, func(fields []string) bool {
+		switch normalizeDirective(fields[0]) {
+		case "data-ciphers", "ncp-ciphers":
+			explicit = true
+			return false
+		case "cipher":
+			if len(fields) > 1 {
+				cipher = fields[1]
+			}
+		}
+		return true
+	})
+	if explicit || cipher == "" || !isCipherName(cipher) {
+		return ""
+	}
+	upper := strings.ToUpper(cipher)
+	if upper == "NONE" || upper == "BF-CBC" {
+		return ""
+	}
+	for _, c := range strings.Split(defaultDataCiphers, ":") {
+		if upper == c {
+			return ""
+		}
+	}
+	return defaultDataCiphers + ":" + cipher
+}
+
+func isCipherName(s string) bool {
+	if len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if !(r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// forEachTopLevelDirective calls fn with the whitespace-split fields of every
+// directive line outside inline blocks (<ca>, <key>, ...; <connection> blocks
+// are scanned since they hold real directives). Stops when fn returns false.
+func forEachTopLevelDirective(data []byte, fn func(fields []string) bool) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	inInlineBlock := false
@@ -111,12 +158,10 @@ func HasMTUDirective(data []byte) bool {
 		if len(fields) == 0 {
 			continue
 		}
-		switch normalizeDirective(fields[0]) {
-		case "mssfix", "fragment", "tun-mtu", "link-mtu":
-			return true
+		if !fn(fields) {
+			return
 		}
 	}
-	return false
 }
 
 // ParseOVPN scans the lines of an .ovpn file for the directives LockPlus
@@ -245,6 +290,14 @@ func ValidateOVPN(data []byte) error {
 			"tls-verify", "client-connect", "client-disconnect",
 			"learn-address", "ipchange", "plugin", "iproute":
 			return fmt.Errorf("invalid .ovpn: directive %q is not allowed (script/plugin execution is disabled)", directive)
+		// OpenVPN 2.7's dns-updown takes a command path (or "force" to run the
+		// compiled-in default, which runs as a built-in that --script-security 1
+		// allows). Connect overrides it with --dns-updown disable anyway; only
+		// the explicit no-op "disable" is accepted here.
+		case "dns-updown":
+			if len(fields) < 2 || strings.ToLower(fields[1]) != "disable" {
+				return fmt.Errorf("invalid .ovpn: directive %q is not allowed (script/plugin execution is disabled)", directive)
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {

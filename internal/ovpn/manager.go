@@ -26,7 +26,7 @@ import (
 //	Data Channel: cipher 'AES-256-GCM'
 //	Data Channel: cipher 'AES-256-GCM', auth 'SHA256'
 //
-// See src/openvpn/init.c in the OpenVPN 2.6 source.
+// See src/openvpn/init.c in the OpenVPN 2.7 source (unchanged since 2.6).
 var cipherLogRe = regexp.MustCompile(`Data Channel: cipher '([^']+)'`)
 
 // dhcpOptionRe matches server-pushed DNS server / search domain options out
@@ -48,7 +48,60 @@ var cipherLogRe = regexp.MustCompile(`Data Channel: cipher '([^']+)'`)
 // single quotes, and when a dhcp-option is the LAST option in the (possibly
 // fragmented, if the option list is long) logged line, [^,]+ alone would
 // swallow that trailing quote into the captured value.
-var dhcpOptionRe = regexp.MustCompile(`dhcp-option (DNS|DOMAIN) ([^,']+)`)
+//
+// DNS6 and DOMAIN-SEARCH are matched too (OpenVPN 2.7 folds both into its
+// DNS config the same way it does DNS/DOMAIN).
+var dhcpOptionRe = regexp.MustCompile(`dhcp-option (DNS6?|DOMAIN(?:-SEARCH)?) ([^,']+)`)
+
+// dnsServerRe / dnsSearchRe match the newer `--dns` style options a 2.6+/2.7
+// server may push instead of (or alongside) dhcp-option, e.g.
+//
+//	PUSH_REPLY,dns server 0 address 10.8.0.1 [fd00::1]:53,dns search-domains corp.example,...
+//
+// When any `dns server` address is pushed, OpenVPN ignores pushed
+// dhcp-option DNS entirely; extractPushedDNS mirrors that precedence.
+var (
+	dnsServerRe = regexp.MustCompile(`(?:^|[,'])dns server -?\d+ address ([^,']+)`)
+	dnsSearchRe = regexp.MustCompile(`(?:^|[,'])dns search-domains ([^,']+)`)
+)
+
+// stripDNSPort turns an `--dns server N address` value ("1.2.3.4",
+// "1.2.3.4:5353", "fd00::1", "[fd00::1]:53") into a bare IP. Returns "" for
+// anything that isn't an IP literal.
+func stripDNSPort(s string) string {
+	if ip := net.ParseIP(s); ip != nil {
+		return s
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil && net.ParseIP(host) != nil {
+		return host
+	}
+	return ""
+}
+
+// extractPushedDNS returns the DNS server IPs and search domains carried by a
+// PUSH_REPLY / PUSH_UPDATE log line, in the mixed form network.SetDNS takes.
+func extractPushedDNS(line string) []string {
+	var entries []string
+	for _, mm := range dnsServerRe.FindAllStringSubmatch(line, -1) {
+		for _, a := range strings.Fields(mm[1]) {
+			if ip := stripDNSPort(a); ip != "" {
+				entries = append(entries, ip)
+			}
+		}
+	}
+	if len(entries) > 0 {
+		for _, mm := range dnsSearchRe.FindAllStringSubmatch(line, -1) {
+			entries = append(entries, strings.Fields(mm[1])...)
+		}
+		return entries
+	}
+	for _, mm := range dhcpOptionRe.FindAllStringSubmatch(line, -1) {
+		if v := strings.TrimSpace(mm[2]); v != "" {
+			entries = append(entries, v)
+		}
+	}
+	return entries
+}
 
 // ifaceLogRe matches OpenVPN's own log line announcing the tun/utun device
 // it just opened, e.g. "Opened utun device utun5" on macOS. Unlike
@@ -356,12 +409,23 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 	// instead of silently killing the tunnel — a strictly better default
 	// for a GUI-driven client (our own 10-minute per-prompt timeout in
 	// onMgmtAuthPrompt still bounds how long any single retry can hang).
+	//
+	// --dns-updown disable: OpenVPN 2.7 converts pushed DNS (both
+	// `dhcp-option DNS` and `dns server`) into a run of its default
+	// dns-updown command, and runs it as a BUILT-IN command — which
+	// --script-security 1 permits — from a compiled-in path under
+	// /usr/local/libexec. As root. We apply pushed DNS ourselves
+	// (applyPushedDNS), so the script would only fight networksetup at best,
+	// or exec a planted file at worst. build.sh also configures with
+	// --disable-dns-updown-by-default; this flag (after --config, so it wins
+	// over a profile's `dns-updown force`) is the second line of defense.
 	args := []string{
 		"--config", cfgPath,
 		"--management", sockPath, "unix",
 		"--management-hold",
 		"--management-query-passwords",
 		"--script-security", "1",
+		"--dns-updown", "disable",
 		"--setenv", "IV_SSO", "webauth,crtext",
 		"--auth-retry", "interact",
 	}
@@ -391,6 +455,9 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 	// and is deliberately NOT set here for that reason).
 	if !HasMTUDirective(ovpnContent) {
 		args = append(args, "--mssfix", "1300")
+	}
+	if dc := LegacyDataCiphers(ovpnContent); dc != "" {
+		args = append(args, "--data-ciphers", dc)
 	}
 	cmd := exec.Command(m.binaryPath, args...)
 	cmd.Dir = m.runtimeDir
@@ -493,7 +560,9 @@ func (m *Manager) scanOutput(name string, r io.Reader) {
 		if match := cipherLogRe.FindStringSubmatch(line); match != nil {
 			m.setCipher(name, match[1])
 		}
-		if strings.Contains(line, "PUSH_REPLY") {
+		// PUSH_UPDATE (new in 2.7) can replace DNS mid-session; same log
+		// line shape as PUSH_REPLY.
+		if strings.Contains(line, "PUSH_REPLY") || strings.Contains(line, "PUSH_UPDATE") {
 			m.applyPushedDNS(name, line)
 		}
 		if match := ifaceLogRe.FindStringSubmatch(line); match != nil {
@@ -517,17 +586,13 @@ func (m *Manager) setInterfaceName(name, ifaceName string) {
 	}
 }
 
-// applyPushedDNS extracts dhcp-option DNS/DOMAIN entries from a PUSH_REPLY
+// applyPushedDNS extracts pushed DNS (see extractPushedDNS) from a PUSH_REPLY/PUSH_UPDATE
 // log line and applies them via netMgr, mirroring how WireGuard's `DNS = ...`
 // directive is applied. No-op if the line carries no dhcp-option entries.
 func (m *Manager) applyPushedDNS(name, pushReplyLine string) {
-	matches := dhcpOptionRe.FindAllStringSubmatch(pushReplyLine, -1)
-	if len(matches) == 0 || m.netMgr == nil {
+	entries := extractPushedDNS(pushReplyLine)
+	if len(entries) == 0 || m.netMgr == nil {
 		return
-	}
-	entries := make([]string, 0, len(matches))
-	for _, mm := range matches {
-		entries = append(entries, strings.TrimSpace(mm[2]))
 	}
 	if err := m.netMgr.SetDNS(name, entries); err != nil {
 		slog.Warn("ovpn: failed to apply server-pushed DNS", "tunnel", name, "entries", entries, "error", err)
