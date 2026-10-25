@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	"github.com/steiale/wireguide/internal/autostart"
 	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/storage"
 	"github.com/steiale/wireguide/internal/update"
@@ -46,29 +45,15 @@ func (s *TunnelService) GetSettings() (*storage.Settings, error) {
 // level to Debug wouldn't see any new records — the saved file would match
 // the UI but the running process would still be at Info.
 func (s *TunnelService) SaveSettings(settings *storage.Settings) error {
-	// Read the previous state first so we only (un)install the autostart
-	// entry when the user actually toggles it. This avoids rewriting the
-	// LaunchAgent plist / desktop file on every unrelated setting change.
+	// Read the previous state first so we only (un)register the login item
+	// when the user actually toggles it.
 	prev, _ := s.settingsStore.Load()
 
-	// M3: Install/remove the autostart entry BEFORE persisting settings.
-	// If the LaunchAgent plist (or equivalent) fails to install, we do not
-	// want the on-disk AutoStart=true to lie about reality. Only after the
-	// system-level state matches what the user asked for do we commit the
-	// change to settings.
+	// Register/unregister BEFORE persisting so a failed registration never
+	// leaves AutoStart=true on disk while nothing actually launches at login.
 	if prev == nil || prev.AutoStart != settings.AutoStart {
-		if settings.AutoStart {
-			exe, err := os.Executable()
-			if err != nil {
-				return fmt.Errorf("autostart: cannot resolve exe path: %w", err)
-			}
-			if err := autostart.InstallAutostart(exe); err != nil {
-				return fmt.Errorf("autostart: install failed: %w", err)
-			}
-		} else {
-			if err := autostart.RemoveAutostart(); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("autostart: remove failed: %w", err)
-			}
+		if err := s.setAutostart(settings.AutoStart); err != nil {
+			return err
 		}
 	}
 
@@ -313,4 +298,49 @@ func (t *TunnelService) SaveTunnelMeta(name string, meta storage.TunnelMeta) err
 		}
 	}
 	return t.tunnelStore.SaveMeta(name, &meta)
+}
+
+// legacyLaunchAgent is the per-user LaunchAgent plist LockPlus wrote before
+// login items moved to Wails' AutostartManager (SMAppService.mainApp).
+const legacyLaunchAgent = "io.github.steiale.lockplus.gui.plist"
+
+func removeLegacyLaunchAgent() (existed bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	err = os.Remove(filepath.Join(home, "Library", "LaunchAgents", legacyLaunchAgent))
+	return err == nil
+}
+
+func (s *TunnelService) setAutostart(enabled bool) error {
+	removeLegacyLaunchAgent()
+	if s.app == nil {
+		return fmt.Errorf("autostart: app not initialized")
+	}
+	if enabled {
+		if err := s.app.Autostart.Enable(); err != nil {
+			return fmt.Errorf("autostart: enable failed: %w", err)
+		}
+		return nil
+	}
+	if err := s.app.Autostart.Disable(); err != nil {
+		return fmt.Errorf("autostart: disable failed: %w", err)
+	}
+	return nil
+}
+
+// MigrateAutostart moves users who enabled launch-at-login under the old
+// LaunchAgent plist over to the SMAppService login item. No-op otherwise.
+func (s *TunnelService) MigrateAutostart() {
+	settings, err := s.settingsStore.Load()
+	if err != nil || settings == nil || !settings.AutoStart {
+		return
+	}
+	if !removeLegacyLaunchAgent() {
+		return
+	}
+	if err := s.setAutostart(true); err != nil {
+		slog.Warn("autostart migration failed", "error", err)
+	}
 }

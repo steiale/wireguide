@@ -277,6 +277,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(_ *application.ApplicationEvent) {
 		bootstrapOnce.Do(func() {
 			go bootstrapHelper(app, clients, bridge, settingsStore, dataDir)
+			go tunnelService.MigrateAutostart()
 		})
 	})
 
