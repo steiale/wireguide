@@ -175,20 +175,24 @@ tasks:
     internal: true
     cmds:
       - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.app"
-      # `--deep` just re-signed the bundled helper ad-hoc, which macOS 13+ will
-      # refuse to `launchctl bootstrap`. Re-sign ONLY the helper binary with the
+      # `--deep` just re-signed the bundled helper and openvpn ad-hoc; launchd
+      # refuses an ad-hoc helper on macOS 13+ and the install script now verifies
+      # both against our Developer ID requirement. Re-sign them with the
       # Developer ID identity (hardened runtime) when it is available, so dev
       # `package` builds produce a launchd-loadable helper without needing the
       # full notarized `sign` task. The release `sign` task re-signs the whole
       # bundle with Developer ID afterwards, so this is a no-op overwrite there.
       - |
-        HELPER="{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}-helper"
+        MACOS="{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
         if security find-identity -v -p codesigning 2>/dev/null | grep -q "{{.SIGN_IDENTITY}}"; then
-          codesign --force --options runtime --timestamp \
-            --sign "{{.SIGN_IDENTITY}}" "$HELPER"
-          echo "bundled helper re-signed with Developer ID"
+          for BIN in "$MACOS/{{.APP_NAME}}-helper" "$MACOS/openvpn"; do
+            [ -f "$BIN" ] || continue
+            codesign --force --options runtime --timestamp \
+              --sign "{{.SIGN_IDENTITY}}" "$BIN"
+          done
+          echo "bundled helper + openvpn re-signed with Developer ID"
         else
-          echo "WARNING: Developer ID identity not found — bundled helper stays ad-hoc (launchd will refuse to load it on macOS 13+)"
+          echo "WARNING: Developer ID identity not found — bundled helper/openvpn stay ad-hoc (the helper install's signature check will reject them)"
         fi
 
   codesign:skip:

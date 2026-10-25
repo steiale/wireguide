@@ -290,6 +290,15 @@ func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, brid
 		return true
 	}
 
+	var sigErr *elevate.SignatureError
+	if errors.As(err, &sigErr) {
+		*gaveUp = true
+		slog.Error("helper install refused: code signature verification failed", "output", sigErr.Output)
+		app.Event.Emit("helper", HelperEvent{Alive: false, Message: signatureFailureMessage})
+		go showSignatureFailureDialog()
+		return false
+	}
+
 	var bootErr *elevate.BootstrapError
 	if errors.As(err, &bootErr) {
 		*gaveUp = true
@@ -370,4 +379,17 @@ func recoverHelper(clients *ipc.ClientHolder, bridge *eventBridge, dataDir strin
 	clients.Set(newClient)
 	bridge.Resubscribe()
 	return true, nil
+}
+
+const signatureFailureMessage = "LockPlus's helper failed its code-signature check, so it was not installed. Download LockPlus again from the official release and reinstall it."
+
+// showSignatureFailureDialog reports a SignatureError: the bundle's helper or
+// openvpn binary isn't signed by our Developer ID (tampered or corrupted
+// install). Retrying can't fix it, so the only remedy is reinstalling.
+func showSignatureFailureDialog() {
+	cmd := `display dialog "LockPlus's background helper failed its code-signature check and was not installed. The app may be damaged or modified.\n\nDownload LockPlus again from the official release and reinstall it." buttons {"Open Releases", "Quit"} default button "Open Releases" with title "LockPlus" with icon stop`
+	out, _ := exec.Command("/usr/bin/osascript", "-e", cmd).Output()
+	if strings.Contains(string(out), "Open Releases") {
+		_ = exec.Command("/usr/bin/open", "https://github.com/steiale/wireguide/releases/latest").Run()
+	}
 }

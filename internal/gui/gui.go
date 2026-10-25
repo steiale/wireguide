@@ -329,6 +329,13 @@ func bootstrapHelper(app *application.App, clients *ipc.ClientHolder, bridge *ev
 		// the user must take an action in System Settings first. Show a
 		// targeted dialog with a button that opens the right pane, then quit.
 		// Looping here is the bug that produced the endless password prompts.
+		var sigErr *elevate.SignatureError
+		if errors.As(err, &sigErr) {
+			slog.Error("helper install refused: code signature verification failed", "output", sigErr.Output)
+			showSignatureFailureDialog()
+			app.Quit()
+			return
+		}
 		var bootErr *elevate.BootstrapError
 		if errors.As(err, &bootErr) {
 			slog.Error("launchd blocked the helper daemon", "output", bootErr.Output)
