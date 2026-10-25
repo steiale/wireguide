@@ -16,7 +16,7 @@
   import { applyTheme, initThemeWatcher } from './stores/theme.js';
   import { startLogListener, stopLogListener } from './stores/logs.js';
   import { errText } from './lib/errors.js';
-  import { uint8ArrayToBase64 } from './lib/encoding.js';
+  import { importFile, importPath, isImportable, isZip, pickFile } from './lib/importer.js';
   import { t, setLanguage, detectLanguage } from './i18n/index.js';
   import { TunnelService } from '../bindings/github.com/steiale/wireguide/internal/app';
 
@@ -48,8 +48,14 @@
   let authPromptUnsub = null;
   let helperUnsub = null;
   let helperResetUnsub = null;
+  let trayErrorUnsub = null;
+  let updateTimer = null;
   let helperReady = false;
   let helperEverConnected = false;
+  // Set when the helper monitor stopped retrying; the banner then shows
+  // helperMessage instead of a "starting" spinner.
+  let helperGaveUp = false;
+  let helperMessage = '';
 
   // OpenVPN auth modal state. The backend emits an "auth_prompt" event when an
   // OpenVPN tunnel needs credentials (and none are cached). We show a modal that
@@ -73,19 +79,27 @@
   let authChallengeKind = '';
   let authChallengeText = '';
   let authChallengeEcho = false;
+  // Tunnel whose credentials were just submitted. A new auth_prompt for the
+  // same tunnel is a re-prompt (credentials rejected), so the modal must say
+  // why instead of silently reappearing empty.
+  let authSubmittedFor = '';
 
   onMount(async () => {
     // Register the helper event listener FIRST so we never miss the
     // alive:true event — even if bootstrapHelper finishes between the
     // IsHelperReady() poll and the listener registration.
     helperUnsub = Events.On('helper', (event) => {
-      const { alive } = event.data || {};
+      const { alive, message, gave_up } = event.data || {};
       if (alive) {
         helperReady = true;
-        if (helperEverConnected) showToast('Helper reconnected');
+        helperGaveUp = false;
+        helperMessage = '';
+        if (helperEverConnected) showToast($t('toast.helper_reconnected'));
         helperEverConnected = true;
       } else {
         helperReady = false;
+        helperGaveUp = !!gave_up;
+        helperMessage = message || '';
       }
     });
 
@@ -129,32 +143,22 @@
     // call doesn't compete with initial tunnel scan / status refresh on
     // startup. The result feeds the existing UpdateNotice popup and the
     // About-tab badge by setting `updateInfo` — no separate UI path.
-    setTimeout(async () => {
-      try {
-        const info = await TunnelService.CheckForUpdate();
-        if (info?.available) updateInfo = info;
-      } catch (e) {
-        // Silent — update check failure should never block the app
-      }
-    }, 3000);
+    // Re-checked every 12 h so a long-running menu-bar session still learns
+    // about new releases.
+    setTimeout(checkForUpdate, 3000);
+    updateTimer = setInterval(checkForUpdate, 12 * 60 * 60 * 1000);
 
     // Wails v3 native file drop — HTML5 dragdrop doesn't work in WebKit.
     // Event payload: { files: string[], details: {...} }
-    filesDroppedUnsub = Events.On('files-dropped', async (event) => {
-      const payload = event.data || {};
-      const paths = payload.files || [];
-      for (const path of paths) {
-        const lower = path.toLowerCase();
-        if (lower.endsWith('.conf') || lower.endsWith('.ovpn')) {
-          await importFromPath(path);
-        } else if (lower.endsWith('.zip')) {
-          await importZipFromPath(path);
-        } else if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.gif')) {
-          await importQRFromPath(path);
-        } else {
-          showToast('Only .conf, .ovpn, .zip, and QR image files are supported');
-        }
-      }
+    filesDroppedUnsub = Events.On('files-dropped', (event) => {
+      importDroppedPaths(event.data?.files || []);
+    });
+
+    // Tray connect/disconnect failures (Go already brought the window up).
+    trayErrorUnsub = Events.On('tray_error', (event) => {
+      const { action, tunnel, error } = event.data || {};
+      showToast($t(action === 'disconnect' ? 'toast.disconnect_failed_named' : 'toast.connect_failed_named',
+        { name: tunnel || '', error: error || '' }));
     });
 
     // (helper event listener registered at top of onMount)
@@ -173,8 +177,16 @@
       const data = event.data || {};
       const name = data.tunnel_name || '';
       if (!name) return;
+      // A dynamic (CRV1) challenge after a submit is the expected second
+      // step, not a rejection.
+      let reason = '';
+      if (authSubmittedFor === name && data.challenge_kind !== 'dynamic') {
+        const st = ($connectionStatus?.tunnels || []).find(t => t.tunnel_name === name);
+        reason = st?.error_message || $t('auth.rejected');
+      }
+      authSubmittedFor = '';
       authTunnelName = name;
-      authError = '';
+      authError = reason;
       authBusy = false;
       authChallengeKind = data.challenge_kind || '';
       authChallengeText = data.challenge_text || '';
@@ -208,8 +220,19 @@
     if (authPromptUnsub) authPromptUnsub();
     if (helperUnsub) helperUnsub();
     if (helperResetUnsub) helperResetUnsub();
+    if (trayErrorUnsub) trayErrorUnsub();
+    if (updateTimer) clearInterval(updateTimer);
     if (toastTimer) clearTimeout(toastTimer);
   });
+
+  async function checkForUpdate() {
+    try {
+      const info = await TunnelService.CheckForUpdate();
+      if (info?.available) updateInfo = info;
+    } catch (e) {
+      // Silent — update check failure should never block the app
+    }
+  }
 
   function showToast(msg) {
     if (toastTimer) clearTimeout(toastTimer);
@@ -217,190 +240,59 @@
     toastTimer = setTimeout(() => { toast = ''; toastTimer = null; }, 3000);
   }
 
-  // Generate a unique tunnel name by appending -1, -2, etc. if needed.
-  async function uniqueName(baseName) {
-    if (!(await TunnelService.TunnelExists(baseName))) return baseName;
-    for (let i = 1; i < 1000; i++) {
-      const candidate = `${baseName}-${i}`;
-      if (!(await TunnelService.TunnelExists(candidate))) return candidate;
+  // Report import results: a single file gets a toast, anything else
+  // (zips, multi-file drops) gets the result list modal.
+  async function reportImport(results, forceList = false) {
+    if (results.length === 0) return;
+    if (forceList || results.length > 1) {
+      zipResults = results;
+      showZipResult = true;
+    } else if (results[0].error) {
+      showToast($t('toast.import_failed', { error: results[0].error }));
+    } else {
+      showToast($t('toast.imported', { name: results[0].name }));
     }
-    return baseName + '-' + Date.now();
+    if (results.some(r => !r.error)) await refreshTunnels(TunnelService);
   }
 
-  // Show zip import result modal.
-  function showZipResults(results) {
-    zipResults = results;
-    showZipResult = true;
-    if (results.some(r => !r.error)) {
-      refreshTunnels(TunnelService);
-    }
-  }
-
-  // Import a .zip from a filesystem path (used by native file drop).
-  async function importZipFromPath(path) {
-    try {
-      const results = await TunnelService.ImportZip(path);
-      showZipResults(results);
-    } catch (e) {
-      showToast('Import failed: ' + errText(e));
-    }
-  }
-
-  // Import a .zip from a browser File object (used by file picker).
-  // Wails serialises []byte as a base64 JSON string, so we must encode manually.
-  // See lib/encoding.js for the chunked-encoder rationale.
-  async function importZipFromFile(file) {
-    if (!file) return;
-    try {
-      const buf = await file.arrayBuffer();
-      const b64 = uint8ArrayToBase64(new Uint8Array(buf));
-      const results = await TunnelService.ImportZipData(b64);
-      showZipResults(results);
-    } catch (e) {
-      showToast('Import failed: ' + errText(e));
-    }
-  }
-
-  // Sanitize a filename-derived tunnel name to match ValidateTunnelName rules:
-  // letters, digits, '-', '_' and spaces only. Replaces other chars (e.g. '@',
-  // '.') with '-' and collapses/trims runs of '-'.
-  function sanitizeTunnelName(raw) {
-    return raw.replace(/[^a-zA-Z0-9_\- ]/g, '-').replace(/-+/g, '-').replace(/^[-\s]+|[-\s]+$/g, '') || 'tunnel';
-  }
-
-  // Import from a file path (used by native file drop). Routes .ovpn through
-  // the backend's extension-dispatching ImportFile and skips WireGuard-specific
-  // validation for it.
-  async function importFromPath(path) {
-    try {
-      const isOvpn = path.toLowerCase().endsWith('.ovpn');
-      const content = await TunnelService.ReadFile(path);
-      if (!isOvpn) {
-        const errors = await TunnelService.ValidateConfig(content);
-        if (errors && errors.length > 0) {
-          showToast('Invalid config: ' + errors[0]);
-          return;
-        }
-      }
-      const baseName = sanitizeTunnelName(await TunnelService.BaseName(path));
-      const name = await uniqueName(baseName);
-      await TunnelService.ImportFile(name, content, path);
-      showToast(`Imported "${name}"`);
-      await refreshTunnels(TunnelService);
-    } catch (e) {
-      showToast("Import failed: " + errText(e));
-    }
-  }
-
-  // Import a QR code image from a filesystem path (native drag-drop).
-  async function importQRFromPath(path) {
-    try {
-      const rawName = (path.split('/').pop() || 'tunnel').replace(/\.[^.]+$/, '');
-      // Unlike importFromPath, this never sanitized the name — a typical
-      // macOS screenshot/filename ("Screenshot 2026-07-17 at 10.30.45.png")
-      // contains dots, which the backend's tunnel-name validation rejects,
-      // so QR import failed for most real-world filenames.
-      const baseName = sanitizeTunnelName(rawName);
-      const name = await uniqueName(baseName);
-      await TunnelService.ImportQRFromPath(path, name);
-      showToast(`Imported "${name}" from QR`);
-      await refreshTunnels(TunnelService);
-    } catch (e) {
-      showToast($t('import.qr_error'));
-    }
-  }
-
-  // Import a QR code image from a browser File object (file picker).
-  async function importQRFromFile(file) {
-    if (!file) return;
-    try {
-      const baseName = sanitizeTunnelName(file.name.replace(/\.[^.]+$/, ''));
-      const name = await uniqueName(baseName);
-      const buf = await file.arrayBuffer();
-      const b64 = uint8ArrayToBase64(new Uint8Array(buf));
-      await TunnelService.ImportQRFromBytes(b64, name);
-      showToast(`Imported "${name}" from QR`);
-      await refreshTunnels(TunnelService);
-    } catch (e) {
-      showToast($t('import.qr_error'));
-    }
-  }
-
-  // Show the file picker for QR image import.
-  function handleImportQR() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.style.display = 'none';
-    document.body.appendChild(input);
-    input.onchange = (e) => {
-      document.body.removeChild(input);
-      const file = e.target.files[0];
-      if (file) importQRFromFile(file);
-    };
-    input.click();
-  }
-
-  // Import from a browser File object (used by file picker button).
-  // Handles both WireGuard (.conf) and OpenVPN (.ovpn): the .ovpn path skips
-  // WireGuard validation (which is WG-specific and would reject .ovpn content)
-  // and lets the backend ImportFile dispatch on the filename extension.
-  async function importFile(file) {
-    if (!file) return;
-    const isOvpn = file.name.toLowerCase().endsWith('.ovpn');
-    const baseName = sanitizeTunnelName(file.name.replace(/\.(conf|ovpn)$/i, ''));
-    const content = await file.text();
-    try {
-      if (!isOvpn) {
-        const errors = await TunnelService.ValidateConfig(content);
-        if (errors && errors.length > 0) {
-          showToast('Invalid config: ' + errors[0]);
-          return;
-        }
-      }
-      const name = await uniqueName(baseName);
-      await TunnelService.ImportFile(name, content, file.name);
-      showToast(`Imported "${name}"`);
-      await refreshTunnels(TunnelService);
-    } catch (e) {
-      showToast("Import failed: " + errText(e));
-    }
-  }
-
-  async function handleImportOpen() {
-    // Directly open the native file picker — no modal needed.
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.conf,.ovpn,.zip';
-    input.style.display = 'none';
-    // Attach to DOM so the GC doesn't collect it before onchange fires.
-    document.body.appendChild(input);
-    input.onchange = async (e) => {
-      document.body.removeChild(input);
-      const file = e.target.files[0];
-      if (!file) return;
-      if (file.name.toLowerCase().endsWith('.zip')) {
-        await importZipFromFile(file);
+  // Native file drop (paths granted by Go for exactly this drop).
+  async function importDroppedPaths(paths) {
+    const results = [];
+    for (const path of paths) {
+      if (isImportable(path)) {
+        results.push(...await importPath(path));
       } else {
-        // Both .conf (WireGuard) and .ovpn (OpenVPN) go through importFile;
-        // the backend's ImportConfig detects the protocol from the content.
-        await importFile(file);
+        results.push({ name: path.split('/').pop() || path, error: $t('toast.unsupported_file') });
       }
-    };
-    input.click();
+    }
+    await reportImport(results, paths.some(isZip));
+  }
+
+  async function importPickedFile(file) {
+    await reportImport(await importFile(file), isZip(file.name));
+  }
+
+  function handleImportOpen() {
+    pickFile('.conf,.ovpn,.zip', importPickedFile);
+  }
+
+  function handleImportQR() {
+    pickFile('image/*', importPickedFile);
   }
 
   let editorIsNew = false;
 
-  async function handleNewTunnelOpen() {
+  let editorIsOvpn = false;
+
+  function handleNewTunnelOpen() {
     editName = '';
+    editorOriginalName = '';
     editorContent = ''; // ConfigEditor will generate template when isNew + empty
     editorErrors = [];
     editorIsNew = true;
+    editorIsOvpn = false; // new tunnels are WireGuard; don't inherit the last edit
     showEditor = true;
   }
-
-  let editorIsOvpn = false;
 
   async function handleEdit(e) {
     editName = e.detail;
@@ -413,7 +305,7 @@
       editorIsNew = false;
       showEditor = true;
     } catch (err) {
-      console.error(err);
+      showToast($t('toast.edit_load_failed', { name: editName, error: errText(err) }));
     }
   }
 
@@ -446,6 +338,9 @@
         // created a new file instead of overwriting the old one.
         if (saveName !== editorOriginalName) {
           await TunnelService.RenameTunnel(editorOriginalName, saveName);
+          // The rename is done even if UpdateConfig below fails — track the
+          // new name so a retried save doesn't try to rename a missing file.
+          editorOriginalName = saveName;
           // Update selectedTunnel so refreshTunnels' find() matches the
           // new name. Without this, the list refreshes but the detail
           // pane stays on the stale old name.
@@ -469,40 +364,23 @@
     try {
       const path = await TunnelService.ExportTunnel(name);
       if (path) {
-        showToast(`Exported to ${path}`);
+        showToast($t('toast.exported', { path }));
       }
     } catch (err) {
-      showToast('Export failed: ' + err.toString());
+      showToast($t('toast.export_failed', { error: errText(err) }));
     }
   }
 
   // Actually perform the connect RPC (after all warnings have been resolved).
-  // After successful connect, auto-apply kill switch and DNS protection
-  // based on saved settings (global preferences, not per-tunnel).
+  // Kill switch / DNS protection are helper-side policies applied on every
+  // connect, so nothing to do here beyond the connect itself.
   async function doConnectFinal(name) {
     try {
       await TunnelService.Connect(name);
       await refreshTunnels(TunnelService);
       await refreshStatus(TunnelService);
-
-      // Auto-apply firewall settings after successful connect
-      try {
-        const s = await TunnelService.GetSettings();
-        if (s?.kill_switch) {
-          await TunnelService.SetKillSwitch(true);
-        }
-        if (s?.dns_protection) {
-          await TunnelService.SetDNSProtection(true);
-        }
-      } catch (e) {
-        console.warn('auto-apply firewall settings failed:', e);
-      }
     } catch (e) {
-      if (!helperReady) {
-        showToast("Helper is still starting up — please wait a moment");
-      } else {
-        showToast("Connect failed: " + errText(e));
-      }
+      showToast(helperReady ? $t('toast.connect_failed', { error: errText(e) }) : $t('toast.helper_starting'));
     }
   }
 
@@ -559,9 +437,15 @@
 
   async function handleUpdate() {
     try {
-      await TunnelService.RunUpdate(updateInfo?.version ?? "");
+      // Non-brew installs return the verified download (revealed in Finder);
+      // brew installs return '' and the cask relaunches the app.
+      const path = await TunnelService.RunUpdate(updateInfo?.version ?? "");
+      if (path) {
+        updateInfo = null; // closes the popup and the About badge
+        showToast($t('toast.update_downloaded'));
+      }
     } catch (e) {
-      showToast('Update failed: ' + errText(e));
+      showToast($t('toast.update_failed', { error: errText(e) }));
     }
   }
 
@@ -574,14 +458,17 @@
       // Success — close silently.
       showAuth = false;
     } else if (tunnelStatus?.state === 'error') {
-      // Tunnel errored out (e.g. credential timeout) — close with a hint.
+      // Tunnel errored out (e.g. credential timeout, unsupported web auth) —
+      // close and say why.
       showAuth = false;
-      showToast('OpenVPN connection lost — please try again');
+      authSubmittedFor = '';
+      showToast(tunnelStatus.error_message || $t('toast.ovpn_lost'));
     } else if (!tunnelStatus && helperReady) {
       // Tunnel disappeared from the status list after the helper was ready,
       // meaning the entry we were waiting on was cleaned up (timeout/death).
       showAuth = false;
-      showToast('OpenVPN connection lost — please try again');
+      authSubmittedFor = '';
+      showToast($t('toast.ovpn_lost'));
     }
   }
 
@@ -619,7 +506,7 @@
           // had no way to know their username wasn't actually remembered
           // and would need retyping every time, with no visible signal why.
           console.warn('SaveCredentials failed:', e);
-          showToast('Could not save username: ' + errText(e));
+          showToast($t('toast.save_username_failed', { error: errText(e) }));
         }
       }
       await TunnelService.FeedCredentials(
@@ -629,6 +516,7 @@
         authResponse,
       );
       showAuth = false;
+      authSubmittedFor = authTunnelName;
       authPassword = '';
       authResponse = '';
     } catch (e) {
@@ -638,13 +526,25 @@
     }
   }
 
+  // Escape closes the top-most App-owned modal. Settings, ConflictWarning,
+  // History and TunnelCards handle their own dialogs.
+  function handleWindowKeydown(e) {
+    if (e.key !== 'Escape') return;
+    if (showAuth) cancelAuth();
+    else if (showZipResult) showZipResult = false;
+    else if (showEditor) showEditor = false;
+  }
+
   function cancelAuth() {
     showAuth = false;
+    authSubmittedFor = '';
     authPassword = '';
     authResponse = '';
     authError = '';
   }
 </script>
+
+<svelte:window on:keydown={handleWindowKeydown} />
 
 <!-- The `$: $locale` subscription in the script block lets every `$t(...)`
      call inside this template re-evaluate on language change. Modals are
@@ -710,9 +610,13 @@
       <KofiBanner {TunnelService} dismissed={kofiDismissed} onDismiss={handleDismissKofi} />
 
       {#if !helperReady}
-        <div class="helper-connecting">
-          <span class="helper-spinner"></span>
-          Starting helper service…
+        <div class="helper-connecting" class:helper-failed={helperGaveUp} role="status">
+          {#if helperGaveUp}
+            {helperMessage || $t('helper.unavailable')}
+          {:else}
+            <span class="helper-spinner"></span>
+            {$t('helper.starting')}
+          {/if}
         </div>
       {/if}
 
@@ -747,8 +651,8 @@
 
   <!-- Modals -->
   {#if showEditor}
-    <div class="modal-backdrop" on:click={() => showEditor = false}>
-      <div class="modal modal-editor" on:click|stopPropagation>
+    <div class="modal-backdrop" role="presentation" on:click|self={() => showEditor = false}>
+      <div class="modal modal-editor" role="dialog" aria-modal="true" aria-label={$t('editor.save')}>
         <ConfigEditor
           bind:content={editorContent}
           bind:name={editName}
@@ -777,9 +681,9 @@
   {/if}
 
   {#if showZipResult}
-    <div class="modal-backdrop" on:click={() => showZipResult = false}>
-      <div class="modal modal-zip-result" on:click|stopPropagation>
-        <h3>{$t('import.zip_result_title')}</h3>
+    <div class="modal-backdrop" role="presentation" on:click|self={() => showZipResult = false}>
+      <div class="modal modal-zip-result" role="dialog" aria-modal="true" aria-labelledby="zip-result-title">
+        <h3 id="zip-result-title">{$t('import.zip_result_title')}</h3>
         <div class="zip-result-list">
           {#each zipResults as r}
             <div class="zip-result-row">
@@ -804,9 +708,9 @@
   {/if}
 
   {#if showAuth}
-    <div class="modal-backdrop" on:click={cancelAuth}>
-      <div class="modal modal-auth" on:click|stopPropagation>
-        <h3>{authChallengeKind === 'dynamic' ? $t('auth.challenge_title') : $t('auth.title')}</h3>
+    <div class="modal-backdrop" role="presentation" on:click|self={cancelAuth}>
+      <div class="modal modal-auth" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <h3 id="auth-title">{authChallengeKind === 'dynamic' ? $t('auth.challenge_title') : $t('auth.title')}</h3>
         <p class="hint">{$t('auth.subtitle', { name: authTunnelName })}</p>
 
         {#if authError}
@@ -1046,14 +950,6 @@
     overflow: hidden;
   }
 
-  .history-view-host {
-    flex: 1;
-    min-height: 0;
-    padding-top: 52px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
   .rail-icon svg {
     display: block;
   }
@@ -1087,6 +983,11 @@
     flex-shrink: 0;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .helper-failed {
+    white-space: normal;
+    max-width: 480px;
+    color: var(--error-text);
+  }
 
   /* ---------- Toast (bottom-centre) ---------- */
   .toast {
@@ -1207,8 +1108,7 @@
 
   /* ---------- Auth modal ---------- */
   .modal-auth { width: 380px; }
-  .modal input[type="password"],
-  .modal input[type="number"] {
+  .modal input[type="password"] {
     width: 100%;
     height: 24px;
     padding: 0 var(--space-2);
@@ -1220,8 +1120,7 @@
     box-sizing: border-box;
     outline: none;
   }
-  .modal input[type="password"]:focus,
-  .modal input[type="number"]:focus {
+  .modal input[type="password"]:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--blue-tint);
   }
@@ -1272,39 +1171,6 @@
     font: var(--text-footnote);
     color: var(--text-secondary);
     margin: 0 0 var(--space-3);
-  }
-  .btn-file-select {
-    width: 100%;
-    padding: var(--space-3);
-    background: var(--bg-card);
-    border: 1px dashed var(--border);
-    border-radius: var(--radius-btn);
-    color: var(--text-primary);
-    font: var(--text-body);
-    cursor: pointer;
-    margin-bottom: var(--space-2);
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    .btn-file-select {
-      transition: background-color var(--dur-fast) var(--ease-out),
-                  border-color var(--dur-fast) var(--ease-out);
-    }
-  }
-  .btn-file-select:hover {
-    background: var(--bg-hover);
-    border-color: var(--accent);
-  }
-  .preview {
-    margin: var(--space-3) 0;
-    padding: var(--space-3);
-    background: var(--editor-bg);
-    border: 0.5px solid var(--editor-border);
-    border-radius: var(--radius-sm);
-    font: 10px/14px var(--font-mono);
-    color: var(--text-secondary);
-    max-height: 200px;
-    overflow-y: auto;
-    white-space: pre-wrap;
   }
   .errors {
     margin: var(--space-2) 0;

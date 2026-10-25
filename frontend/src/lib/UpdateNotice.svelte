@@ -54,8 +54,8 @@
 </script>
 
 {#if showPopup}
-  <div class="popup-backdrop" on:mousedown|self={dismiss}>
-    <div class="popup" role="dialog" aria-modal="true" on:mousedown|stopPropagation>
+  <div class="popup-backdrop" role="presentation" on:mousedown|self={dismiss}>
+    <div class="popup" role="dialog" aria-modal="true">
       <div class="popup-header">
         <img src="/appicon.png" alt="LockPlus" class="popup-icon" />
         <div>
@@ -80,8 +80,8 @@
 {/if}
 
 {#if showConfirm}
-  <div class="popup-backdrop" on:mousedown|self={() => showConfirm = false}>
-    <div class="popup" on:mousedown|stopPropagation role="dialog" aria-modal="true">
+  <div class="popup-backdrop" role="presentation" on:mousedown|self={() => showConfirm = false}>
+    <div class="popup" role="dialog" aria-modal="true">
       <h3>{$t('update.confirm_title')}</h3>
       <p class="confirm-msg">{$t('update.vpn_warning')}</p>
       <div class="popup-actions">

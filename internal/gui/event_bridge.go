@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/ipc"
@@ -31,7 +32,15 @@ type eventBridge struct {
 	// reconnect event. While true, any tunnel that goes inactive is classified
 	// as a health-check reconnect rather than a normal user disconnect.
 	reconnecting bool
+
+	// stopped is set by stopForwarding during app shutdown; handleEvent then
+	// drops every event so the event loop keeps draining the socket without
+	// touching the (busy) main thread.
+	stopped atomic.Bool
 }
+
+// stopForwarding makes the bridge drop all further helper events.
+func (b *eventBridge) stopForwarding() { b.stopped.Store(true) }
 
 func newEventBridge(app *application.App, clients *ipc.ClientHolder, onStatusUpdate func(domain.ConnectionStatus), onStatusReconcile func(activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string)) *eventBridge {
 	return &eventBridge{
@@ -107,6 +116,9 @@ func (b *eventBridge) resubscribe() {
 }
 
 func (b *eventBridge) handleEvent(method string, params json.RawMessage) {
+	if b.stopped.Load() {
+		return
+	}
 	switch method {
 	case ipc.EventStatus:
 		var status domain.ConnectionStatus
@@ -142,14 +154,11 @@ func (b *eventBridge) handleEvent(method string, params json.RawMessage) {
 		if err := json.Unmarshal(params, &dto); err != nil {
 			slog.Debug("event bridge: unmarshal reconnect failed", "error", err)
 		} else {
+			// Only used to classify history disconnect reasons; the
+			// frontend has no reconnect UI.
 			b.mu.Lock()
 			b.reconnecting = dto.Reconnecting
 			b.mu.Unlock()
-			b.app.Event.Emit("reconnect", ReconnectEvent{
-				Reconnecting: dto.Reconnecting,
-				Attempt:      dto.Attempt,
-				MaxAttempts:  dto.MaxAttempts,
-			})
 		}
 	case ipc.EventLog:
 		// Helper-side slog record: forward as-is to the frontend. The
@@ -165,11 +174,15 @@ func (b *eventBridge) handleEvent(method string, params json.RawMessage) {
 	case ipc.EventAuthPrompt:
 		// OpenVPN credential request: forward to the frontend so it can show
 		// the auth modal. The frontend listens for the "auth_prompt" Wails
-		// event and reads { tunnel_name } from the payload.
+		// event and reads { tunnel_name } from the payload. Bring the window
+		// (and Dock icon) forward first — a tray / Wi-Fi-rule connect with
+		// the window hidden would otherwise wait on an invisible prompt
+		// until the helper times it out.
 		var payload ipc.AuthPromptEventPayload
 		if err := json.Unmarshal(params, &payload); err != nil {
 			slog.Debug("event bridge: unmarshal auth prompt failed", "error", err)
 		} else {
+			showDock()
 			b.app.Event.Emit("auth_prompt", payload)
 		}
 	}

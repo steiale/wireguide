@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -82,24 +83,47 @@ func (s *TunnelService) SetLogLevel(level string) error {
 	return s.call(ipc.MethodSetLogLevel, ipc.SetLogLevelRequest{Level: level}, nil)
 }
 
-// --- Firewall toggles (go through helper) ---
+// --- Firewall policy (go through helper) ---
+//
+// Kill switch and DNS protection are POLICIES held by the helper: it applies
+// them to any active tunnel immediately and to every future connect
+// (WireGuard and OpenVPN), and derives the DNS servers itself. The GUI's job
+// is to keep the helper's policy equal to the persisted setting — these
+// setters push the new value and persist it; bootstrapHelper / helper
+// recovery push the persisted values on every (re)connect.
 
-// SetKillSwitch asks the helper to enable or disable the firewall kill switch.
+// SetKillSwitch sets the kill-switch policy and persists it.
 func (s *TunnelService) SetKillSwitch(enabled bool) error {
-	return s.call(ipc.MethodSetKillSwitch, ipc.KillSwitchRequest{Enabled: enabled}, nil)
+	return s.setFirewallPolicy(ipc.MethodSetKillSwitch, ipc.KillSwitchRequest{Enabled: enabled},
+		func(st *storage.Settings) { st.KillSwitch = enabled })
+}
+
+// SetDNSProtection sets the DNS-protection policy and persists it.
+func (s *TunnelService) SetDNSProtection(enabled bool) error {
+	return s.setFirewallPolicy(ipc.MethodSetDNSProtection, ipc.DNSProtectionRequest{Enabled: enabled},
+		func(st *storage.Settings) { st.DNSProtection = enabled })
+}
+
+// setFirewallPolicy pushes a policy change to the helper, then persists it.
+// With no helper connected yet the value is only persisted: the bootstrap /
+// recovery path pushes persisted policy as soon as a helper is available.
+// A helper-side rejection is returned without persisting.
+func (s *TunnelService) setFirewallPolicy(method string, req any, apply func(*storage.Settings)) error {
+	if err := s.call(method, req, nil); err != nil && !errors.Is(err, errHelperUnavailable) {
+		return err
+	}
+	st, err := s.settingsStore.Load()
+	if err != nil {
+		return err
+	}
+	apply(st)
+	return s.settingsStore.Save(st)
 }
 
 // expectedDNSFor returns the DNS servers a tunnel is expected to be using.
 // WireGuard's DNS list is a static client-side directive, readable straight
-// from the parsed .conf before ever connecting. OpenVPN has no such
-// directive — DNS is pushed by the server at connect time — so
-// tunnelStore.Load (a WireGuard-only .conf parser) always errors for an
-// .ovpn tunnel; status.DNSServers (populated from the server's actual
-// PUSH_REPLY once connected — see ovpn/manager.go's applyPushedDNS) is the
-// only place this is knowable for OpenVPN. Shared by SetDNSProtection and
-// RunDNSLeakTest, which each used to reimplement this dispatch separately
-// and had already drifted out of sync once (the OVPN gap was fixed in one
-// but not the other).
+// from the parsed .conf. OpenVPN DNS is pushed by the server at connect time,
+// so status.DNSServers is the only source for it. Used by RunDNSLeakTest.
 func (s *TunnelService) expectedDNSFor(tunnelName string) []string {
 	if tunnelName == "" {
 		return nil
@@ -114,24 +138,6 @@ func (s *TunnelService) expectedDNSFor(tunnelName string) []string {
 		return cfg.Interface.DNS
 	}
 	return nil
-}
-
-// SetDNSProtection asks the helper to lock DNS to the active tunnel's servers.
-// When enabling, we look up the active tunnel's DNS list from local storage
-// and pass it along (the helper never touches user-space storage).
-func (s *TunnelService) SetDNSProtection(enabled bool) error {
-	var dnsServers []string
-	if enabled {
-		var active ipc.StringResponse
-		if err := s.call(ipc.MethodActiveName, nil, &active); err != nil {
-			return fmt.Errorf("cannot verify tunnel state: %w", err)
-		}
-		dnsServers = s.expectedDNSFor(active.Value)
-	}
-	return s.call(ipc.MethodSetDNSProtection, ipc.DNSProtectionRequest{
-		Enabled:    enabled,
-		DNSServers: dnsServers,
-	}, nil)
 }
 
 // --- Auto-update ---
@@ -220,11 +226,13 @@ func (s *TunnelService) cachedUpdate(version string) (*update.UpdateInfo, error)
 
 // RunUpdate performs the update to version, which must match the release
 // found by the last CheckForUpdate. If installed via Homebrew, runs brew
-// upgrade. Otherwise downloads and verifies the asset from GitHub Releases.
-func (s *TunnelService) RunUpdate(version string) error {
+// upgrade (the cask relaunches the app) and returns "". Otherwise downloads
+// and verifies the asset from GitHub Releases, reveals it in Finder, and
+// returns its path so the UI can tell the user what to do next.
+func (s *TunnelService) RunUpdate(version string) (string, error) {
 	info, err := s.cachedUpdate(version)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if update.IsBrewInstall() {
@@ -238,10 +246,10 @@ func (s *TunnelService) RunUpdate(version string) error {
 		cmd := exec.Command(brewBin, "upgrade", "--cask", "lockplus")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("brew upgrade failed: %w (%s)", err, string(out))
+			return "", fmt.Errorf("brew upgrade failed: %w (%s)", err, string(out))
 		}
 		// postflight in the cask handles killall + relaunch
-		return nil
+		return "", nil
 	}
 
 	// Non-brew installs: download the asset, verify its SHA-256, then reveal
@@ -262,14 +270,14 @@ func (s *TunnelService) RunUpdate(version string) error {
 		if s.app != nil {
 			_ = s.app.Browser.OpenURL("https://github.com/steiale/wireguide/releases/latest")
 		} else {
-			_ = exec.Command("open", "https://github.com/steiale/wireguide/releases/latest").Run()
+			_ = exec.Command("/usr/bin/open", "https://github.com/steiale/wireguide/releases/latest").Run()
 		}
-		return fmt.Errorf("download/verify failed: %w", err)
+		return "", fmt.Errorf("download/verify failed: %w", err)
 	}
 	if err := update.Install(dlPath, info); err != nil {
-		return fmt.Errorf("install (reveal): %w", err)
+		return "", fmt.Errorf("install (reveal): %w", err)
 	}
-	return nil
+	return dlPath, nil
 }
 
 // ScanForWireGuardConfigs returns existing WireGuard configs found on the
@@ -295,7 +303,7 @@ func (t *TunnelService) ScanForWireGuardConfigs() []FoundConfig {
 func (t *TunnelService) ImportFoundConfigs(paths []string) []ZipImportResult {
 	var results []ZipImportResult
 	for _, p := range paths {
-		name, _ := stripKnownTunnelExt(filepath.Base(p))
+		name, ext := stripKnownTunnelExt(filepath.Base(p))
 		if err := t.consumePath(p); err != nil {
 			results = append(results, ZipImportResult{Name: name, Error: err.Error()})
 			continue
@@ -309,10 +317,10 @@ func (t *TunnelService) ImportFoundConfigs(paths []string) []ZipImportResult {
 			results = append(results, ZipImportResult{Name: name, Error: err.Error()})
 			continue
 		}
-		if _, err := t.tunnelStore.ImportFromContent(name, string(data)); err != nil {
+		if info, err := t.importNamed(name, ext, string(data)); err != nil {
 			results = append(results, ZipImportResult{Name: name, Error: err.Error()})
 		} else {
-			results = append(results, ZipImportResult{Name: name})
+			results = append(results, ZipImportResult{Name: info.Name})
 		}
 	}
 	return results

@@ -269,6 +269,12 @@
                   <span class="proto-badge proto-wg">WG</span>
                 {/if}
               </span>
+              {#if status?.state === 'error' && status.error_message}
+                <!-- Helper-reported failure (e.g. OpenVPN web/SSO auth
+                     unsupported, key passphrase needed, FATAL): visible
+                     without expanding the card. -->
+                <span class="card-status-error" role="alert">{status.error_message}</span>
+              {/if}
               {#if notesMap[tun.name]}
                 <span class="card-notes">{notesMap[tun.name]}</span>
               {/if}
@@ -432,11 +438,13 @@
   {/if}
 </div>
 
+<svelte:window on:keydown={(e) => { if (e.key === 'Escape' && deleteConfirmName) deleteConfirmName = null; }} />
+
 <!-- Delete confirmation -->
 {#if deleteConfirmName}
-  <div class="confirm-backdrop" on:click={() => deleteConfirmName = null}>
-    <div class="confirm-dialog" on:click|stopPropagation>
-      <h3>{$t('confirm.delete_title')}</h3>
+  <div class="confirm-backdrop" role="presentation" on:click|self={() => deleteConfirmName = null}>
+    <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+      <h3 id="delete-confirm-title">{$t('confirm.delete_title')}</h3>
       <p>{$t('confirm.delete_message', { name: deleteConfirmName })}</p>
       <div class="confirm-footer">
         <button class="card-btn card-btn-disconnect" bind:this={deleteConfirmBtn} on:click={confirmDelete}>{$t('confirm.yes')}</button>
@@ -609,6 +617,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .card-status-error {
+    font: var(--text-footnote);
+    color: var(--error-text);
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .card-flex { flex: 1; }
 

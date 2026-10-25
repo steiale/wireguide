@@ -63,7 +63,7 @@ func TestPathGrants_OtherBindingsGated(t *testing.T) {
 	if _, err := s.ImportZip("/etc/passwd"); err == nil || !strings.Contains(err.Error(), "not authorized") {
 		t.Errorf("ImportZip: %v", err)
 	}
-	if err := s.ImportQRFromPath("/etc/passwd", "x"); err == nil || !strings.Contains(err.Error(), "not authorized") {
+	if _, err := s.ImportQRFromPath("/etc/passwd"); err == nil || !strings.Contains(err.Error(), "not authorized") {
 		t.Errorf("ImportQRFromPath: %v", err)
 	}
 	res := s.ImportFoundConfigs([]string{"/etc/passwd"})
@@ -142,11 +142,11 @@ func TestWritePrivateFile_RefusesSymlink(t *testing.T) {
 
 func TestRunUpdate_UsesOnlyCachedInfo(t *testing.T) {
 	s := &TunnelService{}
-	if err := s.RunUpdate("9.9.9"); err == nil || !strings.Contains(err.Error(), "check for updates first") {
+	if _, err := s.RunUpdate("9.9.9"); err == nil || !strings.Contains(err.Error(), "check for updates first") {
 		t.Fatalf("no cache: got %v", err)
 	}
 	s.lastUpdate = &update.UpdateInfo{Available: true, Version: "1.2.3", SignatureVerified: true}
-	if err := s.RunUpdate("9.9.9"); err == nil || !strings.Contains(err.Error(), "does not match") {
+	if _, err := s.RunUpdate("9.9.9"); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("version mismatch: got %v", err)
 	}
 	info, err := s.cachedUpdate("1.2.3")

@@ -1,8 +1,9 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
   import { TunnelService } from '../../bindings/github.com/steiale/wireguide/internal/app';
-  import { uint8ArrayToBase64 } from './encoding.js';
+  import { importFile, pickFile } from './importer.js';
   import { errText } from './errors.js';
+  import { t } from '../i18n/index.js';
 
   const dispatch = createEventDispatcher();
 
@@ -10,7 +11,8 @@
   let configs = [];
   let selected = new Set();
   let importing = false;
-  let results = null;
+  let results = null; // [{ name, error? }] of the last import, or null
+  let finishing = false;
 
   onMount(async () => {
     try {
@@ -30,65 +32,58 @@
     selected = next;
   }
 
+  // Show the results; close on its own only when every import succeeded.
+  // On any failure the list stays up with Continue / Import another file.
+  async function showResults(res) {
+    results = res;
+    importing = false;
+    if (res.length > 0 && res.every(r => !r.error)) {
+      await new Promise(r => setTimeout(r, 1200));
+      await finish();
+    }
+  }
+
   async function importSelected() {
     importing = true;
+    let res;
     try {
-      const paths = [...selected];
-      results = await TunnelService.ImportFoundConfigs(paths);
-      await TunnelService.CompleteOnboarding();
-      // Brief pause so user can see the results, then close
-      await new Promise(r => setTimeout(r, 1200));
-      dispatch('complete');
+      res = (await TunnelService.ImportFoundConfigs([...selected])) ?? [];
     } catch (e) {
-      importing = false;
+      res = [{ name: $t('onboarding.selected_configs'), error: errText(e) }];
     }
+    configs = [];
+    await showResults(res);
   }
 
-  async function handleFileImport(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    importing = true;
-    try {
-      if (file.name.toLowerCase().endsWith('.zip')) {
-        const buf = await file.arrayBuffer();
-        // Chunked encoding — see lib/encoding.js. The naïve spread version
-        // here used to blow the call stack on zips larger than ~120 KB.
-        const b64 = uint8ArrayToBase64(new Uint8Array(buf));
-        const res = await TunnelService.ImportZipData(b64);
-        results = res ?? [];
-      } else {
-        const text = await file.text();
-        const name = file.name.replace(/\.conf$/i, '');
-        await TunnelService.ImportConfig(name, text);
-        results = [{ name }];
-      }
-      await TunnelService.CompleteOnboarding();
-      await new Promise(r => setTimeout(r, 1200));
-      dispatch('complete');
-    } catch (err) {
-      results = [{ name: file.name, error: errText(err) }];
-      importing = false;
-    }
+  function chooseFile() {
+    pickFile('.conf,.ovpn,.zip', async (file) => {
+      importing = true;
+      await showResults(await importFile(file));
+    });
   }
 
-  async function skip() {
-    await TunnelService.CompleteOnboarding().catch(() => {});
+  // finish marks onboarding done (never shown again) and closes it. Always
+  // reachable, whatever state the imports are in.
+  async function finish() {
+    if (finishing) return;
+    finishing = true;
+    await TunnelService.CompleteOnboarding().catch((e) => console.warn('CompleteOnboarding failed:', e));
     dispatch('complete');
   }
 </script>
 
 <div class="onboarding-backdrop">
-  <div class="onboarding-card">
+  <div class="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
     <div class="onboarding-header">
       <img src="/appicon.png" class="app-icon-img" alt="LockPlus" />
-      <h1>Welcome to LockPlus</h1>
-      <p class="subtitle">Your WireGuard & OpenVPN manager</p>
+      <h1 id="onboarding-title">{$t('onboarding.title')}</h1>
+      <p class="subtitle">{$t('onboarding.subtitle')}</p>
     </div>
 
     {#if scanning}
       <div class="scanning-state">
         <div class="spinner"></div>
-        <span>Scanning for existing configs…</span>
+        <span>{$t('onboarding.scanning')}</span>
       </div>
     {:else if results}
       <div class="results-list">
@@ -102,16 +97,16 @@
       </div>
     {:else if configs.length === 0}
       <div class="no-configs-block">
-        <p class="no-configs">No WireGuard config files found automatically.</p>
+        <p class="no-configs">{$t('onboarding.no_configs')}</p>
         <div class="no-configs-tip">
-          <strong>Using the WireGuard app (Mac App Store)?</strong><br>
-          Its configs aren't stored as files. Export them first:<br>
-          Open WireGuard → <em>File → Export Tunnel(s) as Zip</em><br>
-          then import the zip below.
+          <strong>{$t('onboarding.tip_title')}</strong><br>
+          {$t('onboarding.tip_body')}<br>
+          <em>{$t('onboarding.tip_steps')}</em><br>
+          {$t('onboarding.tip_then')}
         </div>
       </div>
     {:else}
-      <p class="found-label">Found {configs.length} existing config{configs.length !== 1 ? 's' : ''}. Select which to import:</p>
+      <p class="found-label">{$t(configs.length === 1 ? 'onboarding.found_one' : 'onboarding.found_many', { count: configs.length })}</p>
       <div class="config-list">
         {#each configs as c}
           <label class="config-row">
@@ -123,20 +118,20 @@
       </div>
     {/if}
 
-    {#if !scanning && !results}
+    {#if !scanning}
       <div class="onboarding-actions">
-        {#if configs.length > 0}
+        {#if configs.length > 0 && !results}
           <button class="btn-primary" on:click={importSelected} disabled={importing || selected.size === 0}>
-            {importing ? 'Importing…' : `Import ${selected.size} config${selected.size !== 1 ? 's' : ''}`}
+            {importing ? $t('onboarding.importing') : $t('onboarding.import_selected', { count: selected.size })}
           </button>
         {:else}
-          <label class="btn-primary btn-import-file" class:disabled={importing}>
-            <input type="file" accept=".conf,.ovpn,.zip" style="display:none" on:change={handleFileImport} />
-            Import .conf / .zip
-          </label>
+          <button class="btn-primary" on:click={chooseFile} disabled={importing}>
+            {importing ? $t('onboarding.importing') : results ? $t('onboarding.import_another') : $t('onboarding.import_file')}
+          </button>
         {/if}
-        <button class="btn-secondary" on:click={skip} disabled={importing}>
-          {configs.length === 0 ? 'Get started' : 'Skip'}
+        <!-- Always available: onboarding must never trap the user. -->
+        <button class="btn-secondary" on:click={finish} disabled={finishing}>
+          {results ? $t('onboarding.continue') : configs.length === 0 ? $t('onboarding.get_started') : $t('onboarding.skip')}
         </button>
       </div>
     {/if}
@@ -231,13 +226,6 @@
     margin: 0;
   }
 
-  .no-configs-hint {
-    font-size: 12px;
-    color: var(--text-secondary);
-    text-align: center;
-    margin: 0;
-  }
-
   .config-list {
     display: flex;
     flex-direction: column;
@@ -311,6 +299,7 @@
   .result-error {
     color: var(--text-secondary);
     font-size: 11px;
+    word-break: break-word;
   }
 
   .onboarding-actions {
@@ -387,14 +376,4 @@
     color: var(--text-primary);
   }
 
-  .btn-import-file {
-    display: inline-flex;
-    align-items: center;
-    cursor: pointer;
-  }
-
-  .btn-import-file.disabled {
-    opacity: 0.5;
-    pointer-events: none;
-  }
 </style>

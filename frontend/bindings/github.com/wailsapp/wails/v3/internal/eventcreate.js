@@ -22,8 +22,8 @@ function configure() {
         "files-dropped": $$createType1,
         "helper": $$createType2,
         "log": $$createType3,
-        "reconnect": $$createType4,
-        "status": $$createType5,
+        "status": $$createType4,
+        "tray_error": $$createType5,
     }));
 }
 
@@ -32,7 +32,7 @@ const $$createType0 = ipc$0.AuthPromptEventPayload.createFrom;
 const $$createType1 = $Create.Map($Create.Any, $Create.Any);
 const $$createType2 = gui$0.HelperEvent.createFrom;
 const $$createType3 = ipc$0.LogEntry.createFrom;
-const $$createType4 = gui$0.ReconnectEvent.createFrom;
-const $$createType5 = domain$0.ConnectionStatus.createFrom;
+const $$createType4 = domain$0.ConnectionStatus.createFrom;
+const $$createType5 = gui$0.TrayErrorEvent.createFrom;
 
 configure();

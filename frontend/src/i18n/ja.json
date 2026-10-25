@@ -45,8 +45,7 @@
     "zip_ok": "完了",
     "zip_summary": "{ok}件インポート、{fail}件失敗",
     "zip_summary_ok": "{ok}件インポート",
-    "qr_button": "QRコードからインポート",
-    "qr_error": "QRコードのインポートに失敗しました"
+    "qr_button": "QRコードからインポート"
   },
   "editor": {
     "title": "トンネル編集: {name}",
@@ -155,7 +154,6 @@
     "clear": "消去",
     "confirm_clear_title": "履歴を消去",
     "confirm_clear_message": "すべての接続履歴を削除してもよろしいですか?",
-    "confirm_clear": "すべての履歴を消去しますか?",
     "active": "接続中",
     "reason_user": "切断されました",
     "reason_error": "エラー",
@@ -196,6 +194,48 @@
     "save": "ユーザー名を保存",
     "submit": "接続",
     "cancel": "キャンセル",
-    "username_required": "ユーザー名が必要です"
+    "username_required": "ユーザー名が必要です",
+    "rejected": "サーバーが認証情報を拒否しました。もう一度お試しください。"
+  },
+  "toast": {
+    "helper_reconnected": "ヘルパーに再接続しました",
+    "unsupported_file": ".conf、.ovpn、.zip ファイルと QR コード画像のみ対応しています",
+    "import_failed": "インポートに失敗しました: {error}",
+    "imported": "「{name}」をインポートしました",
+    "edit_load_failed": "「{name}」を開けませんでした: {error}",
+    "exported": "{path} にエクスポートしました",
+    "export_failed": "エクスポートに失敗しました: {error}",
+    "helper_starting": "ヘルパーを起動中です。しばらくお待ちください",
+    "connect_failed": "接続に失敗しました: {error}",
+    "connect_failed_named": "「{name}」の接続に失敗しました: {error}",
+    "disconnect_failed_named": "「{name}」の切断に失敗しました: {error}",
+    "update_failed": "アップデートに失敗しました: {error}",
+    "update_downloaded": "アップデートをダウンロードし、Finder に表示しました。LockPlus を終了してから、アプリケーションフォルダ内のアプリを置き換えてください。",
+    "ovpn_lost": "OpenVPN の接続が切れました。もう一度お試しください",
+    "save_username_failed": "ユーザー名を保存できませんでした: {error}"
+  },
+  "helper": {
+    "starting": "ヘルパーサービスを起動中…",
+    "unavailable": "ヘルパーサービスを利用できません。LockPlus を終了して再起動してください。"
+  },
+  "onboarding": {
+    "title": "LockPlus へようこそ",
+    "subtitle": "WireGuard と OpenVPN のマネージャー",
+    "scanning": "既存の設定を検索中…",
+    "no_configs": "WireGuard の設定ファイルが自動的に見つかりませんでした。",
+    "tip_title": "WireGuard アプリ (Mac App Store) をお使いですか?",
+    "tip_body": "その設定はファイルとして保存されていません。先にエクスポートしてください:",
+    "tip_steps": "WireGuard を開く → ファイル → トンネルを Zip でエクスポート",
+    "tip_then": "その後、下から zip をインポートしてください。",
+    "found_one": "既存の設定が 1 件見つかりました。インポートするには選択してください:",
+    "found_many": "既存の設定が {count} 件見つかりました。インポートするものを選択してください:",
+    "import_selected": "選択項目をインポート ({count})",
+    "importing": "インポート中…",
+    "import_file": ".conf / .ovpn / .zip をインポート",
+    "import_another": "別のファイルをインポート",
+    "get_started": "はじめる",
+    "skip": "スキップ",
+    "continue": "続ける",
+    "selected_configs": "選択した設定"
   }
 }

@@ -201,27 +201,6 @@ func (s *TunnelService) Connect(name string) error {
 	return nil
 }
 
-// Disconnect tears down whatever tunnel the helper currently has active.
-// If the call fails with a "client closed" error (the health monitor may have
-// swapped the client during a recovery), retry once with the fresh client.
-func (s *TunnelService) Disconnect() error {
-	// Snapshot rx/tx + name BEFORE the IPC tear-down — once disconnected the
-	// helper drops the per-tunnel counters and we lose the totals forever.
-	name, rx, tx := s.snapshotActiveStats("")
-
-	s.clients.MarkInflight()
-	defer s.clients.UnmarkInflight()
-	err := s.callLong(ipc.MethodDisconnect, nil, nil)
-	if err != nil && isClientClosed(err) {
-		slog.Info("disconnect got client-closed, retrying with fresh client")
-		err = s.callLong(ipc.MethodDisconnect, nil, nil)
-	}
-	if err == nil {
-		s.recordDisconnectEnd(name, rx, tx, "user")
-	}
-	return err
-}
-
 // SaveCredentials stores OpenVPN credentials (username + base password) in
 // the Keychain. The TOTP code is never stored — only the static base
 // password the user enters once.
@@ -284,13 +263,21 @@ func (s *TunnelService) FeedCredentials(tunnelName, username, fullPassword, resp
 	}, nil)
 }
 
-// DisconnectTunnel disconnects a specific tunnel by name.
+// DisconnectTunnel disconnects a specific tunnel by name. Every disconnect
+// must name its tunnel — the helper rejects nameless disconnects.
 func (s *TunnelService) DisconnectTunnel(name string) error {
-	_, rx, tx := s.snapshotActiveStats(name)
+	rx, tx := s.snapshotActiveStats(name)
 
 	s.clients.MarkInflight()
 	defer s.clients.UnmarkInflight()
-	err := s.callLong(ipc.MethodDisconnect, ipc.DisconnectRequest{TunnelName: name}, nil)
+	req := ipc.DisconnectRequest{TunnelName: name}
+	err := s.callLong(ipc.MethodDisconnect, req, nil)
+	if err != nil && isClientClosed(err) {
+		// The health monitor may have swapped clients mid-call; retry once
+		// on the fresh client.
+		slog.Info("disconnect got client-closed, retrying with fresh client", "tunnel", name)
+		err = s.callLong(ipc.MethodDisconnect, req, nil)
+	}
 	if err == nil {
 		s.recordDisconnectEnd(name, rx, tx, "user")
 	}
@@ -317,19 +304,7 @@ func (s *TunnelService) recordConnectStart(name string) {
 // from the activeSessions map; no-op if there isn't one (e.g. the helper was
 // already disconnected when the GUI started).
 func (s *TunnelService) recordDisconnectEnd(name string, rx, tx int64, reason string) {
-	if s.history == nil {
-		return
-	}
-	if name == "" {
-		// Disconnect() with no tunnel name. Best-effort: close every open
-		// session — there's almost always exactly one.
-		s.activeSessions.Range(func(k, v interface{}) bool {
-			if id, ok := v.(string); ok && id != "" {
-				s.history.RecordDisconnect(id, rx, tx, reason)
-			}
-			s.activeSessions.Delete(k)
-			return true
-		})
+	if s.history == nil || name == "" {
 		return
 	}
 	v, ok := s.activeSessions.LoadAndDelete(name)
@@ -343,35 +318,23 @@ func (s *TunnelService) recordDisconnectEnd(name string, rx, tx int64, reason st
 	s.history.RecordDisconnect(id, rx, tx, reason)
 }
 
-// snapshotActiveStats returns (tunnelName, rx, tx) for the tunnel about to
-// disconnect. If wantName is "" the primary active tunnel is used. Returns
-// zero values on any error — capturing stats is best-effort and never blocks
-// disconnect.
-func (s *TunnelService) snapshotActiveStats(wantName string) (string, int64, int64) {
+// snapshotActiveStats returns (rx, tx) for the named tunnel about to
+// disconnect. Returns zeros on any error — capturing stats is best-effort and
+// never blocks disconnect.
+func (s *TunnelService) snapshotActiveStats(name string) (int64, int64) {
 	status, err := s.GetStatus()
 	if err != nil || status == nil {
-		return wantName, 0, 0
+		return 0, 0
 	}
-	if wantName == "" {
-		// Find primary: first prefer status.TunnelName, then status.Tunnels.
-		if status.TunnelName != "" {
-			return status.TunnelName, status.RxBytes, status.TxBytes
-		}
-		if len(status.Tunnels) > 0 {
-			t := status.Tunnels[0]
-			return t.TunnelName, t.RxBytes, t.TxBytes
-		}
-		return "", 0, 0
-	}
-	if status.TunnelName == wantName {
-		return wantName, status.RxBytes, status.TxBytes
+	if status.TunnelName == name {
+		return status.RxBytes, status.TxBytes
 	}
 	for _, t := range status.Tunnels {
-		if t.TunnelName == wantName {
-			return wantName, t.RxBytes, t.TxBytes
+		if t.TunnelName == name {
+			return t.RxBytes, t.TxBytes
 		}
 	}
-	return wantName, 0, 0
+	return 0, 0
 }
 
 // reconcileHistoryFromStatus syncs the history's open-session map against the
@@ -449,7 +412,7 @@ func (s *TunnelService) closeHistorySessions(reason string) {
 		if id == "" {
 			return true
 		}
-		_, rx, tx := s.snapshotActiveStats(name)
+		rx, tx := s.snapshotActiveStats(name)
 		s.history.RecordDisconnect(id, rx, tx, reason)
 		s.activeSessions.Delete(k)
 		return true

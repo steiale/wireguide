@@ -109,11 +109,10 @@ func formatSpeedFixed(bps float64) string {
 //  1. updateStatus(status) — cheap, ≈1 Hz. Swaps icon + label, recomputes speeds. No IPC/disk.
 //  2. rebuildMenu() — expensive, only on connect/disconnect/handshake transitions.
 type trayManager struct {
-	app        *application.App
-	win        *application.WebviewWindow
-	tray       *application.SystemTray
-	svc        *wgapp.TunnelService
-	doShutdown func()
+	app  *application.App
+	win  *application.WebviewWindow
+	tray *application.SystemTray
+	svc  *wgapp.TunnelService
 
 	mu            sync.Mutex
 	activeTunnels map[string]bool
@@ -141,13 +140,12 @@ type trayManager struct {
 	tunnelSpeedTx map[string]float64
 }
 
-func newTrayManager(app *application.App, win *application.WebviewWindow, tray *application.SystemTray, svc *wgapp.TunnelService, doShutdown func()) *trayManager {
+func newTrayManager(app *application.App, win *application.WebviewWindow, tray *application.SystemTray, svc *wgapp.TunnelService) *trayManager {
 	return &trayManager{
 		app:           app,
 		win:           win,
 		tray:          tray,
 		svc:           svc,
-		doShutdown:    doShutdown,
 		tunnelStatus:  make(map[string]domain.ConnectionStatus),
 		prevRx:        make(map[string]int64),
 		prevTx:        make(map[string]int64),
@@ -392,12 +390,10 @@ func (t *trayManager) rebuildMenu() {
 			t.mu.Unlock()
 			if active {
 				if err := t.svc.DisconnectTunnel(tunName); err != nil {
-					slog.Warn("tray disconnect failed", "tunnel", tunName, "error", err)
+					t.reportError("disconnect", tunName, err)
 				}
-			} else {
-				if err := t.svc.Connect(tunName); err != nil {
-					slog.Warn("tray connect failed", "tunnel", tunName, "error", err)
-				}
+			} else if err := t.svc.Connect(tunName); err != nil {
+				t.reportError("connect", tunName, err)
 			}
 		})
 	}
@@ -425,9 +421,10 @@ func (t *trayManager) rebuildMenu() {
 			if s == nil {
 				return
 			}
-			s.KillSwitch = !s.KillSwitch
-			_ = t.svc.SaveSettings(s)
-			_ = t.svc.SetKillSwitch(s.KillSwitch)
+			// SetKillSwitch pushes the policy to the helper and persists it.
+			if err := t.svc.SetKillSwitch(!s.KillSwitch); err != nil {
+				slog.Warn("tray kill switch toggle failed", "error", err)
+			}
 			t.scheduleRebuild()
 		})
 	}
@@ -438,17 +435,17 @@ func (t *trayManager) rebuildMenu() {
 	})
 	m.AddSeparator()
 	m.Add("Quit").OnClick(func(_ *application.Context) {
-		// doShutdown is sync.Once-guarded, safe to call here even though
-		// app.Quit() below also triggers it via
-		// ApplicationWillTerminate (gui.go) — calling it here too just
-		// starts shutdown promptly rather than waiting on that event.
-		// tray.Destroy() is NOT also called here, though: unlike
-		// doShutdown, the underlying native destroy is not guaranteed
-		// idempotent, and ApplicationWillTerminate's handler already
-		// destroys the same tray once app.Quit() below fires it — calling
-		// Destroy() from both places double-destroyed the same NSStatusItem.
-		t.doShutdown()
+		// Tunnel teardown runs in the app's OnShutdown hook (gui.go), and
+		// Wails destroys the tray itself during cleanup.
 		t.app.Quit()
 	})
 	t.tray.SetMenu(m)
+}
+
+// reportError surfaces a tray-initiated connect/disconnect failure: the
+// window is brought forward and the frontend shows it as a toast.
+func (t *trayManager) reportError(action, tunnel string, err error) {
+	slog.Warn("tray "+action+" failed", "tunnel", tunnel, "error", err)
+	showDock()
+	t.app.Event.Emit("tray_error", TrayErrorEvent{Action: action, Tunnel: tunnel, Error: err.Error()})
 }

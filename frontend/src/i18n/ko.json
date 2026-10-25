@@ -45,8 +45,7 @@
     "zip_ok": "완료",
     "zip_summary": "{ok}개 가져옴, {fail}개 실패",
     "zip_summary_ok": "{ok}개 가져옴",
-    "qr_button": "QR 코드로 가져오기",
-    "qr_error": "QR 코드를 가져오지 못했습니다"
+    "qr_button": "QR 코드로 가져오기"
   },
   "editor": {
     "title": "터널 편집: {name}",
@@ -155,7 +154,6 @@
     "clear": "지우기",
     "confirm_clear_title": "기록 지우기",
     "confirm_clear_message": "모든 연결 기록을 삭제하시겠습니까?",
-    "confirm_clear": "모든 기록을 지우시겠습니까?",
     "active": "활성",
     "reason_user": "연결 해제됨",
     "reason_error": "오류",
@@ -196,6 +194,48 @@
     "save": "사용자 이름 저장",
     "submit": "연결",
     "cancel": "취소",
-    "username_required": "사용자 이름이 필요합니다"
+    "username_required": "사용자 이름이 필요합니다",
+    "rejected": "서버가 자격 증명을 거부했습니다. 다시 시도해 주세요."
+  },
+  "toast": {
+    "helper_reconnected": "헬퍼가 다시 연결되었습니다",
+    "unsupported_file": ".conf, .ovpn, .zip 파일과 QR 코드 이미지만 지원됩니다",
+    "import_failed": "가져오기 실패: {error}",
+    "imported": "\"{name}\" 가져옴",
+    "edit_load_failed": "\"{name}\"을(를) 열 수 없습니다: {error}",
+    "exported": "{path}(으)로 내보냈습니다",
+    "export_failed": "내보내기 실패: {error}",
+    "helper_starting": "헬퍼가 아직 시작 중입니다. 잠시 기다려 주세요",
+    "connect_failed": "연결 실패: {error}",
+    "connect_failed_named": "\"{name}\" 연결 실패: {error}",
+    "disconnect_failed_named": "\"{name}\" 연결 해제 실패: {error}",
+    "update_failed": "업데이트 실패: {error}",
+    "update_downloaded": "업데이트를 다운로드하여 Finder에 표시했습니다. LockPlus를 종료한 후 응용 프로그램 폴더의 앱을 교체하세요.",
+    "ovpn_lost": "OpenVPN 연결이 끊겼습니다. 다시 시도해 주세요",
+    "save_username_failed": "사용자 이름을 저장할 수 없습니다: {error}"
+  },
+  "helper": {
+    "starting": "헬퍼 서비스 시작 중…",
+    "unavailable": "헬퍼 서비스를 사용할 수 없습니다. LockPlus를 종료한 후 다시 실행하세요."
+  },
+  "onboarding": {
+    "title": "LockPlus에 오신 것을 환영합니다",
+    "subtitle": "WireGuard 및 OpenVPN 관리자",
+    "scanning": "기존 설정을 검색하는 중…",
+    "no_configs": "WireGuard 설정 파일을 자동으로 찾지 못했습니다.",
+    "tip_title": "WireGuard 앱(Mac App Store)을 사용 중이신가요?",
+    "tip_body": "해당 앱의 설정은 파일로 저장되지 않습니다. 먼저 내보내세요:",
+    "tip_steps": "WireGuard 열기 → 파일 → 터널을 Zip으로 내보내기",
+    "tip_then": "그런 다음 아래에서 zip 파일을 가져오세요.",
+    "found_one": "기존 설정 1개를 찾았습니다. 가져오려면 선택하세요:",
+    "found_many": "기존 설정 {count}개를 찾았습니다. 가져올 항목을 선택하세요:",
+    "import_selected": "선택 항목 가져오기 ({count})",
+    "importing": "가져오는 중…",
+    "import_file": ".conf / .ovpn / .zip 가져오기",
+    "import_another": "다른 파일 가져오기",
+    "get_started": "시작하기",
+    "skip": "건너뛰기",
+    "continue": "계속",
+    "selected_configs": "선택한 설정"
   }
 }

@@ -32,12 +32,12 @@ export const HelperReset = "helper_reset";
 export const Log = "log";
 
 /**
- * Name of the custom event "reconnect".
- */
-export const Reconnect = "reconnect";
-
-/**
  * Name of the custom event "status".
  */
 export const Status = "status";
+
+/**
+ * Name of the custom event "tray_error".
+ */
+export const TrayError = "tray_error";
 

@@ -45,8 +45,7 @@
     "zip_ok": "Done",
     "zip_summary": "{ok} imported, {fail} failed",
     "zip_summary_ok": "{ok} imported",
-    "qr_button": "Import from QR code",
-    "qr_error": "Failed to import QR code"
+    "qr_button": "Import from QR code"
   },
   "editor": {
     "title": "Edit Tunnel: {name}",
@@ -155,7 +154,6 @@
     "clear": "Clear",
     "confirm_clear_title": "Clear History",
     "confirm_clear_message": "Are you sure you want to delete all connection history?",
-    "confirm_clear": "Clear all history?",
     "active": "Active",
     "reason_user": "Disconnected",
     "reason_error": "Error",
@@ -196,6 +194,48 @@
     "save": "Save username",
     "submit": "Connect",
     "cancel": "Cancel",
-    "username_required": "Username is required"
+    "username_required": "Username is required",
+    "rejected": "The server rejected the credentials. Please try again."
+  },
+  "toast": {
+    "helper_reconnected": "Helper reconnected",
+    "unsupported_file": "Only .conf, .ovpn, .zip and QR code images are supported",
+    "import_failed": "Import failed: {error}",
+    "imported": "Imported \"{name}\"",
+    "edit_load_failed": "Could not open \"{name}\": {error}",
+    "exported": "Exported to {path}",
+    "export_failed": "Export failed: {error}",
+    "helper_starting": "The helper is still starting — please wait a moment",
+    "connect_failed": "Connect failed: {error}",
+    "connect_failed_named": "Connecting \"{name}\" failed: {error}",
+    "disconnect_failed_named": "Disconnecting \"{name}\" failed: {error}",
+    "update_failed": "Update failed: {error}",
+    "update_downloaded": "Update downloaded and shown in Finder. Quit LockPlus, then replace the app in Applications.",
+    "ovpn_lost": "OpenVPN connection lost — please try again",
+    "save_username_failed": "Could not save username: {error}"
+  },
+  "helper": {
+    "starting": "Starting helper service…",
+    "unavailable": "Helper service unavailable. Please quit and relaunch LockPlus."
+  },
+  "onboarding": {
+    "title": "Welcome to LockPlus",
+    "subtitle": "Your WireGuard & OpenVPN manager",
+    "scanning": "Scanning for existing configs…",
+    "no_configs": "No WireGuard config files found automatically.",
+    "tip_title": "Using the WireGuard app (Mac App Store)?",
+    "tip_body": "Its configs aren't stored as files. Export them first:",
+    "tip_steps": "Open WireGuard → File → Export Tunnel(s) as Zip",
+    "tip_then": "then import the zip below.",
+    "found_one": "Found 1 existing config. Select it to import:",
+    "found_many": "Found {count} existing configs. Select which to import:",
+    "import_selected": "Import selected ({count})",
+    "importing": "Importing…",
+    "import_file": "Import .conf / .ovpn / .zip",
+    "import_another": "Import another file",
+    "get_started": "Get started",
+    "skip": "Skip",
+    "continue": "Continue",
+    "selected_configs": "Selected configs"
   }
 }

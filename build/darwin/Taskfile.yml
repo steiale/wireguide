@@ -164,6 +164,15 @@ tasks:
               exit 1
               ;;
           esac
+          # Release gate (security N3): a root openvpn must not be able to
+          # dlopen anything (plugins, OpenSSL engines/providers). The build
+          # links statically without plugin support; reject any binary that
+          # still imports _dlopen.
+          if nm -u "build/openvpn/bin/openvpn" | grep -qx '_dlopen'; then
+            echo "ERROR: build/openvpn/bin/openvpn imports _dlopen. Rebuild with build/openvpn/build.sh (no plugins / dynamic engines)."
+            exit 1
+          fi
+          echo "openvpn: no _dlopen import"
           cp "build/openvpn/bin/openvpn" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/openvpn"
           echo "openvpn bundled"
         else
@@ -271,13 +280,31 @@ tasks:
       detached signature for the ZIP so the auto-updater can verify authenticity.
       Set WIREGUIDE_SIGNING_KEY (base64-encoded ed25519 private key) before
       running, OR pass KEY_PATH=/path/to/key.b64 as a task variable.
+    preconditions:
+      # A release without OpenVPN would ship a dual-protocol app that can't
+      # connect half its tunnels; dev `package` builds may skip it, releases
+      # may not.
+      - sh: '[ -f build/openvpn/bin/openvpn ]'
+        msg: "build/openvpn/bin/openvpn is missing. Build it with build/openvpn/build.sh before releasing."
+      # GUI and helper fall back to the compiled-in version; if it drifts from
+      # the bundle version the helper version check never matches and the
+      # helper install loops forever.
+      - sh: |
+          PLIST=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' build/darwin/Info.plist)
+          FALLBACK=$(sed -nE 's/^[[:space:]]*fallbackVersion[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/update/checker.go)
+          [ -n "${FALLBACK}" ] && [ "${FALLBACK}" = "${PLIST}" ]
+        msg: "fallbackVersion in internal/update/checker.go must equal CFBundleShortVersionString in build/darwin/Info.plist."
     cmds:
       - task: sign:notarize
       - |
         VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' build/darwin/Info.plist)
         ZIP="lockplus-v${VERSION}-darwin-arm64.zip"
-        cp -r "{{.BIN_DIR}}/{{.APP_NAME}}.app" "LockPlus.app"
-        zip -r "${ZIP}" "LockPlus.app"
+        # ditto writes a fresh archive (zip -r would append to a stale one
+        # from an earlier run) and preserves macOS metadata/symlinks.
+        rm -f "${ZIP}" "${ZIP}.sig"
+        rm -rf "LockPlus.app"
+        cp -R "{{.BIN_DIR}}/{{.APP_NAME}}.app" "LockPlus.app"
+        ditto -c -k --keepParent "LockPlus.app" "${ZIP}"
         rm -rf "LockPlus.app"
         shasum -a 256 "${ZIP}"
 

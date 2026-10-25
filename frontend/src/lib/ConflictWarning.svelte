@@ -4,11 +4,17 @@
 
   export let conflicts = [];
   const dispatch = createEventDispatcher();
+
+  function onKeydown(e) {
+    if (e.key === 'Escape') dispatch('cancel');
+  }
 </script>
 
-<div class="modal-backdrop" on:click={() => dispatch('cancel')}>
-  <div class="modal" on:click|stopPropagation>
-    <h3>{$t('conflict.title')}</h3>
+<svelte:window on:keydown={onKeydown} />
+
+<div class="modal-backdrop" role="presentation" on:click|self={() => dispatch('cancel')}>
+  <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="conflict-title">
+    <h3 id="conflict-title">{$t('conflict.title')}</h3>
 
     <div class="conflict-list">
       {#each conflicts as conflict}

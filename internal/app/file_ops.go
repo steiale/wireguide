@@ -130,18 +130,11 @@ func (s *TunnelService) importZipReader(r *zip.Reader) ([]ZipImportResult, error
 			results = append(results, ZipImportResult{Name: filepath.Base(f.Name), Error: fmt.Sprintf("entry too large (max %d bytes)", maxReadFileSize)})
 			continue
 		}
-		name := s.zipUniqueName(baseName)
-		var importErr error
-		switch ext {
-		case ".ovpn":
-			_, importErr = s.ImportOVPN(name, string(data))
-		default:
-			_, importErr = s.ImportConfig(name, string(data))
-		}
+		info, importErr := s.importNamed(baseName, ext, string(data))
 		if importErr != nil {
 			results = append(results, ZipImportResult{Name: baseName, Error: importErr.Error()})
 		} else {
-			results = append(results, ZipImportResult{Name: name})
+			results = append(results, ZipImportResult{Name: info.Name})
 		}
 	}
 	if skipped > 0 {
@@ -174,9 +167,9 @@ func (s *TunnelService) ImportConfig(name, content string) (*TunnelInfo, error) 
 	}, nil
 }
 
-// ImportOVPN validates and stores a raw OpenVPN config under the given name,
+// importOVPN validates and stores a raw OpenVPN config under the given name,
 // writing the .ovpn file plus a .meta.json marking the tunnel as OpenVPN.
-func (s *TunnelService) ImportOVPN(name, content string) (*TunnelInfo, error) {
+func (s *TunnelService) importOVPN(name, content string) (*TunnelInfo, error) {
 	if err := storage.ValidateTunnelName(name); err != nil {
 		return nil, err
 	}
@@ -209,14 +202,54 @@ func (s *TunnelService) ImportOVPN(name, content string) (*TunnelInfo, error) {
 	}, nil
 }
 
-// ImportFile dispatches to the correct importer based on the source filename's
-// extension: .ovpn → OpenVPN, everything else → WireGuard. Used by the native
-// file-drop / picker paths which know the original filename.
-func (s *TunnelService) ImportFile(name, content, filename string) (*TunnelInfo, error) {
-	if strings.HasSuffix(strings.ToLower(filename), ".ovpn") {
-		return s.ImportOVPN(name, content)
+// sanitizeTunnelName turns a filename-derived base name into one that passes
+// storage.ValidateTunnelName: characters outside [A-Za-z0-9 _-] become '-',
+// runs of '-' collapse, leading/trailing '-' and spaces are trimmed, and the
+// result is capped so zipUniqueName's "-N" suffix still fits in 64 chars.
+func sanitizeTunnelName(raw string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range raw {
+		valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == ' ' || r == '-'
+		if !valid {
+			r = '-'
+		}
+		if r == '-' && lastDash {
+			continue
+		}
+		lastDash = r == '-'
+		b.WriteRune(r)
+	}
+	trim := func(v string) string { return strings.Trim(v, "- ") }
+	name := trim(b.String())
+	if len(name) > 56 {
+		name = trim(name[:56])
+	}
+	if name == "" || storage.ValidateTunnelName(name) != nil {
+		return "tunnel"
+	}
+	return name
+}
+
+// importNamed sanitizes base, picks a free tunnel name for it, and imports
+// content as OpenVPN (ext ".ovpn") or WireGuard (anything else). The
+// returned TunnelInfo carries the final name actually used.
+func (s *TunnelService) importNamed(base, ext, content string) (*TunnelInfo, error) {
+	name := s.zipUniqueName(sanitizeTunnelName(base))
+	if ext == ".ovpn" {
+		return s.importOVPN(name, content)
 	}
 	return s.ImportConfig(name, content)
+}
+
+// ImportFile imports one config file. filename (a bare name or a path) picks
+// the protocol by extension (.ovpn → OpenVPN, else WireGuard) and supplies
+// the tunnel name, which is sanitized and made unique. Returns the stored
+// tunnel, including its final name.
+func (s *TunnelService) ImportFile(filename, content string) (*TunnelInfo, error) {
+	base, ext := stripKnownTunnelExt(filepath.Base(filename))
+	return s.importNamed(base, ext, content)
 }
 
 // maxReadFileSize is the largest file ReadFile will accept (10 MB).
@@ -243,11 +276,6 @@ func (s *TunnelService) ReadFile(path string) (string, error) {
 		return "", fmt.Errorf("reading %s: %w", path, err)
 	}
 	return string(data), nil
-}
-
-// BaseName extracts the filename without extension from a path.
-func (s *TunnelService) BaseName(path string) string {
-	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 }
 
 // ValidateConfig parses and validates a raw config string. Returns a list of
@@ -320,23 +348,24 @@ func decodeQRFromImage(img image.Image) (string, error) {
 }
 
 // ImportQRFromPath reads an image file, decodes its QR code, and imports the
-// WireGuard config under the given name.
-func (s *TunnelService) ImportQRFromPath(path, name string) error {
+// WireGuard config under a name derived from the file name. Returns the
+// final tunnel name.
+func (s *TunnelService) ImportQRFromPath(path string) (string, error) {
 	if err := s.consumePath(path); err != nil {
-		return err
+		return "", err
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if info.Size() > maxQRImageBytes {
-		return fmt.Errorf("image too large (%d bytes, max %d)", info.Size(), maxQRImageBytes)
+		return "", fmt.Errorf("image too large (%d bytes, max %d)", info.Size(), maxQRImageBytes)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return s.ImportQRFromBytes(data, name)
+	return s.ImportQRFromBytes(data, path)
 }
 
 // maxQRImageBytes bounds the raw input to ImportQRFromBytes. A legitimate
@@ -352,30 +381,36 @@ const maxQRImageBytes = 20 << 20
 const maxQRImagePixels = 8000 * 8000
 
 // ImportQRFromBytes decodes a QR code from raw image bytes and imports the
-// WireGuard config under the given name. Used by the file-picker path where
-// the browser API provides bytes rather than a filesystem path.
-func (s *TunnelService) ImportQRFromBytes(data []byte, name string) error {
+// WireGuard config under a name derived from filename (sanitized, made
+// unique). Used by the file-picker path where the browser API provides bytes
+// rather than a filesystem path. Returns the final tunnel name.
+func (s *TunnelService) ImportQRFromBytes(data []byte, filename string) (string, error) {
 	if len(data) > maxQRImageBytes {
-		return fmt.Errorf("image too large (%d bytes, max %d)", len(data), maxQRImageBytes)
+		return "", fmt.Errorf("image too large (%d bytes, max %d)", len(data), maxQRImageBytes)
 	}
 	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
 		if pixels := int64(cfg.Width) * int64(cfg.Height); pixels > maxQRImagePixels {
-			return fmt.Errorf("image dimensions too large (%dx%d)", cfg.Width, cfg.Height)
+			return "", fmt.Errorf("image dimensions too large (%dx%d)", cfg.Width, cfg.Height)
 		}
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("cannot decode image: %w", err)
+		return "", fmt.Errorf("cannot decode image: %w", err)
 	}
 	text, err := decodeQRFromImage(img)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !strings.Contains(text, "[Interface]") {
-		return fmt.Errorf("no WireGuard QR code found in image")
+		return "", fmt.Errorf("no WireGuard QR code found in image")
 	}
-	_, err = s.tunnelStore.ImportFromContent(name, text)
-	return err
+	base := filepath.Base(filename)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	info, err := s.importNamed(base, ".conf", text)
+	if err != nil {
+		return "", err
+	}
+	return info.Name, nil
 }
 
 // ExportTunnel shows a native save dialog and writes the .conf file.

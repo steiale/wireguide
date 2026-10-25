@@ -23,8 +23,8 @@ declare module "@wailsio/runtime" {
             "helper": gui$0.HelperEvent;
             "helper_reset": {};
             "log": ipc$0.LogEntry;
-            "reconnect": gui$0.ReconnectEvent;
             "status": domain$0.ConnectionStatus;
+            "tray_error": gui$0.TrayErrorEvent;
         }
     }
 }

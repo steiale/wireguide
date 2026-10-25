@@ -115,6 +115,8 @@
   }
 </script>
 
+<svelte:window on:keydown={(e) => { if (e.key === 'Escape' && confirmingClear) confirmingClear = false; }} />
+
 <div class="history-view">
   <div class="history-header">
     <h2>{$t('history.title')}</h2>
@@ -126,9 +128,9 @@
   </div>
 
   {#if confirmingClear}
-    <div class="confirm-backdrop" on:click={() => confirmingClear = false}>
-      <div class="confirm-dialog" on:click|stopPropagation>
-        <h3>{$t('history.confirm_clear_title')}</h3>
+    <div class="confirm-backdrop" role="presentation" on:click|self={() => confirmingClear = false}>
+      <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="history-clear-title">
+        <h3 id="history-clear-title">{$t('history.confirm_clear_title')}</h3>
         <p>{$t('history.confirm_clear_message')}</p>
         <div class="confirm-footer">
           <button class="btn-action btn-danger" on:click={clearAll}>{$t('history.clear')}</button>

@@ -45,8 +45,7 @@
     "zip_ok": "Fertig",
     "zip_summary": "{ok} importiert, {fail} fehlgeschlagen",
     "zip_summary_ok": "{ok} importiert",
-    "qr_button": "Aus QR-Code importieren",
-    "qr_error": "QR-Code konnte nicht importiert werden"
+    "qr_button": "Aus QR-Code importieren"
   },
   "editor": {
     "title": "Tunnel bearbeiten: {name}",
@@ -155,7 +154,6 @@
     "clear": "Löschen",
     "confirm_clear_title": "Verlauf löschen",
     "confirm_clear_message": "Möchtest du den gesamten Verbindungsverlauf wirklich löschen?",
-    "confirm_clear": "Gesamten Verlauf löschen?",
     "active": "Aktiv",
     "reason_user": "Getrennt",
     "reason_error": "Fehler",
@@ -196,6 +194,48 @@
     "save": "Benutzernamen speichern",
     "submit": "Verbinden",
     "cancel": "Abbrechen",
-    "username_required": "Benutzername ist erforderlich"
+    "username_required": "Benutzername ist erforderlich",
+    "rejected": "Der Server hat die Anmeldedaten abgelehnt. Bitte erneut versuchen."
+  },
+  "toast": {
+    "helper_reconnected": "Hilfsdienst wieder verbunden",
+    "unsupported_file": "Nur .conf-, .ovpn-, .zip-Dateien und QR-Code-Bilder werden unterstützt",
+    "import_failed": "Import fehlgeschlagen: {error}",
+    "imported": "„{name}“ importiert",
+    "edit_load_failed": "„{name}“ konnte nicht geöffnet werden: {error}",
+    "exported": "Exportiert nach {path}",
+    "export_failed": "Export fehlgeschlagen: {error}",
+    "helper_starting": "Der Hilfsdienst startet noch – bitte einen Moment warten",
+    "connect_failed": "Verbindung fehlgeschlagen: {error}",
+    "connect_failed_named": "Verbinden von „{name}“ fehlgeschlagen: {error}",
+    "disconnect_failed_named": "Trennen von „{name}“ fehlgeschlagen: {error}",
+    "update_failed": "Update fehlgeschlagen: {error}",
+    "update_downloaded": "Update heruntergeladen und im Finder angezeigt. Beende LockPlus und ersetze dann die App im Programme-Ordner.",
+    "ovpn_lost": "OpenVPN-Verbindung verloren – bitte erneut versuchen",
+    "save_username_failed": "Benutzername konnte nicht gespeichert werden: {error}"
+  },
+  "helper": {
+    "starting": "Hilfsdienst wird gestartet…",
+    "unavailable": "Hilfsdienst nicht verfügbar. Bitte LockPlus beenden und neu starten."
+  },
+  "onboarding": {
+    "title": "Willkommen bei LockPlus",
+    "subtitle": "Dein Manager für WireGuard & OpenVPN",
+    "scanning": "Suche nach vorhandenen Konfigurationen…",
+    "no_configs": "Es wurden keine WireGuard-Konfigurationsdateien automatisch gefunden.",
+    "tip_title": "Nutzt du die WireGuard-App (Mac App Store)?",
+    "tip_body": "Deren Konfigurationen werden nicht als Dateien gespeichert. Exportiere sie zuerst:",
+    "tip_steps": "WireGuard öffnen → Datei → Tunnel als Zip exportieren",
+    "tip_then": "und importiere dann die Zip-Datei unten.",
+    "found_one": "1 vorhandene Konfiguration gefunden. Zum Importieren auswählen:",
+    "found_many": "{count} vorhandene Konfigurationen gefunden. Wähle aus, welche importiert werden sollen:",
+    "import_selected": "Auswahl importieren ({count})",
+    "importing": "Importiere…",
+    "import_file": ".conf / .ovpn / .zip importieren",
+    "import_another": "Weitere Datei importieren",
+    "get_started": "Los geht’s",
+    "skip": "Überspringen",
+    "continue": "Weiter",
+    "selected_configs": "Ausgewählte Konfigurationen"
   }
 }

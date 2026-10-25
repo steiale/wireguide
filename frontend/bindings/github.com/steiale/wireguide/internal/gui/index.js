@@ -4,5 +4,5 @@
 
 export {
     HelperEvent,
-    ReconnectEvent
+    TrayErrorEvent
 } from "./models.js";

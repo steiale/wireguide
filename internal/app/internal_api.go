@@ -1,10 +1,13 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
 
+	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/storage"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -41,6 +44,18 @@ func MigrateAutostart(s *TunnelService) { s.migrateAutostart() }
 // ImportQRFromPath, ImportFoundConfigs) to open exactly these paths, once
 // each, within pathGrantTTL. Called by internal/gui for native file drops.
 func GrantPaths(s *TunnelService, paths []string) { s.grantPaths(paths) }
+
+// PushFirewallPolicy sends the persisted kill-switch and DNS-protection
+// policy to the helper behind c. Called by internal/gui after every helper
+// (re)connect, since a restarted helper starts with its defaults.
+func PushFirewallPolicy(c *ipc.Client, st *storage.Settings) error {
+	if c == nil || st == nil {
+		return nil
+	}
+	ksErr := c.Call(ipc.MethodSetKillSwitch, ipc.KillSwitchRequest{Enabled: st.KillSwitch}, nil)
+	dnsErr := c.Call(ipc.MethodSetDNSProtection, ipc.DNSProtectionRequest{Enabled: st.DNSProtection}, nil)
+	return errors.Join(ksErr, dnsErr)
+}
 
 // pathGrantTTL bounds how long a path handed to the frontend stays usable.
 // Long enough for the onboarding scan list to sit on screen while the user

@@ -8,6 +8,8 @@ import { Create as $Create } from "@wailsio/runtime";
 
 /**
  * HelperEvent notifies the frontend about helper process health changes.
+ * GaveUp marks a terminal state: automatic recovery stopped and Message tells
+ * the user what to do, so the UI stops showing a "starting" spinner.
  */
 export class HelperEvent {
     /**
@@ -29,6 +31,13 @@ export class HelperEvent {
              */
             this["message"] = "";
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["gave_up"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -45,46 +54,48 @@ export class HelperEvent {
 }
 
 /**
- * ReconnectEvent mirrors ipc.ReconnectStateDTO for Wails event emission.
+ * TrayErrorEvent reports a tray-initiated connect/disconnect failure to the
+ * frontend, which shows it as a toast (the window is brought forward first).
  */
-export class ReconnectEvent {
+export class TrayErrorEvent {
     /**
-     * Creates a new ReconnectEvent instance.
-     * @param {Partial<ReconnectEvent>} [$$source = {}] - The source object to create the ReconnectEvent.
+     * Creates a new TrayErrorEvent instance.
+     * @param {Partial<TrayErrorEvent>} [$$source = {}] - The source object to create the TrayErrorEvent.
      */
     constructor($$source = {}) {
-        if (!("reconnecting" in $$source)) {
+        if (!("action" in $$source)) {
             /**
+             * "connect" | "disconnect"
              * @member
-             * @type {boolean}
+             * @type {string}
              */
-            this["reconnecting"] = false;
+            this["action"] = "";
         }
-        if (!("attempt" in $$source)) {
+        if (!("tunnel" in $$source)) {
             /**
              * @member
-             * @type {number}
+             * @type {string}
              */
-            this["attempt"] = 0;
+            this["tunnel"] = "";
         }
-        if (!("max_attempts" in $$source)) {
+        if (!("error" in $$source)) {
             /**
              * @member
-             * @type {number}
+             * @type {string}
              */
-            this["max_attempts"] = 0;
+            this["error"] = "";
         }
 
         Object.assign(this, $$source);
     }
 
     /**
-     * Creates a new ReconnectEvent instance from a string or object.
+     * Creates a new TrayErrorEvent instance from a string or object.
      * @param {any} [$$source = {}]
-     * @returns {ReconnectEvent}
+     * @returns {TrayErrorEvent}
      */
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new ReconnectEvent(/** @type {Partial<ReconnectEvent>} */($$parsedSource));
+        return new TrayErrorEvent(/** @type {Partial<TrayErrorEvent>} */($$parsedSource));
     }
 }

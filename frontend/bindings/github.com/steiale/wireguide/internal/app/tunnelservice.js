@@ -39,15 +39,6 @@ import * as wifi$0 from "../wifi/models.js";
 import * as $models from "./models.js";
 
 /**
- * BaseName extracts the filename without extension from a path.
- * @param {string} path
- * @returns {$CancellablePromise<string>}
- */
-export function BaseName(path) {
-    return $Call.ByID(3888008056, path);
-}
-
-/**
  * CheckConflicts loads a tunnel's config and scans local network interfaces
  * for routing overlaps (e.g. Tailscale, another WireGuard instance). Runs
  * entirely in the GUI process — no IPC needed. The frontend calls this before
@@ -110,17 +101,8 @@ export function DeleteTunnel(name) {
 }
 
 /**
- * Disconnect tears down whatever tunnel the helper currently has active.
- * If the call fails with a "client closed" error (the health monitor may have
- * swapped the client during a recovery), retry once with the fresh client.
- * @returns {$CancellablePromise<void>}
- */
-export function Disconnect() {
-    return $Call.ByID(3215959632);
-}
-
-/**
- * DisconnectTunnel disconnects a specific tunnel by name.
+ * DisconnectTunnel disconnects a specific tunnel by name. Every disconnect
+ * must name its tunnel — the helper rejects nameless disconnects.
  * @param {string} name
  * @returns {$CancellablePromise<void>}
  */
@@ -318,16 +300,16 @@ export function ImportConfig(name, content) {
 }
 
 /**
- * ImportFile dispatches to the correct importer based on the source filename's
- * extension: .ovpn → OpenVPN, everything else → WireGuard. Used by the native
- * file-drop / picker paths which know the original filename.
- * @param {string} name
- * @param {string} content
+ * ImportFile imports one config file. filename (a bare name or a path) picks
+ * the protocol by extension (.ovpn → OpenVPN, else WireGuard) and supplies
+ * the tunnel name, which is sanitized and made unique. Returns the stored
+ * tunnel, including its final name.
  * @param {string} filename
+ * @param {string} content
  * @returns {$CancellablePromise<$models.TunnelInfo | null>}
  */
-export function ImportFile(name, content, filename) {
-    return $Call.ByID(2721946621, name, content, filename).then(/** @type {($result: any) => any} */(($result) => {
+export function ImportFile(filename, content) {
+    return $Call.ByID(2721946621, filename, content).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType21($result);
     }));
 }
@@ -346,39 +328,27 @@ export function ImportFoundConfigs(paths) {
 }
 
 /**
- * ImportOVPN validates and stores a raw OpenVPN config under the given name,
- * writing the .ovpn file plus a .meta.json marking the tunnel as OpenVPN.
- * @param {string} name
- * @param {string} content
- * @returns {$CancellablePromise<$models.TunnelInfo | null>}
- */
-export function ImportOVPN(name, content) {
-    return $Call.ByID(3345483956, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
-    }));
-}
-
-/**
  * ImportQRFromBytes decodes a QR code from raw image bytes and imports the
- * WireGuard config under the given name. Used by the file-picker path where
- * the browser API provides bytes rather than a filesystem path.
+ * WireGuard config under a name derived from filename (sanitized, made
+ * unique). Used by the file-picker path where the browser API provides bytes
+ * rather than a filesystem path. Returns the final tunnel name.
  * @param {string} data
- * @param {string} name
- * @returns {$CancellablePromise<void>}
+ * @param {string} filename
+ * @returns {$CancellablePromise<string>}
  */
-export function ImportQRFromBytes(data, name) {
-    return $Call.ByID(615179959, data, name);
+export function ImportQRFromBytes(data, filename) {
+    return $Call.ByID(615179959, data, filename);
 }
 
 /**
  * ImportQRFromPath reads an image file, decodes its QR code, and imports the
- * WireGuard config under the given name.
+ * WireGuard config under a name derived from the file name. Returns the
+ * final tunnel name.
  * @param {string} path
- * @param {string} name
- * @returns {$CancellablePromise<void>}
+ * @returns {$CancellablePromise<string>}
  */
-export function ImportQRFromPath(path, name) {
-    return $Call.ByID(2642035939, path, name);
+export function ImportQRFromPath(path) {
+    return $Call.ByID(2642035939, path);
 }
 
 /**
@@ -504,9 +474,11 @@ export function RunDNSLeakTest() {
 /**
  * RunUpdate performs the update to version, which must match the release
  * found by the last CheckForUpdate. If installed via Homebrew, runs brew
- * upgrade. Otherwise downloads and verifies the asset from GitHub Releases.
+ * upgrade (the cask relaunches the app) and returns "". Otherwise downloads
+ * and verifies the asset from GitHub Releases, reveals it in Finder, and
+ * returns its path so the UI can tell the user what to do next.
  * @param {string} version
- * @returns {$CancellablePromise<void>}
+ * @returns {$CancellablePromise<string>}
  */
 export function RunUpdate(version) {
     return $Call.ByID(2979792246, version);
@@ -584,9 +556,7 @@ export function ScanForWireGuardConfigs() {
 }
 
 /**
- * SetDNSProtection asks the helper to lock DNS to the active tunnel's servers.
- * When enabling, we look up the active tunnel's DNS list from local storage
- * and pass it along (the helper never touches user-space storage).
+ * SetDNSProtection sets the DNS-protection policy and persists it.
  * @param {boolean} enabled
  * @returns {$CancellablePromise<void>}
  */
@@ -604,7 +574,7 @@ export function SetHealthCheck(enabled) {
 }
 
 /**
- * SetKillSwitch asks the helper to enable or disable the firewall kill switch.
+ * SetKillSwitch sets the kill-switch policy and persists it.
  * @param {boolean} enabled
  * @returns {$CancellablePromise<void>}
  */

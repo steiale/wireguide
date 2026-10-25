@@ -13,6 +13,7 @@ import (
 
 	"github.com/steiale/wireguide/internal/elevate"
 	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/storage"
 	"github.com/steiale/wireguide/internal/update"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -120,8 +121,10 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 	}
 
 	// After a successful install give the poll a fresh 60s budget, independent
-	// of how long SpawnHelper took (osascript + launchctl can be slow).
-	pollCtx, pollCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// of how long SpawnHelper took (osascript + launchctl can be slow). It is
+	// still a child of the caller's ctx so cancellation (app quit) propagates;
+	// callers therefore must not put a shorter deadline on ctx themselves.
+	pollCtx, pollCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer pollCancel()
 	ctx = pollCtx
 
@@ -169,7 +172,7 @@ func ensureHelper(ctx context.Context, dataDir string) (*ipc.Client, error) {
 // This fixes the previous design where a helper crash left the app
 // permanently unable to receive events (the bridge was still attached to a
 // dead socket).
-func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, dataDir string, bridge *eventBridge, done <-chan struct{}, wg *sync.WaitGroup) {
+func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, settingsStore *storage.SettingsStore, dataDir string, bridge *eventBridge, done <-chan struct{}, wg *sync.WaitGroup) {
 	go func() {
 		defer wg.Done()
 		ticker := time.NewTicker(5 * time.Second)
@@ -246,7 +249,7 @@ func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, d
 				gaveUp = false
 
 				// Try to recover immediately — don't wait for the next tick.
-				if attemptHelperRecovery(app, clients, bridge, dataDir, done, &consecutiveFailures, &gaveUp, maxAutoRecoveryAttempts) {
+				if attemptHelperRecovery(app, clients, settingsStore, bridge, dataDir, done, &consecutiveFailures, &gaveUp, maxAutoRecoveryAttempts) {
 					slog.Info("helper recovered")
 					app.Event.Emit("helper", HelperEvent{Alive: true})
 					wasAlive = true
@@ -261,7 +264,7 @@ func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, d
 					// or fix whatever's blocking the daemon.
 					continue
 				}
-				if attemptHelperRecovery(app, clients, bridge, dataDir, done, &consecutiveFailures, &gaveUp, maxAutoRecoveryAttempts) {
+				if attemptHelperRecovery(app, clients, settingsStore, bridge, dataDir, done, &consecutiveFailures, &gaveUp, maxAutoRecoveryAttempts) {
 					slog.Info("helper recovered")
 					app.Event.Emit("helper", HelperEvent{Alive: true})
 					wasAlive = true
@@ -270,7 +273,9 @@ func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, d
 			case alive && !wasAlive:
 				// Unexpected: ping succeeded without a recoverHelper call.
 				// Happens if a new helper accepted the old socket somehow.
+				// It may be a fresh process, so re-push persisted policy.
 				slog.Info("helper reachable again")
+				pushPersistedSettings(c, settingsStore)
 				app.Event.Emit("helper", HelperEvent{Alive: true})
 				wasAlive = true
 			}
@@ -283,8 +288,8 @@ func startHelperHealthMonitor(app *application.App, clients *ipc.ClientHolder, d
 // gives up immediately (further attempts would fail identically forever),
 // and repeated non-terminal failures give up after maxAttempts rather than
 // retrying — and re-prompting for a password — indefinitely.
-func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, bridge *eventBridge, dataDir string, done <-chan struct{}, consecutiveFailures *int, gaveUp *bool, maxAttempts int) bool {
-	ok, err := recoverHelper(clients, bridge, dataDir, done)
+func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, settingsStore *storage.SettingsStore, bridge *eventBridge, dataDir string, done <-chan struct{}, consecutiveFailures *int, gaveUp *bool, maxAttempts int) bool {
+	ok, err := recoverHelper(clients, settingsStore, bridge, dataDir, done)
 	if ok {
 		*consecutiveFailures = 0
 		return true
@@ -294,7 +299,7 @@ func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, brid
 	if errors.As(err, &sigErr) {
 		*gaveUp = true
 		slog.Error("helper install refused: code signature verification failed", "output", sigErr.Output)
-		app.Event.Emit("helper", HelperEvent{Alive: false, Message: signatureFailureMessage})
+		app.Event.Emit("helper", HelperEvent{Alive: false, GaveUp: true, Message: signatureFailureMessage})
 		go showSignatureFailureDialog()
 		return false
 	}
@@ -305,6 +310,7 @@ func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, brid
 		slog.Error("launchd blocked the helper daemon during recovery — giving up automatic retries", "output", bootErr.Output)
 		app.Event.Emit("helper", HelperEvent{
 			Alive:   false,
+			GaveUp:  true,
 			Message: "macOS blocked the helper service. Open System Settings → Login Items & Extensions, enable LockPlus, then relaunch the app.",
 		})
 		// One-shot dialog with the same remediation bootstrapHelper offers on
@@ -312,9 +318,9 @@ func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, brid
 		// doesn't stall the health-monitor loop's next tick.
 		go func() {
 			blockedCmd := `display dialog "macOS blocked LockPlus's background helper service.\n\nOpen System Settings → General → Login Items & Extensions, find LockPlus, and turn it ON. Then relaunch LockPlus." buttons {"Open Login Items", "Dismiss"} default button "Open Login Items" with title "LockPlus" with icon stop`
-			out, _ := exec.Command("osascript", "-e", blockedCmd).Output()
+			out, _ := exec.Command("/usr/bin/osascript", "-e", blockedCmd).Output()
 			if strings.Contains(string(out), "Open Login Items") {
-				_ = exec.Command("open", "x-apple.systempreferences:com.apple.LoginItems-Settings.extension").Run()
+				_ = exec.Command("/usr/bin/open", "x-apple.systempreferences:com.apple.LoginItems-Settings.extension").Run()
 			}
 		}()
 		return false
@@ -331,6 +337,7 @@ func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, brid
 		slog.Warn("user declined the admin prompt during helper recovery — giving up automatic retries")
 		app.Event.Emit("helper", HelperEvent{
 			Alive:   false,
+			GaveUp:  true,
 			Message: "Helper service needs administrator access to restart. Please quit and relaunch LockPlus when ready to authorize it.",
 		})
 		return false
@@ -342,6 +349,7 @@ func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, brid
 		slog.Error("helper recovery failed repeatedly — giving up automatic retries", "attempts", *consecutiveFailures)
 		app.Event.Emit("helper", HelperEvent{
 			Alive:   false,
+			GaveUp:  true,
 			Message: "Helper service unavailable. Please quit and relaunch LockPlus.",
 		})
 	}
@@ -354,8 +362,11 @@ func attemptHelperRecovery(app *application.App, clients *ipc.ClientHolder, brid
 // from a terminal one (elevate.BootstrapError) that will keep failing
 // identically forever until the user acts outside the app — see
 // attemptHelperRecovery.
-func recoverHelper(clients *ipc.ClientHolder, bridge *eventBridge, dataDir string, done <-chan struct{}) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func recoverHelper(clients *ipc.ClientHolder, settingsStore *storage.SettingsStore, bridge *eventBridge, dataDir string, done <-chan struct{}) (bool, error) {
+	// No deadline here: ensureHelper bounds each phase itself (2 s ping,
+	// SpawnHelper's own timeouts, a 60 s poll derived from this ctx). This
+	// ctx only carries cancellation on shutdown.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Allow early exit when shutdown is requested: cancel the context
@@ -378,6 +389,7 @@ func recoverHelper(clients *ipc.ClientHolder, bridge *eventBridge, dataDir strin
 	}
 	clients.Set(newClient)
 	bridge.Resubscribe()
+	pushPersistedSettings(newClient, settingsStore)
 	return true, nil
 }
 

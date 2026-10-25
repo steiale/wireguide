@@ -4,6 +4,7 @@
   import { applyTheme } from '../stores/theme.js';
   import { connectionStatus, tunnels } from '../stores/tunnels.js';
   import WifiRules from './WifiRules.svelte';
+  import { errText } from './errors.js';
 
   export let TunnelService;
   export let onClose = () => {};
@@ -198,35 +199,31 @@
     scheduleSave();
   }
 
-  function onKillSwitchChange(e) {
-    settings.kill_switch = e.target.checked;
-    if ($connectionStatus?.state === 'connected') {
-      TunnelService.SetKillSwitch(settings.kill_switch).then(() => {
-        scheduleSave();
-      }).catch((err) => {
-        // Rejection here (e.g. only an OpenVPN tunnel is active — the kill
-        // switch currently only supports WireGuard) previously reverted the
-        // toggle silently, and scheduleSave() below would still have fired
-        // unconditionally, persisting a kill_switch:true setting that was
-        // never actually enforced. Surface the error and skip the save.
-        console.error('SetKillSwitch failed:', err);
-        settings.kill_switch = !settings.kill_switch;
-        saveError = err?.message ?? String(err);
-      });
-      return;
+  // Kill switch and DNS protection are helper-side policies. The setter
+  // pushes the policy to the helper (applied now if a tunnel is up, and on
+  // every future connect) and persists it, whether or not anything is
+  // connected — so enabling AND disabling always take effect. The local value
+  // flips first so a concurrent debounced save() carries it; on failure it is
+  // reverted and re-saved.
+  async function setPolicy(key, setter, enabled) {
+    settings[key] = enabled;
+    try {
+      await setter(enabled);
+      saveError = '';
+    } catch (err) {
+      console.error(`set ${key} failed:`, err);
+      settings[key] = !enabled;
+      saveError = errText(err);
+      scheduleSave();
     }
-    scheduleSave();
+  }
+
+  function onKillSwitchChange(e) {
+    setPolicy('kill_switch', TunnelService.SetKillSwitch, e.target.checked);
   }
 
   function onDnsProtectionChange(e) {
-    settings.dns_protection = e.target.checked;
-    if ($connectionStatus?.state === 'connected') {
-      TunnelService.SetDNSProtection(settings.dns_protection).catch((err) => {
-        console.error('SetDNSProtection failed:', err);
-        settings.dns_protection = !settings.dns_protection;
-      });
-    }
-    scheduleSave();
+    setPolicy('dns_protection', TunnelService.SetDNSProtection, e.target.checked);
   }
 
   function onPinInterfaceChange(e) {
@@ -254,8 +251,6 @@
     }
   });
 
-  function stopEvent(e) { e.stopPropagation(); }
-
   function handleBackdropMousedown(e) {
     if (e.target === e.currentTarget) close();
   }
@@ -282,19 +277,21 @@
     }
   }
 
-  onMount(async () => {
+  // onMount must not be async: Svelte ignores a cleanup function returned
+  // inside a Promise, which leaked this keydown listener on every open.
+  onMount(() => {
     window.addEventListener('keydown', onKeyDown);
-    try { appVersion = await TunnelService.GetVersion(); } catch (_) {}
+    TunnelService.GetVersion().then((v) => { appVersion = v; }).catch(() => {});
     return () => window.removeEventListener('keydown', onKeyDown);
   });
 </script>
 
-<div class="modal-backdrop" on:mousedown={handleBackdropMousedown}>
-  <div class="modal" on:mousedown={stopEvent} role="dialog" aria-modal="true" aria-labelledby="settings-title">
+<div class="modal-backdrop" role="presentation" on:mousedown={handleBackdropMousedown}>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <h3 id="settings-title">{$t('settings.title')}</h3>
 
     <div class="settings-layout">
-      <nav class="settings-sidebar" role="tablist" aria-label="Settings sections">
+      <div class="settings-sidebar" role="tablist" aria-label="Settings sections">
         <button role="tab" aria-selected={activeTab === 'general'} class:active={activeTab === 'general'} on:click={() => activeTab = 'general'}>
           {$t('settings.general')}
         </button>
@@ -307,7 +304,7 @@
         <button role="tab" aria-selected={activeTab === 'about'} class:active={activeTab === 'about'} on:click={() => activeTab = 'about'}>
           {$t('settings.about')}
         </button>
-      </nav>
+      </div>
 
       <div class="settings-content" role="tabpanel">
         <div class="settings-content-inner">
@@ -646,11 +643,6 @@
   .about-version {
     font: 400 11px/14px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     color: var(--text-secondary);
-  }
-  .about-divider {
-    border: none;
-    border-top: 0.5px solid var(--border);
-    margin: 8px 0;
   }
   .about-desc {
     font: 400 12px/16px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
