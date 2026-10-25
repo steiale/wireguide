@@ -1,0 +1,60 @@
+From 3da320a861666845cda7b3366013a1b095b26668 Mon Sep 17 00:00:00 2001
+From: Alex Steiner <noreply@local>
+Date: Sun, 25 Oct 2026 17:12:40 +0100
+Subject: [PATCH] LockPlus: macOS 27 tray menu + tabular-digit label patches
+
+---
+ pkg/application/systemtray_darwin.m | 23 ++++++++++++++++++-----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/pkg/application/systemtray_darwin.m b/pkg/application/systemtray_darwin.m
+index 4b5dda5..d01920a 100644
+--- a/pkg/application/systemtray_darwin.m
++++ b/pkg/application/systemtray_darwin.m
+@@ -38,10 +38,10 @@ - (void)menuWillOpen:(NSMenu *)menu {
+ 
+ - (void)menuDidClose:(NSMenu *)menu {
+ 	systrayMenuDisplayedCallback(self.id, 0);
+-	// Remove the menu from the status item so future clicks invoke the
+-	// action handler instead of re-showing the menu.
+-	self.statusItem.menu = nil;
+-	menu.delegate = nil;
++	// LockPlus patch: keep statusItem.menu and the delegate set. Clearing the
++	// menu breaks macOS 27 (button.window is nil at init, so the event-monitor
++	// path can never re-set it); keeping the delegate keeps menuWillOpen /
++	// menuDidClose (and the displayed-menu tracking) firing on every reopen.
+ }
+ 
+ @end
+@@ -84,7 +84,14 @@ void systemTraySetLabel(void* nsStatusItem, char *label) {
+ 	// Set the label on the main thread
+ 	dispatch_async(dispatch_get_main_queue(), ^{
+ 		NSStatusItem *statusItem = (NSStatusItem *)nsStatusItem;
+-		statusItem.button.title = [NSString stringWithUTF8String:label];
++		// LockPlus patch: tabular digits so fixed-width numeric labels (tray
++		// speed counters) don't jitter the status item width.
++		NSString *labelString = [NSString stringWithUTF8String:label];
++		CGFloat pointSize = statusItem.button.font ? statusItem.button.font.pointSize : [NSFont systemFontSize];
++		NSFont *font = [NSFont monospacedDigitSystemFontOfSize:pointSize weight:NSFontWeightRegular];
++		NSAttributedString *attributedString = [[NSAttributedString alloc] initWithString:labelString attributes:@{NSFontAttributeName: font}];
++		statusItem.button.attributedTitle = attributedString;
++		[attributedString release];
+ 		free(label);
+ 	});
+ }
+@@ -241,6 +248,12 @@ void systemTraySetCachedMenu(void* nsStatusItem, void *nsMenu) {
+ 	NSStatusItem *statusItem = (NSStatusItem *)nsStatusItem;
+ 	StatusItemController *controller = (StatusItemController *)[statusItem target];
+ 	controller.cachedMenu = (NSMenu *)nsMenu;
++	// LockPlus patch: assign the menu directly so native tracking shows it on
++	// click; the event-monitor approach fails on macOS 27 (button.window nil).
++	dispatch_async(dispatch_get_main_queue(), ^{
++		((NSMenu *)nsMenu).delegate = controller;
++		statusItem.menu = (NSMenu *)nsMenu;
++	});
+ }
+ 
+ void systemTrayGetBounds(void* nsStatusItem, NSRect *rect, void **outScreen) {
+-- 
+2.54.0 (Apple Git-157)
+

@@ -6,10 +6,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
-
 /**
  * Session represents one VPN connection session.
  */
@@ -36,14 +32,14 @@ export class Session {
         if (!("start_time" in $$source)) {
             /**
              * @member
-             * @type {time$0.Time}
+             * @type {string}
              */
-            this["start_time"] = null;
+            this["start_time"] = "0001-01-01T00:00:00.000Z";
         }
         if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {time$0.Time | null | undefined}
+             * @type {string | null | undefined}
              */
             this["end_time"] = undefined;
         }
