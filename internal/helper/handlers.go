@@ -427,7 +427,7 @@ func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
 		return nil, fmt.Errorf("tunnel_name is required for OpenVPN")
 	}
 	// The name is interpolated directly into runtime file paths in
-	// ovpn.Manager (configPath/sockPath/logPath) with no sanitization of
+	// ovpn.Manager (configPath/sockPath) with no sanitization of
 	// its own — reject anything ValidateTunnelName wouldn't accept as a
 	// saved tunnel's name before it ever reaches that code, or a name like
 	// "../../../etc/foo" lets a caller make this root process write an

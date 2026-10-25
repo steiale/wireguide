@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 const appName = "lockplus"
@@ -44,63 +43,15 @@ type Paths struct {
 func GetPaths() (*Paths, error) {
 	var p Paths
 
-	switch runtime.GOOS { //nolint:exhaustive
-	case "darwin":
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		appSupport := filepath.Join(home, "Library", "Application Support", appName)
-		p.ConfigDir = appSupport
-		p.TunnelsDir = filepath.Join(appSupport, "tunnels")
-		p.LogsDir = filepath.Join(home, "Library", "Logs", appName)
-		p.DataDir = filepath.Join("/Library", "Application Support", appName)
-
-	case "linux":
-		configHome := os.Getenv("XDG_CONFIG_HOME")
-		if configHome == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, err
-			}
-			configHome = filepath.Join(home, ".config")
-		}
-		p.ConfigDir = filepath.Join(configHome, appName)
-		p.TunnelsDir = filepath.Join(configHome, appName, "tunnels")
-
-		dataHome := os.Getenv("XDG_DATA_HOME")
-		if dataHome == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, err
-			}
-			dataHome = filepath.Join(home, ".local", "share")
-		}
-		p.LogsDir = filepath.Join(dataHome, appName, "logs")
-		p.DataDir = filepath.Join("/var", "lib", appName)
-
-	case "windows":
-		appData := os.Getenv("APPDATA")
-		if appData == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, err
-			}
-			appData = filepath.Join(home, "AppData", "Roaming")
-		}
-		p.ConfigDir = filepath.Join(appData, appName)
-		p.TunnelsDir = filepath.Join(appData, appName, "tunnels")
-		p.LogsDir = filepath.Join(appData, appName, "logs")
-
-		programData := os.Getenv("PROGRAMDATA")
-		if programData == "" {
-			programData = `C:\ProgramData`
-		}
-		p.DataDir = filepath.Join(programData, appName)
-
-	default:
-		return nil, fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
 	}
+	appSupport := filepath.Join(home, "Library", "Application Support", appName)
+	p.ConfigDir = appSupport
+	p.TunnelsDir = filepath.Join(appSupport, "tunnels")
+	p.LogsDir = filepath.Join(home, "Library", "Logs", appName)
+	p.DataDir = filepath.Join("/Library", "Application Support", appName)
 
 	return &p, nil
 }
@@ -161,9 +112,6 @@ func (p *Paths) EnsureDirs() error {
 // real users on real machines with no way to recover except manual shell
 // surgery — this migration makes the upgrade path self-healing.
 func (p *Paths) MigrateLegacyTunnels() {
-	if runtime.GOOS != "darwin" {
-		return
-	}
 	if entries, err := os.ReadDir(p.TunnelsDir); err == nil && len(entries) > 0 {
 		return // already has tunnels — never overwrite existing data
 	}

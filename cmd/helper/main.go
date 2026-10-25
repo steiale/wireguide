@@ -9,8 +9,6 @@ package main
 import (
 	"flag"
 	"log"
-	"os"
-	"runtime"
 
 	"github.com/steiale/wireguide/internal/helper"
 )
@@ -39,16 +37,5 @@ func main() {
 }
 
 func systemDataDir() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "/Library/Application Support/lockplus"
-	case "linux":
-		return "/var/lib/lockplus"
-	case "windows":
-		if pd := os.Getenv("PROGRAMDATA"); pd != "" {
-			return pd + `\lockplus`
-		}
-		return `C:\ProgramData\lockplus`
-	}
-	return "/tmp/lockplus"
+	return "/Library/Application Support/lockplus"
 }

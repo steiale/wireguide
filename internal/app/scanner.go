@@ -3,7 +3,6 @@ package app
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // FoundConfig is a WireGuard .conf found on the filesystem.
@@ -17,25 +16,10 @@ type FoundConfig struct {
 func scanSystemWireGuardConfigs(existingNames map[string]bool) []FoundConfig {
 	home, _ := os.UserHomeDir()
 
-	var dirs []string
-	switch runtime.GOOS {
-	case "darwin":
-		dirs = []string{
-			"/etc/wireguard",
-			"/usr/local/etc/wireguard",
-			filepath.Join(home, "Library", "Application Support", "wireguide", "tunnels"),
-		}
-	case "linux":
-		dirs = []string{
-			"/etc/wireguard",
-			filepath.Join(home, ".config", "wireguide", "tunnels"),
-		}
-	case "windows":
-		pf := os.Getenv("PROGRAMFILES")
-		if pf == "" {
-			pf = `C:\Program Files`
-		}
-		dirs = []string{filepath.Join(pf, "WireGuard", "Data", "Configurations")}
+	dirs := []string{
+		"/etc/wireguard",
+		"/usr/local/etc/wireguard",
+		filepath.Join(home, "Library", "Application Support", "wireguide", "tunnels"),
 	}
 
 	var found []FoundConfig

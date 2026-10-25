@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"log/slog"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -279,25 +278,15 @@ func (t *trayManager) updateStatus(status domain.ConnectionStatus) {
 		t.tray.SetIcon(trayAmberIcon)
 		t.tray.SetTooltip("LockPlus — connecting…")
 	default:
-		if runtime.GOOS == "darwin" {
-			t.tray.SetIcon(trayOffIcon)
-		}
+		t.tray.SetIcon(trayOffIcon)
 		t.tray.SetTooltip("LockPlus")
 	}
 
-	if runtime.GOOS == "darwin" {
-		var label string
-		if anyConnected {
-			label = "↓" + formatSpeedFixed(speedRx) + " ↑" + formatSpeedFixed(speedTx)
-		}
-		application.InvokeAsync(func() { t.tray.SetLabel(label) })
-	} else {
-		if anyConnected {
-			t.tray.SetLabel("LockPlus ●")
-		} else {
-			t.tray.SetLabel("LockPlus")
-		}
+	var label string
+	if anyConnected {
+		label = "↓" + formatSpeedFixed(speedRx) + " ↑" + formatSpeedFixed(speedTx)
 	}
+	application.InvokeAsync(func() { t.tray.SetLabel(label) })
 
 	changed := len(prevActive) != len(newActive)
 	if !changed {

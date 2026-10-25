@@ -1,5 +1,3 @@
-//go:build darwin
-
 package network
 
 import (
@@ -1237,22 +1235,6 @@ func getDefaultGatewayFor(ipv6 bool) (string, error) {
 // for the `default` row. Dynamic header parsing handles column-order
 // differences across macOS versions; the previous "first lowercase field"
 // heuristic returned `awdl0` (AirDrop) instead of `en0` on some machines.
-// getRouteInterface returns the interface macOS would use to reach the given
-// IP, by parsing `route get <ip>` output. Returns empty string on failure.
-func getRouteInterface(ip string) string {
-	out, err := runOut("route", "-n", "get", ip)
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "interface:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "interface:"))
-		}
-	}
-	return ""
-}
-
 func getDefaultInterface() string {
 	out, err := runOut("netstat", "-nr", "-f", "inet")
 	if err != nil {

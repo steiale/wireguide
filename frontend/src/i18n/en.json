@@ -1,11 +1,9 @@
 {
   "app": {
-    "name": "LockPlus",
     "disconnected": "Disconnected",
     "connecting": "Connecting...",
     "connected": "Connected",
-    "no_handshake": "No Handshake",
-    "error": "Error"
+    "no_handshake": "No Handshake"
   },
   "nav": {
     "tunnels": "Tunnels",
@@ -18,7 +16,6 @@
     "list_title": "Tunnels",
     "search": "Search...",
     "no_tunnels": "No tunnels configured",
-    "no_selection": "Select a tunnel or create a new one",
     "drop_hint": "Drop a .conf or .zip file here or click Import",
     "drop_overlay": "Drop .conf or .zip to import",
     "import": "Import",
@@ -39,30 +36,13 @@
     "duration": "Duration",
     "rx": "Download",
     "tx": "Upload",
-    "kill_switch": "Kill Switch",
-    "dns_protection": "DNS Protection",
-    "details": "Details",
     "rename_hint": "Double-click to rename",
     "notes_label": "Tunnel Notes",
-    "notes_placeholder": "Add a note...",
-    "latency": "Latency"
+    "notes_placeholder": "Add a note..."
   },
   "import": {
-    "title": "Import Tunnel",
-    "drop_file": "Drop .conf file here",
-    "or": "or",
-    "select_file": "Select File",
-    "from_clipboard": "Paste from Clipboard",
-    "preview_title": "Preview",
-    "tunnel_name": "Tunnel Name",
-    "confirm": "Import",
-    "cancel": "Cancel",
-    "success": "Tunnel imported successfully",
-    "exists": "Tunnel \"{name}\" already exists. Overwrite?",
-    "overwrite": "Overwrite",
     "zip_result_title": "Import Results",
     "zip_ok": "Done",
-    "zip_none": "No .conf files found in zip",
     "zip_summary": "{ok} imported, {fail} failed",
     "zip_summary_ok": "{ok} imported",
     "qr_button": "Import from QR code",
@@ -72,16 +52,8 @@
     "title": "Edit Tunnel: {name}",
     "save": "Save",
     "cancel": "Cancel",
-    "validation_error": "Validation Error",
     "name_placeholder": "Tunnel name",
     "name_required": "Tunnel name is required"
-  },
-  "scripts": {
-    "warning_title": "Script Warning",
-    "warning_message": "This configuration contains system commands that will be executed:",
-    "allow": "Allow",
-    "deny": "Deny",
-    "denied_note": "Scripts will not be executed for this tunnel."
   },
   "settings": {
     "title": "Settings",
@@ -125,19 +97,6 @@
     "no": "Cancel",
     "disconnect_first": "Disconnect the tunnel first"
   },
-  "error": {
-    "connection_failed": "Connection failed",
-    "network_error": "Network error — check your internet connection",
-    "key_mismatch": "Key mismatch — verify your configuration",
-    "permission_denied": "Administrator privileges required",
-    "invalid_config": "Invalid configuration",
-    "file_read_error": "Cannot read file — check file permissions",
-    "empty_file": "Empty file"
-  },
-  "time": {
-    "seconds_ago": "{n}s ago",
-    "just_now": "just now"
-  },
   "log": {
     "title": "Logs",
     "clear": "Clear",
@@ -146,20 +105,7 @@
     "no_entries": "No log entries",
     "filter_all": "All"
   },
-  "notify": {
-    "disconnected": "VPN connection lost",
-    "reconnecting": "Reconnecting to {name}...",
-    "reconnected": "Reconnected to {name}",
-    "kill_switch_active": "Kill switch active — internet blocked",
-    "error": "VPN error: {message}"
-  },
-  "daemon": {
-    "not_running": "LockPlus daemon is not running",
-    "install_hint": "Start the daemon with: sudo wireguided"
-  },
   "tools": {
-    "tab_dns_leak": "DNS Leak Test",
-    "tab_routes": "Routes",
     "dns_leak_title": "DNS Leak Test",
     "dns_leak_desc": "Verifies that your DNS queries go through the VPN tunnel, not your ISP. A leak means websites you visit could be visible to your ISP even with VPN active.",
     "dns_leak_run": "Run Test",
@@ -177,44 +123,8 @@
     "route_legend_vpn": "VPN route",
     "route_legend_direct": "Direct route"
   },
-  "new_tunnel": {
-    "title": "New Tunnel",
-    "mode_form": "Form",
-    "mode_text": "Text",
-    "section_interface": "Interface",
-    "name_label": "Name",
-    "name_placeholder": "my-tunnel",
-    "private_key_label": "Private Key",
-    "generate": "Generate",
-    "address_label": "Address",
-    "dns_label": "DNS",
-    "mtu_label": "MTU",
-    "section_peer": "Peer",
-    "peer_public_key_label": "Public Key",
-    "peer_psk_label": "Preshared Key (optional)",
-    "peer_endpoint_label": "Endpoint",
-    "peer_allowed_ips_label": "Allowed IPs",
-    "peer_keepalive_label": "Persistent Keepalive",
-    "create": "Create",
-    "cancel": "Cancel"
-  },
-  "keygen": {
-    "private_key": "Private Key",
-    "public_key": "Public Key",
-    "generate": "Generate New Keypair",
-    "copy": "Copy"
-  },
-  "split_tunnel": {
-    "title": "Split Tunnel",
-    "no_subnets": "No subnets added",
-    "add": "Add",
-    "subnet_placeholder": "10.0.0.0/24"
-  },
   "stats": {
-    "speed_graph": "Speed Graph",
-    "waiting": "Waiting for data...",
-    "rx": "Download",
-    "tx": "Upload"
+    "speed_graph": "Speed Graph"
   },
   "conflict": {
     "title": "Routing Conflict Detected",
@@ -258,7 +168,6 @@
     "ended": "Ended"
   },
   "wifi_rules": {
-    "title": "Wi-Fi Rules",
     "tab": "Wi-Fi",
     "enabled": "Enable Wi-Fi auto-connect",
     "enabled_hint": "Connect or disconnect tunnels automatically when joining specific networks.",

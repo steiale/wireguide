@@ -1,14 +1,11 @@
 package diag
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"math/rand"
 	"net"
-	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -121,68 +118,9 @@ func testDNSServer(server, domain string) bool {
 	return true
 }
 
-// readSystemResolvers detects configured DNS servers using OS-specific methods.
+// readSystemResolvers detects configured DNS servers via scutil.
 func readSystemResolvers() ([]string, error) {
-	switch runtime.GOOS {
-	case "linux":
-		return readLinuxResolvers()
-	case "darwin":
-		return readDarwinResolvers()
-	case "windows":
-		return readWindowsResolvers()
-	default:
-		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
-// readLinuxResolvers parses /etc/resolv.conf for nameserver entries.
-func readLinuxResolvers() ([]string, error) {
-	f, err := os.Open("/etc/resolv.conf")
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var servers []string
-	seen := make(map[string]bool)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "#") || line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == "nameserver" {
-			ip := fields[1]
-			if !seen[ip] {
-				seen[ip] = true
-				servers = append(servers, ip)
-			}
-		}
-	}
-	return servers, scanner.Err()
-}
-
-// readWindowsResolvers uses PowerShell to extract DNS server addresses.
-func readWindowsResolvers() ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
-		`(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses | Sort-Object -Unique`).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("Get-DnsClientServerAddress: %w", err)
-	}
-
-	var servers []string
-	seen := make(map[string]bool)
-	for _, line := range strings.Split(string(out), "\n") {
-		ip := strings.TrimSpace(line)
-		if net.ParseIP(ip) != nil && !seen[ip] {
-			seen[ip] = true
-			servers = append(servers, ip)
-		}
-	}
-	return servers, nil
+	return readDarwinResolvers()
 }
 
 // readDarwinResolvers uses `scutil --dns` to extract nameserver addresses.

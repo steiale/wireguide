@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync/atomic"
 
 	"github.com/steiale/wireguide/internal/autostart"
@@ -211,7 +210,7 @@ func (s *TunnelService) RunUpdate(info *update.UpdateInfo) error {
 		return fmt.Errorf("no update available")
 	}
 
-	if runtime.GOOS == "darwin" && update.IsBrewInstall() {
+	if update.IsBrewInstall() {
 		brewBin := update.BrewPath()
 		// Update tap first to ensure latest cask version is fetched
 		slog.Info("update: running brew update", "brew", brewBin)

@@ -1,5 +1,3 @@
-//go:build darwin || linux || freebsd
-
 package ipc
 
 import (
@@ -64,4 +62,3 @@ func verifyPeerUID(conn net.Conn, expectedUID int) error {
 	}
 	return nil
 }
-

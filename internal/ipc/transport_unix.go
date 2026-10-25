@@ -1,5 +1,3 @@
-//go:build darwin || linux || freebsd
-
 package ipc
 
 import (

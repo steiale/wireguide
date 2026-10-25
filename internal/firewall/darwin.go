@@ -1,5 +1,3 @@
-//go:build darwin
-
 package firewall
 
 import (
@@ -631,53 +629,11 @@ func persistPfEnabledState(enabled bool) error {
 	return nil
 }
 
-// readPersistedPfState reads the persisted pf enabled state from disk.
-// Returns true (enabled) as the safe default if the file can't be read.
-func readPersistedPfState() bool {
-	data, err := os.ReadFile(savedPfStateFile)
-	if err != nil {
-		// Default to "was enabled" so we don't accidentally disable pf.
-		return true
-	}
-	return strings.TrimSpace(string(data)) == "1"
-}
-
 // removePfStateFile removes the persisted pf state file.
 func removePfStateFile() {
 	if err := os.Remove(savedPfStateFile); err != nil && !os.IsNotExist(err) {
 		slog.Warn("failed to remove pf state file", "path", savedPfStateFile, "error", err)
 	}
-}
-
-// RecoverSavedRules checks for a persisted pf state file left behind by a
-// crash and restores the original pf state by flushing all anchors and
-// restoring the pf enabled/disabled state.  Returns true if recovery was
-// performed.
-func RecoverSavedRules() bool {
-	pfWasEnabled := readPersistedPfState()
-
-	// Check if the state file exists — if not, nothing to recover.
-	if _, err := os.Stat(savedPfStateFile); err != nil {
-		return false
-	}
-
-	slog.Info("recovering pf state from crash-recovery file", "pfWasEnabled", pfWasEnabled)
-
-	// Flush all anchor rules.
-	if err := flushAllAnchors(); err != nil {
-		slog.Warn("recovery: failed to flush anchors", "error", err)
-	}
-
-	// Restore pf enabled/disabled state.
-	if !pfWasEnabled {
-		if err := disablePf(); err != nil {
-			slog.Warn("recovery: failed to disable pf", "error", err)
-		}
-	}
-
-	removePfStateFile()
-	slog.Info("pf state restored successfully from crash-recovery file")
-	return true
 }
 
 // flushAllAnchors flushes all rules from the WireGuide anchors.

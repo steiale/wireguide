@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -174,11 +173,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	// a Wails v3 bug where the isTemplateIcon sticky flag makes all
 	// subsequent SetIcon calls render as monochrome template icons.
 	tray := app.SystemTray.New()
-	if runtime.GOOS == "darwin" {
-		tray.SetIcon(trayOffIcon)
-	} else {
-		tray.SetLabel("LockPlus")
-	}
+	tray.SetIcon(trayOffIcon)
 	tray.SetTooltip("LockPlus")
 
 	// 7. Shutdown coordination (declared upfront so closures can reference it)
@@ -243,12 +238,10 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	trayMgr := newTrayManager(app, win, tray, tunnelService, doShutdown)
 	trayMgr.initialBuild()
 
-	if runtime.GOOS == "darwin" {
-		app.Event.OnApplicationEvent(events.Mac.ApplicationWillTerminate, func(_ *application.ApplicationEvent) {
-			doShutdown()
-			tray.Destroy()
-		})
-	}
+	app.Event.OnApplicationEvent(events.Mac.ApplicationWillTerminate, func(_ *application.ApplicationEvent) {
+		doShutdown()
+		tray.Destroy()
+	})
 
 	// 8. IPC event bridge + helper health monitor.
 	// The bridge owns the subscription and re-subscribes when the helper

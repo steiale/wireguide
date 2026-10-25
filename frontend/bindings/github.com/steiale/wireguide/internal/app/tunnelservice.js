@@ -167,15 +167,6 @@ export function ExportAllTunnels() {
 }
 
 /**
- * ExportConfig returns the serialized text for display in the export dialog.
- * @param {string} name
- * @returns {$CancellablePromise<string>}
- */
-export function ExportConfig(name) {
-    return $Call.ByID(3219660626, name);
-}
-
-/**
  * ExportTunnel shows a native save dialog and writes the .conf file.
  * Returns the saved path, or empty string if the user cancelled.
  * @param {string} name

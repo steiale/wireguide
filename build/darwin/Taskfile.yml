@@ -267,13 +267,17 @@ tasks:
 
         # Ed25519 detached signature for the auto-updater.
         # Key lookup order: explicit KEY_PATH → WIREGUIDE_SIGNING_KEY env → macOS Keychain.
+        # The Keychain fallback writes the key to a gitignored file under build/;
+        # the EXIT trap removes it on success, failure, or interrupt. (Task's shell
+        # has no umask builtin, hence install -m 600.)
+        SIGN_KEY_TMP="build/.sign-key.tmp"
+        trap 'rm -f "${SIGN_KEY_TMP}"' EXIT
         if [ -n "${KEY_PATH:-{{.KEY_PATH}}}" ]; then
           go run ./cmd/sign --version "${VERSION}" --key "${KEY_PATH:-{{.KEY_PATH}}}" "${ZIP}"
         elif [ -n "${WIREGUIDE_SIGNING_KEY:-}" ]; then
           go run ./cmd/sign --version "${VERSION}" --key-env WIREGUIDE_SIGNING_KEY "${ZIP}"
-        elif security find-generic-password -s wireguide-sign -w > /tmp/wg-sign-release.key 2>/dev/null; then
-          go run ./cmd/sign --version "${VERSION}" --key /tmp/wg-sign-release.key "${ZIP}"
-          rm -f /tmp/wg-sign-release.key
+        elif install -m 600 /dev/null "${SIGN_KEY_TMP}" && security find-generic-password -s wireguide-sign -w > "${SIGN_KEY_TMP}" 2>/dev/null; then
+          go run ./cmd/sign --version "${VERSION}" --key "${SIGN_KEY_TMP}" "${ZIP}"
         else
           echo "WARNING: no Ed25519 signing key found (KEY_PATH, WIREGUIDE_SIGNING_KEY, or Keychain 'wireguide-sign')"
           echo "         the release will work in grace mode but won't be signed."

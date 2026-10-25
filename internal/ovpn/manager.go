@@ -319,14 +319,13 @@ func NewManager(binaryPath, runtimeDir string, onStatus func(domain.ConnectionSt
 // runtime file paths for a tunnel.
 func (m *Manager) configPath(name string) string { return filepath.Join(m.runtimeDir, name+".ovpn") }
 func (m *Manager) sockPath(name string) string   { return filepath.Join(m.runtimeDir, name+".mgmt.sock") }
-func (m *Manager) logPath(name string) string    { return filepath.Join(m.runtimeDir, name+".log") }
 
 // Connect starts an OpenVPN tunnel from the given raw .ovpn content. It returns
 // once the subprocess has been started and supervision goroutines are running —
 // the actual CONNECTED transition (and any auth prompt) happens asynchronously
 // and is reported via onStatus / onAuthNeeded.
 func (m *Manager) Connect(name string, ovpnContent []byte) error {
-	// name is interpolated directly into configPath/sockPath/logPath below
+	// name is interpolated directly into configPath/sockPath below
 	// with no further sanitization — reject anything unsafe for filesystem
 	// use here too, not just at the IPC handler layer, so this manager is
 	// safe to call directly (e.g. from cmd/test) without relying on every

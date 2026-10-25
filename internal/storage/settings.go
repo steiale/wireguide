@@ -12,17 +12,17 @@ import (
 
 // Settings holds application-wide settings.
 type Settings struct {
-	Language      string `json:"language"`        // "auto", "en", "ko", "ja"
-	Theme         string `json:"theme"`           // "dark", "light", "system"
-	TrayIconStyle string `json:"tray_icon_style"` // "color" (MVP: color only)
-	AutoStart     bool   `json:"auto_start"` // launch GUI on OS login
-	KillSwitch    bool   `json:"kill_switch"`
-	DNSProtection bool   `json:"dns_protection"`
-	HealthCheck   bool   `json:"health_check"`   // periodic handshake age monitoring
-	PinInterface  bool   `json:"pin_interface"`  // pin bypass routes to upstream interface (-ifscope)
-	LogLevel      string `json:"log_level"`      // "debug", "info", "warn", "error"
-	OnboardingComplete bool `json:"onboarding_complete"`
-	KofiDismissed      bool `json:"kofi_dismissed"`
+	Language           string `json:"language"`        // "auto", "en", "ko", "ja"
+	Theme              string `json:"theme"`           // "dark", "light", "system"
+	TrayIconStyle      string `json:"tray_icon_style"` // "color" (MVP: color only)
+	AutoStart          bool   `json:"auto_start"`      // launch GUI on OS login
+	KillSwitch         bool   `json:"kill_switch"`
+	DNSProtection      bool   `json:"dns_protection"`
+	HealthCheck        bool   `json:"health_check"`  // periodic handshake age monitoring
+	PinInterface       bool   `json:"pin_interface"` // pin bypass routes to upstream interface (-ifscope)
+	LogLevel           string `json:"log_level"`     // "debug", "info", "warn", "error"
+	OnboardingComplete bool   `json:"onboarding_complete"`
+	KofiDismissed      bool   `json:"kofi_dismissed"`
 }
 
 // DefaultSettings returns settings with sensible defaults.

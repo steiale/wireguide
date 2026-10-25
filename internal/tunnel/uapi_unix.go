@@ -1,5 +1,3 @@
-//go:build darwin || freebsd || openbsd
-
 package tunnel
 
 import (

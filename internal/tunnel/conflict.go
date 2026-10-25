@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 )
 
@@ -133,15 +132,8 @@ func socketExists(path string) bool {
 }
 
 func processExists(name string) bool {
-	switch runtime.GOOS {
-	case "darwin", "linux":
-		out, _ := exec.Command("pgrep", "-x", name).CombinedOutput()
-		return len(strings.TrimSpace(string(out))) > 0
-	case "windows":
-		out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq "+name+".exe").CombinedOutput()
-		return strings.Contains(string(out), name)
-	}
-	return false
+	out, _ := exec.Command("pgrep", "-x", name).CombinedOutput()
+	return len(strings.TrimSpace(string(out))) > 0
 }
 
 func processOwnsInterface(ifaceName, processName string) bool {
@@ -155,16 +147,7 @@ func processOwnsInterface(ifaceName, processName string) bool {
 
 // getInterfaceRoutes returns routes via the given interface.
 func getInterfaceRoutes(ifaceName string) []string {
-	switch runtime.GOOS {
-	case "darwin":
-		return getRoutesDarwin(ifaceName)
-	case "linux":
-		return getRoutesLinux(ifaceName)
-	default:
-		// TODO: Implement Windows route enumeration via `route print` or
-		// netsh to detect conflicts on Windows interfaces.
-		return nil
-	}
+	return getRoutesDarwin(ifaceName)
 }
 
 func getRoutesDarwin(ifaceName string) []string {
@@ -206,30 +189,6 @@ func getRoutesDarwin(ifaceName string) []string {
 			routes = append(routes, "0.0.0.0/0")
 		} else {
 			routes = append(routes, route)
-		}
-	}
-	return routes
-}
-
-func getRoutesLinux(ifaceName string) []string {
-	out, err := exec.Command("ip", "route", "show", "dev", ifaceName).CombinedOutput()
-	if err != nil {
-		return nil
-	}
-	var routes []string
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) > 0 {
-			route := fields[0]
-			if route == "default" {
-				routes = append(routes, "0.0.0.0/0")
-			} else {
-				routes = append(routes, route)
-			}
 		}
 	}
 	return routes

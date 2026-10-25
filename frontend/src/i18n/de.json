@@ -1,11 +1,9 @@
 {
   "app": {
-    "name": "LockPlus",
     "disconnected": "Getrennt",
     "connecting": "Verbinde...",
     "connected": "Verbunden",
-    "no_handshake": "Kein Handshake",
-    "error": "Fehler"
+    "no_handshake": "Kein Handshake"
   },
   "nav": {
     "tunnels": "Tunnel",
@@ -18,7 +16,6 @@
     "list_title": "Tunnel",
     "search": "Suchen...",
     "no_tunnels": "Keine Tunnel konfiguriert",
-    "no_selection": "Tunnel auswählen oder neuen erstellen",
     "drop_hint": ".conf- oder .zip-Datei ablegen oder Importieren klicken",
     "drop_overlay": ".conf oder .zip zum Importieren ablegen",
     "import": "Importieren",
@@ -39,30 +36,13 @@
     "duration": "Dauer",
     "rx": "Download",
     "tx": "Upload",
-    "kill_switch": "Kill-Switch",
-    "dns_protection": "DNS-Schutz",
-    "details": "Details",
     "rename_hint": "Doppelklick zum Umbenennen",
     "notes_label": "Tunnel-Notizen",
-    "notes_placeholder": "Notiz hinzufügen...",
-    "latency": "Latenz"
+    "notes_placeholder": "Notiz hinzufügen..."
   },
   "import": {
-    "title": "Tunnel importieren",
-    "drop_file": ".conf-Datei hier ablegen",
-    "or": "oder",
-    "select_file": "Datei auswählen",
-    "from_clipboard": "Aus Zwischenablage einfügen",
-    "preview_title": "Vorschau",
-    "tunnel_name": "Tunnelname",
-    "confirm": "Importieren",
-    "cancel": "Abbrechen",
-    "success": "Tunnel erfolgreich importiert",
-    "exists": "Tunnel \"{name}\" existiert bereits. Überschreiben?",
-    "overwrite": "Überschreiben",
     "zip_result_title": "Import-Ergebnisse",
     "zip_ok": "Fertig",
-    "zip_none": "Keine .conf-Dateien im ZIP gefunden",
     "zip_summary": "{ok} importiert, {fail} fehlgeschlagen",
     "zip_summary_ok": "{ok} importiert",
     "qr_button": "Aus QR-Code importieren",
@@ -72,16 +52,8 @@
     "title": "Tunnel bearbeiten: {name}",
     "save": "Speichern",
     "cancel": "Abbrechen",
-    "validation_error": "Validierungsfehler",
     "name_placeholder": "Tunnelname",
     "name_required": "Tunnelname ist erforderlich"
-  },
-  "scripts": {
-    "warning_title": "Skript-Warnung",
-    "warning_message": "Diese Konfiguration enthält Systembefehle, die ausgeführt werden:",
-    "allow": "Erlauben",
-    "deny": "Ablehnen",
-    "denied_note": "Skripte werden für diesen Tunnel nicht ausgeführt."
   },
   "settings": {
     "title": "Einstellungen",
@@ -125,19 +97,6 @@
     "no": "Abbrechen",
     "disconnect_first": "Trenne zuerst den Tunnel"
   },
-  "error": {
-    "connection_failed": "Verbindung fehlgeschlagen",
-    "network_error": "Netzwerkfehler – Internetverbindung prüfen",
-    "key_mismatch": "Schlüssel stimmt nicht überein – Konfiguration prüfen",
-    "permission_denied": "Administratorrechte erforderlich",
-    "invalid_config": "Ungültige Konfiguration",
-    "file_read_error": "Datei konnte nicht gelesen werden – Berechtigungen prüfen",
-    "empty_file": "Leere Datei"
-  },
-  "time": {
-    "seconds_ago": "vor {n}s",
-    "just_now": "gerade eben"
-  },
   "log": {
     "title": "Protokoll",
     "clear": "Leeren",
@@ -146,20 +105,7 @@
     "no_entries": "Keine Einträge",
     "filter_all": "Alle"
   },
-  "notify": {
-    "disconnected": "VPN-Verbindung unterbrochen",
-    "reconnecting": "Verbinde erneut mit {name}...",
-    "reconnected": "Erneut verbunden mit {name}",
-    "kill_switch_active": "Kill-Switch aktiv – Internet blockiert",
-    "error": "VPN-Fehler: {message}"
-  },
-  "daemon": {
-    "not_running": "LockPlus Daemon läuft nicht",
-    "install_hint": "Daemon starten mit: sudo wireguided"
-  },
   "tools": {
-    "tab_dns_leak": "DNS-Leak-Test",
-    "tab_routes": "Routen",
     "dns_leak_title": "DNS-Leak-Test",
     "dns_leak_desc": "Prüft, ob DNS-Anfragen durch den VPN-Tunnel geleitet werden. Ein Leak bedeutet, dass besuchte Webseiten für deinen Internetanbieter sichtbar sein könnten, obwohl das VPN aktiv ist.",
     "dns_leak_run": "Test starten",
@@ -177,44 +123,8 @@
     "route_legend_vpn": "VPN-Route",
     "route_legend_direct": "Direkte Route"
   },
-  "new_tunnel": {
-    "title": "Neuer Tunnel",
-    "mode_form": "Formular",
-    "mode_text": "Text",
-    "section_interface": "Interface",
-    "name_label": "Name",
-    "name_placeholder": "mein-tunnel",
-    "private_key_label": "Privater Schlüssel",
-    "generate": "Generieren",
-    "address_label": "Adresse",
-    "dns_label": "DNS",
-    "mtu_label": "MTU",
-    "section_peer": "Peer",
-    "peer_public_key_label": "Öffentlicher Schlüssel",
-    "peer_psk_label": "Vorverteilter Schlüssel (optional)",
-    "peer_endpoint_label": "Endpunkt",
-    "peer_allowed_ips_label": "Erlaubte IPs",
-    "peer_keepalive_label": "Persistentes Keepalive",
-    "create": "Erstellen",
-    "cancel": "Abbrechen"
-  },
-  "keygen": {
-    "private_key": "Privater Schlüssel",
-    "public_key": "Öffentlicher Schlüssel",
-    "generate": "Neues Schlüsselpaar generieren",
-    "copy": "Kopieren"
-  },
-  "split_tunnel": {
-    "title": "Split-Tunnel",
-    "no_subnets": "Keine Subnetze hinzugefügt",
-    "add": "Hinzufügen",
-    "subnet_placeholder": "10.0.0.0/24"
-  },
   "stats": {
-    "speed_graph": "Geschwindigkeitsgraph",
-    "waiting": "Warte auf Daten...",
-    "rx": "Download",
-    "tx": "Upload"
+    "speed_graph": "Geschwindigkeitsgraph"
   },
   "conflict": {
     "title": "Routing-Konflikt erkannt",
@@ -258,7 +168,6 @@
     "ended": "Beendet"
   },
   "wifi_rules": {
-    "title": "WLAN-Regeln",
     "tab": "WLAN",
     "enabled": "WLAN-Automatik aktivieren",
     "enabled_hint": "Tunnel automatisch verbinden oder trennen, je nach WLAN-Netz.",

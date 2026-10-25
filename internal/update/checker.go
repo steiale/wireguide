@@ -97,9 +97,6 @@ func CurrentVersion() string {
 // running .app bundle's Info.plist. Returns "" on any failure so the
 // caller can fall back to the build-time constant.
 func readBundleVersion() string {
-	if runtime.GOOS != "darwin" {
-		return ""
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		return ""
@@ -524,14 +521,7 @@ func fetchExpectedHash(checksumURL, assetName string, client *http.Client) strin
 func matchAsset(assets []Asset) string {
 	arch := runtime.GOARCH
 
-	// Map Go OS names to common release naming conventions.
-	osNames := []string{runtime.GOOS}
-	switch runtime.GOOS {
-	case "darwin":
-		osNames = append(osNames, "macos", "osx")
-	case "windows":
-		osNames = append(osNames, "win", "win64")
-	}
+	osNames := []string{"darwin", "macos", "osx"}
 
 	archNames := []string{arch, "universal"}
 
@@ -547,15 +537,8 @@ func matchAsset(assets []Asset) string {
 	// Matching by exact expected extension, checked in priority order,
 	// removes both failure modes structurally: ".zip.sig" never has
 	// HasSuffix(".zip") == true.
-	var wantedExts []string
-	switch runtime.GOOS {
-	case "darwin":
-		wantedExts = []string{".zip"} // the only signed artifact; .dmg is direct-download-only
-	case "windows":
-		wantedExts = []string{".msi", ".exe"}
-	default:
-		wantedExts = []string{".deb", ".rpm", ".appimage"}
-	}
+	// The only signed artifact is the .zip; .dmg is direct-download-only.
+	wantedExts := []string{".zip"}
 
 	for _, ext := range wantedExts {
 		for _, a := range assets {

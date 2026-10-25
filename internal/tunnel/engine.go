@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -144,17 +143,8 @@ func NewEngine(cfg *config.WireGuardConfig) (*Engine, error) {
 		mtu = 1420 // conservative default; platform SetMTU may override
 	}
 
-	// Platform-specific TUN device name:
-	//  - macOS: "utun" — wireguard-go allocates utun0, utun1, etc.
-	//  - Linux: "wg" — wireguard-go creates wg0, wg1, etc. ("utun" is invalid on Linux)
-	//  - Windows: "WireGuide" — Windows expects a proper adapter name, not "utun"
+	// macOS: wireguard-go allocates utun0, utun1, etc.
 	tunName := "utun"
-	switch runtime.GOOS {
-	case "linux":
-		tunName = "wg"
-	case "windows":
-		tunName = "WireGuide"
-	}
 
 	tunDev, err := tun.CreateTUN(tunName, mtu)
 	if err != nil {

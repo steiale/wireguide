@@ -282,11 +282,6 @@ func (s *TunnelService) UpdateConfig(name, content string) error {
 	return s.tunnelStore.Save(cfg)
 }
 
-// ExportConfig returns the serialized text for display in the export dialog.
-func (s *TunnelService) ExportConfig(name string) (string, error) {
-	return s.GetConfigText(name)
-}
-
 // decodeQRFromImage decodes a WireGuard config from a QR code in an image.
 func decodeQRFromImage(img image.Image) (string, error) {
 	bmp, err := gozxing.NewBinaryBitmapFromImage(img)

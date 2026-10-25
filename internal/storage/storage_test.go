@@ -3,7 +3,6 @@ package storage
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/steiale/wireguide/internal/config"
@@ -55,9 +54,6 @@ func TestTunnelStoreSaveAndLoad(t *testing.T) {
 }
 
 func TestTunnelStoreFilePermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("file permissions not applicable on Windows")
-	}
 	dir := t.TempDir()
 	store := NewTunnelStore(dir)
 

@@ -98,15 +98,14 @@ tasks:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true
 
   generate:icons:
-    summary: Generates Windows `.ico` and Mac `.icns` from appicon.png. Does NOT generate Assets.car — we use icons.icns only to avoid the Wails default SVG icon overriding our custom icon.
+    summary: Generates Mac `.icns` from appicon.png. Does NOT generate Assets.car — we use icons.icns only to avoid the Wails default SVG icon overriding our custom icon.
     dir: build
     sources:
       - "appicon.png"
     generates:
       - "darwin/icons.icns"
-      - "windows/icon.ico"
     cmds:
-      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename windows/icon.ico
+      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns
 
   dev:frontend:
     summary: Runs the frontend in development mode

@@ -4,15 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
 
 func testSocketPath(t *testing.T) string {
-	if runtime.GOOS == "windows" {
-		return `\\.\pipe\wireguide-test-` + t.Name()
-	}
 	return filepath.Join(os.TempDir(), "wireguide-test-"+t.Name()+".sock")
 }
 

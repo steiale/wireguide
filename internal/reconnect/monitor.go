@@ -89,14 +89,14 @@ type retryState struct {
 
 // Monitor watches tunnel health and triggers reconnection.
 type Monitor struct {
-	mu            sync.Mutex
-	cfg           Config
-	manager       TunnelManager
-	reconnectFn   ReconnectFunc
-	statusFn      StatusChangedFunc
-	fwSuspendFn   FirewallSuspendFunc
-	fwResumeFn    FirewallResumeFunc
-	stopCh        chan struct{}
+	mu          sync.Mutex
+	cfg         Config
+	manager     TunnelManager
+	reconnectFn ReconnectFunc
+	statusFn    StatusChangedFunc
+	fwSuspendFn FirewallSuspendFunc
+	fwResumeFn  FirewallResumeFunc
+	stopCh      chan struct{}
 	// wg is replaced on every Start() so a Stop() still waiting on the
 	// previous run's goroutines never shares a WaitGroup with a new run
 	// (WaitGroup reuse while Wait is pending is a data race).

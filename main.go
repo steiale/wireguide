@@ -11,8 +11,6 @@ package main
 import (
 	"embed"
 	"log"
-	"os"
-	"runtime"
 
 	"github.com/steiale/wireguide/internal/gui"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -31,16 +29,5 @@ func main() {
 // locate helper-managed state (e.g. crash recovery files written by the
 // privileged helper at /Library/Application Support/lockplus on macOS).
 func systemDataDir() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "/Library/Application Support/lockplus"
-	case "linux":
-		return "/var/lib/lockplus"
-	case "windows":
-		if pd := os.Getenv("PROGRAMDATA"); pd != "" {
-			return pd + `\lockplus`
-		}
-		return `C:\ProgramData\lockplus`
-	}
-	return "/tmp/lockplus"
+	return "/Library/Application Support/lockplus"
 }
