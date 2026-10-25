@@ -19,7 +19,7 @@ func GetRoutingTable() ([]RouteEntry, error) {
 }
 
 func getRoutesDarwinFull() ([]RouteEntry, error) {
-	out, err := exec.Command("netstat", "-rn", "-f", "inet").CombinedOutput()
+	out, err := exec.Command("/usr/sbin/netstat", "-rn", "-f", "inet").CombinedOutput()
 	if err != nil {
 		return nil, err
 	}

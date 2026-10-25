@@ -48,9 +48,9 @@ func PingEndpoint(endpoint string) *PingResult {
 	// MILLISECONDS (unlike iputils, where it is seconds).
 	var cmd *exec.Cmd
 	if isIPv6 {
-		cmd = exec.CommandContext(ctx, "ping6", "-c", "3", ip)
+		cmd = exec.CommandContext(ctx, "/sbin/ping6", "-c", "3", ip)
 	} else {
-		cmd = exec.CommandContext(ctx, "ping", "-c", "3", "-W", "3000", ip)
+		cmd = exec.CommandContext(ctx, "/sbin/ping", "-c", "3", "-W", "3000", ip)
 	}
 
 	start := time.Now()

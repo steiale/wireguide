@@ -27,7 +27,7 @@ func detectDarwin() string {
 		}
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
-		out, err = exec.CommandContext(ctx2, "networksetup", "-getairportnetwork", wifiIface).CombinedOutput()
+		out, err = exec.CommandContext(ctx2, "/usr/sbin/networksetup", "-getairportnetwork", wifiIface).CombinedOutput()
 		if err != nil {
 			return ""
 		}
@@ -52,7 +52,7 @@ func detectDarwin() string {
 func discoverWiFiInterface() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "networksetup", "-listallhardwareports").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "/usr/sbin/networksetup", "-listallhardwareports").CombinedOutput()
 	if err != nil {
 		return "en0" // fallback
 	}

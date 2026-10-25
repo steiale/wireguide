@@ -132,7 +132,7 @@ func socketExists(path string) bool {
 }
 
 func processExists(name string) bool {
-	out, _ := exec.Command("pgrep", "-x", name).CombinedOutput()
+	out, _ := exec.Command("/usr/bin/pgrep", "-x", name).CombinedOutput()
 	return len(strings.TrimSpace(string(out))) > 0
 }
 
@@ -151,7 +151,7 @@ func getInterfaceRoutes(ifaceName string) []string {
 }
 
 func getRoutesDarwin(ifaceName string) []string {
-	cmd := exec.Command("netstat", "-rn", "-f", "inet")
+	cmd := exec.Command("/usr/sbin/netstat", "-rn", "-f", "inet")
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
