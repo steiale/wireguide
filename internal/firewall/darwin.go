@@ -43,6 +43,10 @@ func validatePort(port string) error {
 // this bug: syntactically valid, semantically inert.
 const anchorName = "com.apple/wireguide"
 
+// pfctlPath is the absolute path to pfctl. The helper runs as root, so never
+// resolve it via PATH.
+const pfctlPath = "/sbin/pfctl"
+
 // dnsAnchorName is the sub-anchor for DNS protection rules.
 const dnsAnchorName = anchorName + "/dns"
 
@@ -308,9 +312,12 @@ func (f *DarwinFirewall) EnableKillSwitch(interfaceName string, _ []string, endp
 		}
 	}
 
-	// Enable pf if not already.
+	// Enable pf if not already. Fail closed in reporting terms: if pf can't
+	// be enabled the loaded rules are inert, so the kill switch must NOT be
+	// reported as enabled (the previous code logged and carried on, leaving
+	// the GUI showing "kill switch on" while nothing was filtered).
 	if err := enablePf(); err != nil {
-		slog.Warn("pfctl -e failed", "error", err)
+		return fmt.Errorf("kill switch rules loaded but pf could not be enabled: %w", err)
 	}
 
 	f.mu.Lock()
@@ -358,7 +365,7 @@ func (f *DarwinFirewall) DisableKillSwitch() error {
 		// reference to it) is being removed below — flush it so no
 		// orphaned pf state lingers. Harmless: its rules were just
 		// re-homed into the main anchor above.
-		if out, err := exec.Command("pfctl", "-a", dnsAnchorName, "-F", "rules").CombinedOutput(); err != nil {
+		if out, err := exec.Command(pfctlPath, "-a", dnsAnchorName, "-F", "rules").CombinedOutput(); err != nil {
 			slog.Warn("failed to flush DNS pf anchor", "error", err, "output", strings.TrimSpace(string(out)))
 		}
 		// Flush only the kill switch's own rules from the main anchor —
@@ -459,7 +466,7 @@ func (f *DarwinFirewall) EnableDNSProtection(interfaceName string, dnsServers []
 		}
 
 		if err := enablePf(); err != nil {
-			slog.Warn("pfctl -e failed while enabling DNS protection", "error", err)
+			return fmt.Errorf("DNS protection rules loaded but pf could not be enabled: %w", err)
 		}
 
 		f.mu.Lock()
@@ -487,7 +494,7 @@ func (f *DarwinFirewall) DisableDNSProtection() error {
 
 	if ksEnabled {
 		// Kill switch is active — DNS rules are in the sub-anchor, just flush it.
-		cmd := exec.Command("pfctl", "-a", dnsAnchorName, "-F", "rules")
+		cmd := exec.Command(pfctlPath, "-a", dnsAnchorName, "-F", "rules")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			slog.Warn("failed to flush DNS pf anchor", "error", err, "output", strings.TrimSpace(string(out)))
 		}
@@ -556,11 +563,43 @@ func (f *DarwinFirewall) Cleanup() error {
 	return nil
 }
 
+// RecoverStaleState removes any pf state left behind by a previous helper
+// process that exited without running Cleanup (SIGKILL, crash, or a launchd
+// bootout/kickstart before signal handling existed). It must run once at
+// helper startup, BEFORE any IPC connection is accepted, so a stale
+// block-all ruleset can't keep the machine offline across a helper restart.
+// The GUI re-applies the kill switch / DNS protection if they're still wanted.
+//
+// pf's enabled state is restored from savedPfStateFile, which the
+// first-use snapshot writes before we ever turn pf on: "0" means pf was off
+// before LockPlus touched it, so turn it back off; "1" or no file means pf
+// was already on (or we never enabled it), so leave it alone.
+func RecoverStaleState() {
+	if err := flushAllAnchors(); err != nil {
+		slog.Warn("startup: flush stale pf anchors failed", "error", err)
+	}
+	data, err := os.ReadFile(savedPfStateFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("startup: read pf state file failed", "path", savedPfStateFile, "error", err)
+		}
+		return
+	}
+	if strings.TrimSpace(string(data)) == "0" {
+		if err := disablePf(); err != nil {
+			slog.Warn("startup: pfctl -d failed", "error", err)
+		} else {
+			slog.Info("startup: pf disabled (was off before LockPlus enabled it)")
+		}
+	}
+	removePfStateFile()
+}
+
 // --- pf helper functions ---
 
 // loadAnchorRules loads rules into the specified pf anchor.
 func loadAnchorRules(anchor, rules string) error {
-	cmd := exec.Command("pfctl", "-a", anchor, "-f", "-")
+	cmd := exec.Command(pfctlPath, "-a", anchor, "-f", "-")
 	cmd.Stdin = strings.NewReader(rules)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -575,7 +614,7 @@ func loadAnchorRules(anchor, rules string) error {
 // Without this, on (e.g.) a German macOS install pfctl emits "Status: Aktiviert"
 // and we'd silently report pf as disabled.
 func isPfEnabled() bool {
-	cmd := exec.Command("pfctl", "-si")
+	cmd := exec.Command(pfctlPath, "-si")
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -587,7 +626,7 @@ func isPfEnabled() bool {
 
 // enablePf enables the pf firewall.
 func enablePf() error {
-	out, err := exec.Command("pfctl", "-e").CombinedOutput()
+	out, err := exec.Command(pfctlPath, "-e").CombinedOutput()
 	if err != nil {
 		outStr := strings.TrimSpace(string(out))
 		// "pf already enabled" is not a real error
@@ -601,7 +640,7 @@ func enablePf() error {
 
 // disablePf disables the pf firewall.
 func disablePf() error {
-	out, err := exec.Command("pfctl", "-d").CombinedOutput()
+	out, err := exec.Command(pfctlPath, "-d").CombinedOutput()
 	if err != nil {
 		outStr := strings.TrimSpace(string(out))
 		if strings.Contains(outStr, "already disabled") {
@@ -641,11 +680,11 @@ func flushAllAnchors() error {
 	var errs []string
 
 	// Flush the DNS sub-anchor first.
-	if out, err := exec.Command("pfctl", "-a", dnsAnchorName, "-F", "rules").CombinedOutput(); err != nil {
+	if out, err := exec.Command(pfctlPath, "-a", dnsAnchorName, "-F", "rules").CombinedOutput(); err != nil {
 		errs = append(errs, fmt.Sprintf("flush %s: %v (%s)", dnsAnchorName, err, strings.TrimSpace(string(out))))
 	}
 	// Flush the main anchor (this also covers any rules loaded directly).
-	if out, err := exec.Command("pfctl", "-a", anchorName, "-Fa").CombinedOutput(); err != nil {
+	if out, err := exec.Command(pfctlPath, "-a", anchorName, "-Fa").CombinedOutput(); err != nil {
 		errs = append(errs, fmt.Sprintf("flush %s: %v (%s)", anchorName, err, strings.TrimSpace(string(out))))
 	}
 

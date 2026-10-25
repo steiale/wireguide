@@ -443,6 +443,13 @@ func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
 		return nil, fmt.Errorf("invalid openvpn config: %w", err)
 	}
 
+	// The openvpn binary is only ever exec'd from the root-owned helper
+	// tools dir (see Run) — no app-bundle fallback. Surface an actionable
+	// error instead of ovpn.Manager's bare "not found".
+	if _, err := os.Stat(h.ovpnBinary); err != nil {
+		return nil, fmt.Errorf("OpenVPN is unavailable: %s is missing — reinstall the helper (quit and relaunch LockPlus, then approve the admin prompt)", h.ovpnBinary)
+	}
+
 	// Already active? Treat as a no-op via the typed code (matches WireGuard).
 	for _, n := range h.ovpnManager.ActiveTunnelNames() {
 		if n == req.TunnelName {

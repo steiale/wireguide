@@ -60,7 +60,7 @@ func (rm *routeMonitor) Start() {
 		return
 	}
 
-	cmd := exec.Command("route", "-n", "monitor")
+	cmd := exec.Command(cmdRoute, "-n", "monitor")
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

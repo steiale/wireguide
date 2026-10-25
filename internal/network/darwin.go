@@ -12,6 +12,18 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl"
 )
 
+// Absolute paths for every system tool this package runs. The helper runs as
+// root; resolving bare names via PATH would let an inherited/polluted PATH
+// substitute a different binary.
+const (
+	cmdIfconfig     = "/sbin/ifconfig"
+	cmdRoute        = "/sbin/route"
+	cmdNetstat      = "/usr/sbin/netstat"
+	cmdNetworksetup = "/usr/sbin/networksetup"
+	cmdDscacheutil  = "/usr/bin/dscacheutil"
+	cmdKillall      = "/usr/bin/killall"
+)
+
 // dnsState is the shared, process-wide DNS override baseline used by EVERY
 // DarwinManager instance. WireGuard creates one manager per tunnel and
 // OpenVPN shares a single manager across all of its tunnels — but macOS DNS
@@ -102,12 +114,12 @@ func (m *DarwinManager) AssignAddress(ifaceName string, addresses []string) erro
 		}
 		if ip.To4() != nil {
 			// IPv4: ifconfig <if> inet <cidr> <ip> alias
-			if err := run("ifconfig", ifaceName, "inet", addr, ip.String(), "alias"); err != nil {
+			if err := run(cmdIfconfig, ifaceName, "inet", addr, ip.String(), "alias"); err != nil {
 				return fmt.Errorf("assigning address %s: %w", addr, err)
 			}
 		} else {
 			// IPv6: ifconfig <if> inet6 <cidr> alias
-			if err := run("ifconfig", ifaceName, "inet6", addr, "alias"); err != nil {
+			if err := run(cmdIfconfig, ifaceName, "inet6", addr, "alias"); err != nil {
 				return fmt.Errorf("assigning address %s: %w", addr, err)
 			}
 		}
@@ -141,7 +153,7 @@ func (m *DarwinManager) SetMTU(ifaceName string, mtu int) error {
 		m.mu.Unlock()
 		return nil
 	}
-	if err := run("ifconfig", ifaceName, "mtu", fmt.Sprintf("%d", mtu)); err != nil {
+	if err := run(cmdIfconfig, ifaceName, "mtu", fmt.Sprintf("%d", mtu)); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -151,7 +163,7 @@ func (m *DarwinManager) SetMTU(ifaceName string, mtu int) error {
 }
 
 func (m *DarwinManager) BringUp(ifaceName string) error {
-	return run("ifconfig", ifaceName, "up")
+	return run(cmdIfconfig, ifaceName, "up")
 }
 
 // AddRoutes installs routes for AllowedIPs. For /0 (full tunnel) it uses
@@ -182,10 +194,10 @@ func (m *DarwinManager) AddRoutes(ifaceName string, allowedIPs []string, fullTun
 		if isV6 {
 			family = "-inet6"
 		}
-		if existing, _ := runOut("route", "-n", "get", family, cidr); routeUsesInterface(existing, ifaceName) {
+		if existing, _ := runOut(cmdRoute, "-n", "get", family, cidr); routeUsesInterface(existing, ifaceName) {
 			continue
 		}
-		if err := run("route", "-q", "-n", "add", family, cidr, "-interface", ifaceName); err != nil {
+		if err := run(cmdRoute, "-q", "-n", "add", family, cidr, "-interface", ifaceName); err != nil {
 			return fmt.Errorf("adding route %s: %w", cidr, err)
 		}
 	}
@@ -205,18 +217,18 @@ func (m *DarwinManager) AddRoutes(ifaceName string, allowedIPs []string, fullTun
 
 	// Install default routes using the split trick
 	if hasV4Default {
-		if err := run("route", "-q", "-n", "add", "-inet", "0.0.0.0/1", "-interface", ifaceName); err != nil {
+		if err := run(cmdRoute, "-q", "-n", "add", "-inet", "0.0.0.0/1", "-interface", ifaceName); err != nil {
 			return fmt.Errorf("adding 0.0.0.0/1: %w", err)
 		}
-		if err := run("route", "-q", "-n", "add", "-inet", "128.0.0.0/1", "-interface", ifaceName); err != nil {
+		if err := run(cmdRoute, "-q", "-n", "add", "-inet", "128.0.0.0/1", "-interface", ifaceName); err != nil {
 			return fmt.Errorf("adding 128.0.0.0/1: %w", err)
 		}
 	}
 	if hasV6Default {
-		if err := run("route", "-q", "-n", "add", "-inet6", "::/1", "-interface", ifaceName); err != nil {
+		if err := run(cmdRoute, "-q", "-n", "add", "-inet6", "::/1", "-interface", ifaceName); err != nil {
 			return fmt.Errorf("adding ::/1: %w", err)
 		}
-		if err := run("route", "-q", "-n", "add", "-inet6", "8000::/1", "-interface", ifaceName); err != nil {
+		if err := run(cmdRoute, "-q", "-n", "add", "-inet6", "8000::/1", "-interface", ifaceName); err != nil {
 			return fmt.Errorf("adding 8000::/1: %w", err)
 		}
 	}
@@ -417,7 +429,7 @@ func (m *DarwinManager) reapply() {
 		if strings.Contains(ip, ":") {
 			family = "-inet6"
 		}
-		_ = run("route", "-q", "-n", "delete", family, ip)
+		_ = run(cmdRoute, "-q", "-n", "delete", family, ip)
 	}
 
 	// Reuse the gateways already probed above — no need for a second pair
@@ -478,7 +490,7 @@ func (m *DarwinManager) reapply() {
 
 	if mtu > 0 {
 		if current := getInterfaceMTU(iface); current != mtu && current > 0 {
-			_ = run("ifconfig", iface, "mtu", fmt.Sprintf("%d", mtu))
+			_ = run(cmdIfconfig, iface, "mtu", fmt.Sprintf("%d", mtu))
 		}
 	}
 }
@@ -577,7 +589,7 @@ func (m *DarwinManager) addBypassForIP(ipStr, gwV4, gwV6 string, gwV4Err, gwV6Er
 		if isV6 {
 			loopback = "::1"
 		}
-		_ = run("route", "-q", "-n", "add", family, ipStr, loopback, "-blackhole")
+		_ = run(cmdRoute, "-q", "-n", "add", family, ipStr, loopback, "-blackhole")
 		recordBypass()
 		return nil
 	}
@@ -592,20 +604,20 @@ func (m *DarwinManager) addBypassForIP(ipStr, gwV4, gwV6 string, gwV4Err, gwV6Er
 	// Try `route add` first, fall back to `route change` if the kernel
 	// already has a route for this host (common when reconnecting).
 	if iface != "" {
-		if err := run("route", "-q", "-n", "add", family, ipStr, "-gateway", gw, "-ifscope", iface); err != nil {
-			if err2 := run("route", "-q", "-n", "change", family, ipStr, "-gateway", gw, "-ifscope", iface); err2 != nil {
+		if err := run(cmdRoute, "-q", "-n", "add", family, ipStr, "-gateway", gw, "-ifscope", iface); err != nil {
+			if err2 := run(cmdRoute, "-q", "-n", "change", family, ipStr, "-gateway", gw, "-ifscope", iface); err2 != nil {
 				// Fallback: try without -ifscope in case the OS rejects it
 				slog.Debug("ifscope route failed, falling back to unscoped", "ip", ipStr, "iface", iface)
-				if err3 := run("route", "-q", "-n", "add", family, ipStr, "-gateway", gw); err3 != nil {
-					if err4 := run("route", "-q", "-n", "change", family, ipStr, "-gateway", gw); err4 != nil {
+				if err3 := run(cmdRoute, "-q", "-n", "add", family, ipStr, "-gateway", gw); err3 != nil {
+					if err4 := run(cmdRoute, "-q", "-n", "change", family, ipStr, "-gateway", gw); err4 != nil {
 						return fmt.Errorf("bypass route %s via %s (ifscope %s failed, unscoped also failed): %v", ipStr, gw, iface, err4)
 					}
 				}
 			}
 		}
 	} else {
-		if err := run("route", "-q", "-n", "add", family, ipStr, "-gateway", gw); err != nil {
-			if err2 := run("route", "-q", "-n", "change", family, ipStr, "-gateway", gw); err2 != nil {
+		if err := run(cmdRoute, "-q", "-n", "add", family, ipStr, "-gateway", gw); err != nil {
+			if err2 := run(cmdRoute, "-q", "-n", "change", family, ipStr, "-gateway", gw); err2 != nil {
 				return fmt.Errorf("bypass route %s via %s: add=%v, change=%v", ipStr, gw, err, err2)
 			}
 		}
@@ -645,7 +657,7 @@ func (m *DarwinManager) RemoveRoutes(ifaceName string, allowedIPs []string, full
 		if strings.Contains(ip, ":") {
 			family = "-inet6"
 		}
-		_ = run("route", "-q", "-n", "delete", family, ip)
+		_ = run(cmdRoute, "-q", "-n", "delete", family, ip)
 	}
 	return nil
 }
@@ -654,7 +666,7 @@ func (m *DarwinManager) RemoveRoutes(ifaceName string, allowedIPs []string, full
 // every route whose interface (Netif column) matches ifaceName.
 // Also handles the wg-quick IPv6 edge case where Netif=lo0 but Gateway=utunN.
 func (m *DarwinManager) deleteInterfaceRoutes(ifaceName, family string) {
-	out, err := runOut("netstat", "-nr", "-f", family)
+	out, err := runOut(cmdNetstat, "-nr", "-f", family)
 	if err != nil {
 		return
 	}
@@ -709,7 +721,7 @@ func (m *DarwinManager) deleteInterfaceRoutes(ifaceName, family string) {
 		if family == "inet6" {
 			famFlag = "-inet6"
 		}
-		_ = run("route", "-q", "-n", "delete", famFlag, dest)
+		_ = run(cmdRoute, "-q", "-n", "delete", famFlag, dest)
 	}
 }
 
@@ -791,6 +803,7 @@ func (m *DarwinManager) SetDNS(ifaceName string, entries []string) error {
 		dnsSavedSearch = make(map[string][]string)
 		dnsStateMu.Unlock()
 		restoreDNSBaseline(savedDNS, savedSearch)
+		clearDNSJournalIfIdle()
 	}
 
 	// Save original DNS for each service before overriding (only the very
@@ -820,6 +833,9 @@ func (m *DarwinManager) SetDNS(ifaceName string, entries []string) error {
 			dnsSavedDNS[e.svc] = e.dns
 			dnsSavedSearch[e.svc] = e.search
 		}
+		// Journal the baseline BEFORE applyDNSToServices overrides it, so a
+		// helper killed mid-connect can still be restored at next startup.
+		writeDNSJournalLocked()
 		dnsStateMu.Unlock()
 	}
 
@@ -899,6 +915,7 @@ func (m *DarwinManager) applyDNS(entries []string) error {
 				slog.Info("discovered new network service, saving DNS", "service", e.svc)
 			}
 		}
+		writeDNSJournalLocked()
 		dnsStateMu.Unlock()
 	}
 
@@ -925,13 +942,13 @@ func (m *DarwinManager) applyDNSToServices(entries []string, services []string) 
 			defer wg.Done()
 			if len(servers) > 0 {
 				args := append([]string{"-setdnsservers", svc}, servers...)
-				if err := run("networksetup", args...); err != nil {
+				if err := run(cmdNetworksetup, args...); err != nil {
 					slog.Warn("failed to set DNS on service", "service", svc, "error", err)
 				}
 			}
 			if len(search) > 0 {
 				args := append([]string{"-setsearchdomains", svc}, search...)
-				if err := run("networksetup", args...); err != nil {
+				if err := run(cmdNetworksetup, args...); err != nil {
 					slog.Warn("failed to set search domains on service", "service", svc, "error", err)
 				}
 			}
@@ -945,8 +962,8 @@ func (m *DarwinManager) applyDNSToServices(entries []string, services []string) 
 // propagated because a failed flush is not worth aborting a successful
 // Connect over.
 func flushDNSCache() {
-	_ = run("dscacheutil", "-flushcache")
-	_ = run("killall", "-HUP", "mDNSResponder")
+	_ = run(cmdDscacheutil, "-flushcache")
+	_ = run(cmdKillall, "-HUP", "mDNSResponder")
 }
 
 // splitDNSEntries partitions a mixed DNS list into IP servers and hostname
@@ -1019,10 +1036,10 @@ func (m *DarwinManager) ResetDNSToSystemDefault() error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := run("networksetup", "-setdnsservers", svc, "Empty"); err != nil {
+			if err := run(cmdNetworksetup, "-setdnsservers", svc, "Empty"); err != nil {
 				slog.Warn("reset DNS servers failed", "service", svc, "error", err)
 			}
-			if err := run("networksetup", "-setsearchdomains", svc, "Empty"); err != nil {
+			if err := run(cmdNetworksetup, "-setsearchdomains", svc, "Empty"); err != nil {
 				slog.Warn("reset search domains failed", "service", svc, "error", err)
 			}
 		}()
@@ -1064,6 +1081,9 @@ func (m *DarwinManager) RestoreDNS(ifaceName string) error {
 	dnsStateMu.Unlock()
 
 	restoreDNSBaseline(savedDNS, savedSearch)
+	// Only drop the journal once the restore has actually run, so a crash
+	// mid-restore still leaves it for the next startup to replay.
+	clearDNSJournalIfIdle()
 	return nil
 }
 
@@ -1084,10 +1104,10 @@ func restoreDNSBaseline(savedDNS, savedSearch map[string][]string) {
 		go func() {
 			defer wg.Done()
 			if len(orig) == 0 {
-				_ = run("networksetup", "-setdnsservers", svc, "Empty")
+				_ = run(cmdNetworksetup, "-setdnsservers", svc, "Empty")
 			} else {
 				args := append([]string{"-setdnsservers", svc}, orig...)
-				_ = run("networksetup", args...)
+				_ = run(cmdNetworksetup, args...)
 			}
 		}()
 	}
@@ -1097,10 +1117,10 @@ func restoreDNSBaseline(savedDNS, savedSearch map[string][]string) {
 		go func() {
 			defer wg.Done()
 			if len(search) == 0 {
-				_ = run("networksetup", "-setsearchdomains", svc, "Empty")
+				_ = run(cmdNetworksetup, "-setsearchdomains", svc, "Empty")
 			} else {
 				args := append([]string{"-setsearchdomains", svc}, search...)
-				_ = run("networksetup", args...)
+				_ = run(cmdNetworksetup, args...)
 			}
 		}()
 	}
@@ -1136,10 +1156,10 @@ func (m *DarwinManager) RestoreDNSFromSnapshot(preModDNS map[string][]string) er
 		go func() {
 			defer wg.Done()
 			if len(orig) == 0 {
-				_ = run("networksetup", "-setdnsservers", svc, "Empty")
+				_ = run(cmdNetworksetup, "-setdnsservers", svc, "Empty")
 			} else {
 				args := append([]string{"-setdnsservers", svc}, orig...)
-				_ = run("networksetup", args...)
+				_ = run(cmdNetworksetup, args...)
 			}
 		}()
 	}
@@ -1167,7 +1187,7 @@ func (m *DarwinManager) Cleanup(ifaceName string) error {
 		if strings.Contains(ip, ":") {
 			family = "-inet6"
 		}
-		_ = run("route", "-q", "-n", "delete", family, ip)
+		_ = run(cmdRoute, "-q", "-n", "delete", family, ip)
 	}
 	return nil
 }
@@ -1208,7 +1228,7 @@ func getDefaultGatewayFor(ipv6 bool) (string, error) {
 	if ipv6 {
 		family = "inet6"
 	}
-	out, err := runOut("netstat", "-nr", "-f", family)
+	out, err := runOut(cmdNetstat, "-nr", "-f", family)
 	if err != nil {
 		return "", err
 	}
@@ -1236,7 +1256,7 @@ func getDefaultGatewayFor(ipv6 bool) (string, error) {
 // differences across macOS versions; the previous "first lowercase field"
 // heuristic returned `awdl0` (AirDrop) instead of `en0` on some machines.
 func getDefaultInterface() string {
-	out, err := runOut("netstat", "-nr", "-f", "inet")
+	out, err := runOut(cmdNetstat, "-nr", "-f", "inet")
 	if err != nil {
 		return ""
 	}
@@ -1273,7 +1293,7 @@ func getDefaultInterface() string {
 
 // getInterfaceMTU reads the MTU from ifconfig output.
 func getInterfaceMTU(ifaceName string) int {
-	out, err := runOut("ifconfig", ifaceName)
+	out, err := runOut(cmdIfconfig, ifaceName)
 	if err != nil {
 		return 0
 	}
@@ -1292,7 +1312,7 @@ func getInterfaceMTU(ifaceName string) int {
 // wg-quick includes disabled services (strips the "*" prefix) so DNS is
 // applied/restored uniformly regardless of current enabled state.
 func getAllNetworkServices() []string {
-	out, err := runOut("networksetup", "-listallnetworkservices")
+	out, err := runOut(cmdNetworksetup, "-listallnetworkservices")
 	if err != nil {
 		return nil
 	}
@@ -1329,7 +1349,7 @@ func getAllNetworkServices() []string {
 // original-DNS baseline. Instead, keep only lines that actually parse as an
 // IP address — locale-independent by construction.
 func getCurrentDNS(service string) ([]string, error) {
-	out, err := runOut("networksetup", "-getdnsservers", service)
+	out, err := runOut(cmdNetworksetup, "-getdnsservers", service)
 	if err != nil {
 		return nil, err
 	}
@@ -1349,7 +1369,7 @@ func getCurrentDNS(service string) ([]string, error) {
 // domains" sentinel — a real search domain never contains whitespace, so
 // filtering on that instead of an English string is locale-independent.
 func getCurrentSearchDomains(service string) ([]string, error) {
-	out, err := runOut("networksetup", "-getsearchdomains", service)
+	out, err := runOut(cmdNetworksetup, "-getsearchdomains", service)
 	if err != nil {
 		return nil, err
 	}

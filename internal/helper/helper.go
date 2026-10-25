@@ -11,14 +11,17 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/firewall"
 	"github.com/steiale/wireguide/internal/ipc"
+	"github.com/steiale/wireguide/internal/network"
 	"github.com/steiale/wireguide/internal/ovpn"
 	"github.com/steiale/wireguide/internal/reconnect"
 	"github.com/steiale/wireguide/internal/tunnel"
@@ -73,6 +76,7 @@ type Helper struct {
 	server      *ipc.Server
 	manager     *tunnel.Manager
 	ovpnManager *ovpn.Manager
+	ovpnBinary  string // root-owned openvpn path next to the helper binary
 	firewall    firewall.FirewallManager
 	monitor     *reconnect.Monitor
 
@@ -138,6 +142,18 @@ type Helper struct {
 // ownerUID: UID to chown socket to (Unix only, use -1 on Windows).
 // dataDir: persistent data dir for crash recovery state.
 func Run(addr string, ownerUID int, dataDir string) error {
+	// Startup recovery, BEFORE the IPC socket exists. A previous helper
+	// process may have been SIGKILLed / crashed / booted out without running
+	// cleanup(), leaving a block-all pf ruleset loaded. Flush it
+	// unconditionally (not gated on crash-recovery state, which only covers
+	// WireGuard); the GUI re-applies the kill switch if it's still wanted.
+	firewall.RecoverStaleState()
+	// DNS journal: the network package records the user's original DNS
+	// whenever it overrides it (WireGuard and OpenVPN both go through
+	// network.SetDNS). Point it at the root-owned data dir now; the journal
+	// itself is replayed after RecoverFromCrash below.
+	network.SetDNSJournalPath(filepath.Join(dataDir, network.DNSJournalFile))
+
 	listener, err := ipc.Listen(addr, ownerUID)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
@@ -167,19 +183,19 @@ func Run(addr string, ownerUID int, dataDir string) error {
 		return h.server.Broadcast
 	})))
 
-	// OpenVPN manager: resolve the bundled openvpn binary. Primary location is
-	// next to the helper in /Library/PrivilegedHelperTools/ (copied there by the
-	// install script). If that's missing — e.g. the helper version matched on
-	// first launch so the install script never ran — fall back to the standard
-	// app bundle location so openvpn works without a forced helper reinstall.
+	// OpenVPN manager: the openvpn binary MUST live next to the helper in the
+	// root-owned /Library/PrivilegedHelperTools/ (copied and codesign-verified
+	// there by the install script). There is deliberately NO fallback to the
+	// app bundle: /Applications/LockPlus.app is user-writable, and exec'ing a
+	// binary from it as root would let same-user malware escalate. If it's
+	// missing, OpenVPN connects fail (ovpn.Manager stats the path) and the
+	// user is told to reinstall the helper.
 	ovpnBinary := filepath.Join(filepath.Dir(os.Args[0]), "openvpn")
 	if _, err := os.Stat(ovpnBinary); err != nil {
-		const appBundleFallback = "/Applications/LockPlus.app/Contents/MacOS/openvpn"
-		if _, err2 := os.Stat(appBundleFallback); err2 == nil {
-			slog.Info("openvpn not found next to helper, using app bundle fallback", "path", appBundleFallback)
-			ovpnBinary = appBundleFallback
-		}
+		slog.Error("openvpn binary not found next to helper — OpenVPN unavailable; reinstall the helper (relaunch LockPlus and approve the admin prompt)",
+			"path", ovpnBinary, "error", err)
 	}
+	h.ovpnBinary = ovpnBinary
 	ovpnRuntimeDir := filepath.Join(dataDir, "ovpn-run")
 	h.ovpnManager = ovpn.NewManager(ovpnBinary, ovpnRuntimeDir,
 		h.broadcastOvpnStatus,
@@ -190,6 +206,15 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	// Crash recovery (now logs via broadcast handler)
 	if recovered := tunnel.RecoverFromCrash(dataDir); len(recovered) > 0 {
 		slog.Warn("recovered from previous crash", "tunnels", recovered)
+	}
+	// Replay the DNS journal AFTER RecoverFromCrash: the journal holds both
+	// servers and search domains for every service and covers OpenVPN too,
+	// so it is the more precise source and must win over RecoverFromCrash's
+	// fallback ResetDNSToSystemDefault.
+	if restored, err := network.RestoreDNSFromJournal(); err != nil {
+		slog.Warn("startup: DNS journal restore failed", "error", err)
+	} else if restored {
+		slog.Warn("startup: restored original DNS from journal left by previous helper process")
 	}
 
 	// Reconnect monitor — uses cached config
@@ -237,6 +262,21 @@ func Run(addr string, ownerUID int, dataDir string) error {
 				"panic", fmt.Sprintf("%v", r),
 				"stack", string(debug.Stack()))
 		}
+	}()
+
+	// SIGTERM (launchctl bootout / kickstart -k on every upgrade) and SIGINT
+	// must run the same teardown as a normal Serve return — otherwise pf
+	// anchors and networksetup DNS overrides outlive the process. cleanup()
+	// is guarded by cleanupOnce, so a concurrent Serve-return cleanup and
+	// this path can't double-run it; whichever arrives second just waits.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		sig := <-sigCh
+		slog.Info("received signal, shutting down", "signal", sig.String())
+		h.server.Shutdown() // stop serving new RPCs mid-teardown
+		h.cleanup()
+		os.Exit(0)
 	}()
 
 	slog.Info("helper listening", "addr", addr, "pid", "daemon")

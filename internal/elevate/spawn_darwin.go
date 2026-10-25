@@ -28,7 +28,31 @@ const (
 	daemonLabel  = "io.github.steiale.lockplus.helper"
 	daemonPlist  = "/Library/LaunchDaemons/" + daemonLabel + ".plist"
 	daemonBinary = "/Library/PrivilegedHelperTools/" + daemonLabel
+	// helperLogPath receives the helper's stdout/stderr (including openvpn's
+	// stderr, which can echo config/credential details), so the install
+	// script pre-creates it root:wheel 0600 before launchd opens it.
+	helperLogPath = "/var/log/lockplus-helper.log"
+
+	// codeSignRequirement pins every binary the root install script copies
+	// out of the (user-writable) app bundle to our Developer ID team. Checked
+	// AFTER the copy, against the root-owned destination, so a same-user
+	// process swapping the bundle's file before or during the admin prompt
+	// can't get an unsigned/foreign binary installed as root. Both dev
+	// (build/darwin/Taskfile.yml) and release builds sign with this team's
+	// Developer ID; an unsigned local openvpn will now fail the install.
+	codeSignRequirement = `anchor apple generic and certificate leaf[subject.OU] = "M53GHX9FAY"`
 )
+
+// verifySignatureSnippet returns a shell fragment (for the root install
+// script) that verifies dst against codeSignRequirement and, on failure,
+// deletes dst and aborts the script with a SIGNATURE_INVALID marker that
+// installAndLoadDaemon turns into a *SignatureError.
+func verifySignatureSnippet(dst string) string {
+	return fmt.Sprintf(
+		`CSERR=$(/usr/bin/codesign --verify --strict -R=%s %s 2>&1) || { /bin/rm -f %s; echo "SIGNATURE_INVALID: %s: $CSERR"; exit 5; }; `,
+		shellQuote(codeSignRequirement), shellQuote(dst), shellQuote(dst), dst,
+	)
+}
 
 // SpawnHelper starts the privileged helper process.
 //
@@ -92,12 +116,13 @@ func installAndLoadDaemon(args Args) error {
     <key>KeepAlive</key>
     <true/>
     <key>StandardErrorPath</key>
-    <string>/var/log/lockplus-helper.log</string>
+    <string>%s</string>
     <key>StandardOutPath</key>
-    <string>/var/log/lockplus-helper.log</string>
+    <string>%s</string>
 </dict>
 </plist>
-`, xmlEscape(daemonLabel), xmlEscape(daemonBinary), xmlEscape(args.SocketPath), uid, xmlEscape(args.DataDir))
+`, xmlEscape(daemonLabel), xmlEscape(daemonBinary), xmlEscape(args.SocketPath), uid, xmlEscape(args.DataDir),
+		xmlEscape(helperLogPath), xmlEscape(helperLogPath))
 
 	// Validate plist syntax using a throwaway file at an unpredictable path
 	// (os.CreateTemp, not a fixed name) purely for our own linting — it is
@@ -127,7 +152,27 @@ func installAndLoadDaemon(args Args) error {
 		return fmt.Errorf("plist validation failed: %s", strings.TrimSpace(string(out)))
 	}
 	plistB64 := base64.StdEncoding.EncodeToString([]byte(plist))
+	shellScript := buildInstallScript(exe, plistB64)
 
+	escaped := strings.ReplaceAll(shellScript, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	osascriptCmd := fmt.Sprintf(
+		`do shell script "%s" with administrator privileges with prompt "LockPlus needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration. This prompt appears on first launch or after an app update."`,
+		escaped,
+	)
+
+	slog.Info("installing LaunchDaemon (one-time admin prompt)")
+	// Capture combined output: osascript relays the shell script's stdout (our
+	// INSTALL_OK / BOOTSTRAP_FAILED / SIGNATURE_INVALID markers) and any error
+	// text on failure.
+	out, err := exec.Command("/usr/bin/osascript", "-e", osascriptCmd).CombinedOutput()
+	return interpretInstallOutput(strings.TrimSpace(string(out)), err)
+}
+
+// buildInstallScript returns the shell script run as root (via osascript)
+// to install the helper. exe is the helper binary inside the app bundle;
+// plistB64 is the base64-encoded LaunchDaemon plist.
+func buildInstallScript(exe, plistB64 string) string {
 	// If the app bundle ships an openvpn binary (Contents/MacOS/openvpn), copy
 	// it to /Library/PrivilegedHelperTools/openvpn so the helper can find it
 	// via filepath.Dir(os.Args[0]). The copy is conditional — dev builds that
@@ -140,10 +185,13 @@ func installAndLoadDaemon(args Args) error {
 	// wedging that inode into an "OS_REASON_CODESIGNING" kill loop even
 	// though the binary is validly signed and notarized (spctl/codesign both
 	// pass). rm+cp gets a fresh inode and avoids the whole class of bug.
+	//
+	// The signature check runs on the root-owned COPY (not the bundle source,
+	// which a same-user process could swap after we check it).
 	ovpnSnippet := fmt.Sprintf(
-		`if [ -f %s ]; then rm -f %s; cp -f %s %s && xattr -d com.apple.quarantine %s 2>/dev/null || true; chown root:wheel %s && chmod 755 %s; fi; `,
+		`if [ -f %s ]; then rm -f %s; cp -f %s %s && xattr -d com.apple.quarantine %s 2>/dev/null || true; chown root:wheel %s && chmod 755 %s; %sfi; `,
 		shellQuote(ovpnExe), shellQuote(ovpnDst), shellQuote(ovpnExe), shellQuote(ovpnDst), shellQuote(ovpnDst),
-		shellQuote(ovpnDst), shellQuote(ovpnDst),
+		shellQuote(ovpnDst), shellQuote(ovpnDst), verifySignatureSnippet(ovpnDst),
 	)
 
 	// The shell script runs as root via osascript. It is structured so that a
@@ -167,7 +215,7 @@ func installAndLoadDaemon(args Args) error {
 	// We echo a leading "INSTALL_OK" only when everything (including the
 	// verification) succeeds. Its presence/absence is how Go distinguishes a
 	// real success from a partial one.
-	shellScript := fmt.Sprintf(
+	return fmt.Sprintf(
 		`set -e; `+
 			// Pin PATH to the standard system directories before running
 			// anything else. Without this, every bare command below (cp, rm,
@@ -187,6 +235,9 @@ func installAndLoadDaemon(args Args) error {
 			`xattr -d com.apple.quarantine %s 2>/dev/null || true; `+
 			`chown root:wheel %s; `+
 			`chmod 755 %s; `+
+			// Verify the root-owned copy is signed by our team; on
+			// failure it is deleted and the script aborts (exit 5).
+			`%s`+
 			// Decode the plist directly to its destination from the
 			// base64 blob embedded in this script — root never reads a
 			// path a co-located user process could have raced (see the
@@ -194,7 +245,12 @@ func installAndLoadDaemon(args Args) error {
 			`printf '%%s' %s | base64 -d > %s; `+
 			`chown root:wheel %s; `+
 			`chmod 644 %s; `+
-			ovpnSnippet+
+			`%s`+
+			// Pre-create the helper log root:wheel 0600 before launchd
+			// opens it (it would otherwise be created 0644, world-readable,
+			// and it receives openvpn's stderr). chmod also tightens a log
+			// left 0644 by an older install.
+			`/usr/bin/touch %s; /usr/sbin/chown root:wheel %s; /bin/chmod 600 %s; `+
 			// Ensure launchd's persistent disabled-state is cleared before we
 			// try to load the daemon. Without this, a prior macOS Login Items
 			// block (or an explicit `launchctl disable`) keeps the service
@@ -215,32 +271,31 @@ func installAndLoadDaemon(args Args) error {
 		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
 		shellQuote(daemonBinary),
+		verifySignatureSnippet(daemonBinary),
 		shellQuote(plistB64), shellQuote(daemonPlist),
 		shellQuote(daemonPlist),
 		shellQuote(daemonPlist),
+		ovpnSnippet,
+		shellQuote(helperLogPath), shellQuote(helperLogPath), shellQuote(helperLogPath),
 		daemonLabel,             // enable system/%s
 		daemonLabel,             // kickstart -k system/%s
 		shellQuote(daemonPlist), // bootstrap system %s
 		daemonLabel,             // print system/%s
 	)
+}
 
-	escaped := strings.ReplaceAll(shellScript, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-	osascriptCmd := fmt.Sprintf(
-		`do shell script "%s" with administrator privileges with prompt "LockPlus needs administrator access to install its VPN helper service.\n\nThe helper runs as a background service to manage VPN tunnels, firewall rules, and network configuration. This prompt appears on first launch or after an app update."`,
-		escaped,
-	)
-
-	slog.Info("installing LaunchDaemon (one-time admin prompt)")
-	// Capture combined output: osascript relays the shell script's stdout (our
-	// INSTALL_OK / BOOTSTRAP_FAILED markers) and any error text on failure.
-	out, err := exec.Command("osascript", "-e", osascriptCmd).CombinedOutput()
-	outStr := strings.TrimSpace(string(out))
+// interpretInstallOutput maps the install script's osascript output and exit
+// error to the typed errors callers (the GUI) react to.
+func interpretInstallOutput(outStr string, err error) error {
 	if err != nil {
 		// Distinguish the two common failure modes so the GUI can react:
 		//  - launchd refused to load the daemon (our explicit BOOTSTRAP_FAILED
 		//    marker, echoed by the script before `exit 3`/`exit 4`)
 		//  - user cancelled the password prompt (osascript error -128)
+		if strings.Contains(outStr, "SIGNATURE_INVALID") {
+			slog.Error("helper install aborted: code signature verification failed", "output", outStr)
+			return &SignatureError{Output: outStr, Err: err}
+		}
 		if strings.Contains(outStr, "BOOTSTRAP_FAILED") {
 			slog.Error("LaunchDaemon bootstrap failed", "output", outStr)
 			return &BootstrapError{Output: outStr, Err: err}
@@ -271,6 +326,22 @@ func installAndLoadDaemon(args Args) error {
 // same way: stop auto-retrying rather than counting it as one of a bounded
 // number of transient-failure retries.
 var ErrUserCancelled = fmt.Errorf("admin authorization cancelled by user")
+
+// SignatureError indicates the root install script refused to install a
+// binary copied from the app bundle (helper or openvpn) because it failed
+// `codesign --verify` against codeSignRequirement. The offending file was
+// deleted. Retrying won't help until the app bundle is replaced with a
+// correctly signed build.
+type SignatureError struct {
+	Output string
+	Err    error
+}
+
+func (e *SignatureError) Error() string {
+	return fmt.Sprintf("helper install aborted: code signature verification failed (reinstall LockPlus from an official release): %s", e.Output)
+}
+
+func (e *SignatureError) Unwrap() error { return e.Err }
 
 // BootstrapError indicates the LaunchDaemon was copied into place but launchd
 // refused to load it (most commonly because macOS has the background item in a
