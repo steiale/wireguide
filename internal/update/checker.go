@@ -183,6 +183,10 @@ func isTrustedAssetURL(rawURL string) bool {
 		strings.HasSuffix(host, ".githubusercontent.com")
 }
 
+// assetURLTrusted is the URL gate DownloadUpdate applies. A var only so tests
+// can admit their loopback httptest servers; production never reassigns it.
+var assetURLTrusted = isTrustedAssetURL
+
 // CheckForUpdate queries GitHub Releases API for newer version.
 func CheckForUpdate() (*UpdateInfo, error) {
 	cur := CurrentVersion()
@@ -282,8 +286,27 @@ func DownloadUpdate(info *UpdateInfo) (string, error) {
 	if info.DownloadURL == "" {
 		return "", fmt.Errorf("no download URL for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
+	// Re-validate here rather than trusting whoever built info: only
+	// HTTPS GitHub hosts, for the asset, its signature, and every redirect.
+	if !assetURLTrusted(info.DownloadURL) {
+		return "", fmt.Errorf("refusing untrusted download URL %q", info.DownloadURL)
+	}
+	if info.SignatureURL != "" && !assetURLTrusted(info.SignatureURL) {
+		return "", fmt.Errorf("refusing untrusted signature URL %q", info.SignatureURL)
+	}
 
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := &http.Client{
+		Timeout: 5 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if !assetURLTrusted(req.URL.String()) {
+				return fmt.Errorf("refusing redirect to untrusted URL %q", req.URL.String())
+			}
+			return nil
+		},
+	}
 	resp, err := client.Get(info.DownloadURL)
 	if err != nil {
 		return "", fmt.Errorf("downloading: %w", err)
@@ -370,6 +393,13 @@ func DownloadUpdate(info *UpdateInfo) (string, error) {
 	if err := verifySignature(assetHashHex, info, client); err != nil {
 		os.Remove(destPath)
 		return "", err
+	}
+
+	// Mark the verified download as quarantined so Gatekeeper assesses the
+	// app inside it on first launch, exactly as for a browser download.
+	if err := setQuarantine(destPath, time.Now()); err != nil {
+		os.Remove(destPath)
+		return "", fmt.Errorf("setting quarantine attribute: %w", err)
 	}
 
 	return destPath, nil
@@ -570,16 +600,18 @@ func BrewPath() string {
 	return ""
 }
 
-// IsBrewInstall returns true if WireGuide was installed via Homebrew.
+// caskroomPaths are the Homebrew Caskroom receipt dirs for the lockplus cask
+// (Apple Silicon + Intel prefixes).
+var caskroomPaths = []string{
+	"/opt/homebrew/Caskroom/lockplus",
+	"/usr/local/Caskroom/lockplus",
+}
+
+// IsBrewInstall returns true if LockPlus was installed via Homebrew.
 // Homebrew cask copies (not symlinks) the app to /Applications, so we
 // can't rely on the binary path containing "homebrew". Instead we check
 // if the Caskroom receipt directory exists.
 func IsBrewInstall() bool {
-	// Check common Homebrew Caskroom paths (Apple Silicon + Intel)
-	caskroomPaths := []string{
-		"/opt/homebrew/Caskroom/wireguide",
-		"/usr/local/Caskroom/wireguide",
-	}
 	for _, p := range caskroomPaths {
 		if info, err := os.Stat(p); err == nil && info.IsDir() {
 			if BrewPath() != "" {

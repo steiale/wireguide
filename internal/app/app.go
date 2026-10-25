@@ -19,6 +19,7 @@ import (
 	"github.com/steiale/wireguide/internal/history"
 	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/storage"
+	"github.com/steiale/wireguide/internal/update"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -40,9 +41,19 @@ type TunnelService struct {
 	// can find the right row to close. sync.Map keeps the path lock-free for
 	// the (rare) concurrent connect/disconnect of different tunnels.
 	activeSessions sync.Map
+
+	// pathGrants is the single-use allow-set (path → expiry) of filesystem
+	// paths the Go side handed to the frontend. See internal_api.go.
+	pathGrantsMu sync.Mutex
+	pathGrants   map[string]time.Time
+
+	// lastUpdate caches the most recent CheckForUpdate result so RunUpdate
+	// never trusts URLs/hashes supplied by the frontend.
+	updateMu   sync.Mutex
+	lastUpdate *update.UpdateInfo
 }
 
-// NewTunnelService creates a service. Set the app reference via SetApp()
+// NewTunnelService creates a service. Set the app reference via the package-level SetApp()
 // after application.New() for dialog support.
 func NewTunnelService(ts *storage.TunnelStore, ss *storage.SettingsStore, wrs *storage.WifiRulesStore, hs *history.Store, clients *ipc.ClientHolder) *TunnelService {
 	return &TunnelService{
@@ -54,13 +65,13 @@ func NewTunnelService(ts *storage.TunnelStore, ss *storage.SettingsStore, wrs *s
 	}
 }
 
-// SetApp injects the Wails app for dialog access.
-func (s *TunnelService) SetApp(app *application.App) {
+// setApp injects the Wails app for dialog access.
+func (s *TunnelService) setApp(app *application.App) {
 	s.app = app
 }
 
-// SetWindow injects the main window so ResizeToFit can adjust its height.
-func (s *TunnelService) SetWindow(win *application.WebviewWindow) {
+// setWindow injects the main window so ResizeToFit can adjust its height.
+func (s *TunnelService) setWindow(win *application.WebviewWindow) {
 	s.win = win
 }
 

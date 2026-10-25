@@ -183,16 +183,48 @@ func (s *TunnelService) GetVersion() string {
 	return update.CurrentVersion()
 }
 
-// CheckForUpdate queries GitHub for a newer release.
+// CheckForUpdate queries GitHub for a newer release. The result is cached in
+// Go so RunUpdate acts on what Go fetched, never on frontend-supplied data.
 func (s *TunnelService) CheckForUpdate() (*update.UpdateInfo, error) {
-	return update.CheckForUpdate()
+	info, err := update.CheckForUpdate()
+	if err != nil {
+		return nil, err
+	}
+	s.updateMu.Lock()
+	if info != nil && info.Available {
+		cached := *info
+		s.lastUpdate = &cached
+	} else {
+		s.lastUpdate = nil
+	}
+	s.updateMu.Unlock()
+	return info, nil
 }
 
-// RunUpdate performs the update. If installed via Homebrew, runs brew upgrade.
-// Otherwise downloads and installs directly from GitHub Releases.
-func (s *TunnelService) RunUpdate(info *update.UpdateInfo) error {
-	if info == nil || !info.Available {
-		return fmt.Errorf("no update available")
+// cachedUpdate returns a copy of the last CheckForUpdate result if it offers
+// exactly version.
+func (s *TunnelService) cachedUpdate(version string) (*update.UpdateInfo, error) {
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+	if s.lastUpdate == nil || !s.lastUpdate.Available {
+		return nil, fmt.Errorf("no update available — check for updates first")
+	}
+	if version == "" || s.lastUpdate.Version != version {
+		return nil, fmt.Errorf("update %q does not match the last checked release %q", version, s.lastUpdate.Version)
+	}
+	info := *s.lastUpdate
+	info.HashVerified = false
+	info.SignatureVerified = false
+	return &info, nil
+}
+
+// RunUpdate performs the update to version, which must match the release
+// found by the last CheckForUpdate. If installed via Homebrew, runs brew
+// upgrade. Otherwise downloads and verifies the asset from GitHub Releases.
+func (s *TunnelService) RunUpdate(version string) error {
+	info, err := s.cachedUpdate(version)
+	if err != nil {
+		return err
 	}
 
 	if update.IsBrewInstall() {
@@ -248,15 +280,30 @@ func (t *TunnelService) ScanForWireGuardConfigs() []FoundConfig {
 	for _, n := range list {
 		existing[n] = true
 	}
-	return scanSystemWireGuardConfigs(existing)
+	found := scanSystemWireGuardConfigs(existing)
+	paths := make([]string, 0, len(found))
+	for _, f := range found {
+		paths = append(paths, f.Path)
+	}
+	t.grantPaths(paths)
+	return found
 }
 
 // ImportFoundConfigs reads and imports the .conf files at the given absolute
-// paths. Returns per-file results reusing the ZipImportResult shape.
+// paths. Returns per-file results reusing the ZipImportResult shape. Only
+// paths returned by ScanForWireGuardConfigs are accepted, once each.
 func (t *TunnelService) ImportFoundConfigs(paths []string) []ZipImportResult {
 	var results []ZipImportResult
 	for _, p := range paths {
 		name, _ := stripKnownTunnelExt(filepath.Base(p))
+		if err := t.consumePath(p); err != nil {
+			results = append(results, ZipImportResult{Name: name, Error: err.Error()})
+			continue
+		}
+		if fi, err := os.Stat(p); err == nil && fi.Size() > maxReadFileSize {
+			results = append(results, ZipImportResult{Name: name, Error: fmt.Sprintf("file too large (max %d bytes)", maxReadFileSize)})
+			continue
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			results = append(results, ZipImportResult{Name: name, Error: err.Error()})
@@ -330,9 +377,9 @@ func (s *TunnelService) setAutostart(enabled bool) error {
 	return nil
 }
 
-// MigrateAutostart moves users who enabled launch-at-login under the old
+// migrateAutostart moves users who enabled launch-at-login under the old
 // LaunchAgent plist over to the SMAppService login item. No-op otherwise.
-func (s *TunnelService) MigrateAutostart() {
+func (s *TunnelService) migrateAutostart() {
 	settings, err := s.settingsStore.Load()
 	if err != nil || settings == nil || !settings.AutoStart {
 		return

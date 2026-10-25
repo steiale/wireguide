@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/makiuchi-d/gozxing"
@@ -46,6 +47,9 @@ func (s *TunnelService) zipUniqueName(base string) string {
 // each one. Returns per-file results; an error is only returned for zip-level
 // failures.
 func (s *TunnelService) ImportZip(path string) ([]ZipImportResult, error) {
+	if err := s.consumePath(path); err != nil {
+		return nil, err
+	}
 	r, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening zip: %w", err)
@@ -85,16 +89,26 @@ func stripKnownTunnelExt(name string) (base, ext string) {
 	}
 }
 
+// maxZipEntries caps how many .conf/.ovpn entries one zip import processes.
+const maxZipEntries = 500
+
 // importZipReader is the shared implementation for ImportZip and ImportZipData.
 // Each entry is imported independently — one failure doesn't abort the rest,
 // and each result is keyed to its own filename.
 func (s *TunnelService) importZipReader(r *zip.Reader) ([]ZipImportResult, error) {
 	var results []ZipImportResult
+	seen, skipped := 0, 0
 	for _, f := range r.File {
 		baseName, ext := stripKnownTunnelExt(filepath.Base(f.Name))
 		if ext == "" {
 			continue
 		}
+		// Bound the work (and the number of tunnels created) per archive.
+		if seen >= maxZipEntries {
+			skipped++
+			continue
+		}
+		seen++
 		rc, err := f.Open()
 		if err != nil {
 			results = append(results, ZipImportResult{Name: filepath.Base(f.Name), Error: err.Error()})
@@ -129,6 +143,12 @@ func (s *TunnelService) importZipReader(r *zip.Reader) ([]ZipImportResult, error
 		} else {
 			results = append(results, ZipImportResult{Name: name})
 		}
+	}
+	if skipped > 0 {
+		results = append(results, ZipImportResult{
+			Name:  fmt.Sprintf("%d more entries", skipped),
+			Error: fmt.Sprintf("zip contains more than %d .conf/.ovpn entries; %d skipped", maxZipEntries, skipped),
+		})
 	}
 	if len(results) == 0 {
 		return nil, fmt.Errorf("no .conf or .ovpn files found in zip")
@@ -206,7 +226,11 @@ const maxReadFileSize = 10 << 20
 
 // ReadFile reads a file from disk (used by native file drop). Returns the
 // content as a string so the frontend can handle name conflicts before import.
+// Only paths granted by the Go side (drop events) are readable, once each.
 func (s *TunnelService) ReadFile(path string) (string, error) {
+	if err := s.consumePath(path); err != nil {
+		return "", err
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)
@@ -298,6 +322,16 @@ func decodeQRFromImage(img image.Image) (string, error) {
 // ImportQRFromPath reads an image file, decodes its QR code, and imports the
 // WireGuard config under the given name.
 func (s *TunnelService) ImportQRFromPath(path, name string) error {
+	if err := s.consumePath(path); err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Size() > maxQRImageBytes {
+		return fmt.Errorf("image too large (%d bytes, max %d)", info.Size(), maxQRImageBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -371,7 +405,7 @@ func (s *TunnelService) ExportTunnel(name string) (string, error) {
 	}
 
 	// Exported files contain private keys — write with 0600.
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+	if err := writePrivateFile(path, []byte(content)); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -438,8 +472,29 @@ func (s *TunnelService) ExportAllTunnels() (string, error) {
 
 	// The zip contains private keys/credentials for every tunnel — write
 	// with 0600, same as a single-tunnel export.
-	if err := os.WriteFile(path, buf.Bytes(), 0600); err != nil {
+	if err := writePrivateFile(path, buf.Bytes()); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// writePrivateFile writes data to path for an export containing secrets.
+// Unlike os.WriteFile(…, 0600) it refuses to follow a symlink at path
+// (O_NOFOLLOW) and forces 0600 on a pre-existing file, whose mode
+// os.WriteFile would otherwise leave untouched. The fchmod happens before any
+// data is written, so secrets never land in a group/world-readable file.
+func writePrivateFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

@@ -726,17 +726,13 @@ func TestIsBrewInstall_ReturnsBool(t *testing.T) {
 }
 
 func TestIsBrewInstall_NoCaskroom(t *testing.T) {
-	// On most dev/CI machines, /opt/homebrew/Caskroom/wireguide and
-	// /usr/local/Caskroom/wireguide do not exist, so IsBrewInstall should
+	// On most dev/CI machines, /opt/homebrew/Caskroom/lockplus and
+	// /usr/local/Caskroom/lockplus do not exist, so IsBrewInstall should
 	// return false. If this test runs on a machine where WireGuide IS
 	// installed via brew, the result is legitimately true — skip.
 	result := IsBrewInstall()
 	// We can't assert false universally, but we CAN check the logic:
 	// if neither Caskroom path exists, the result MUST be false.
-	caskroomPaths := []string{
-		"/opt/homebrew/Caskroom/wireguide",
-		"/usr/local/Caskroom/wireguide",
-	}
 	anyCaskroom := false
 	for _, p := range caskroomPaths {
 		if info, err := os.Stat(p); err == nil && info.IsDir() {
@@ -837,6 +833,7 @@ func TestDownloadUpdate_SignatureValid(t *testing.T) {
 	if !info.SignatureVerified {
 		t.Error("expected SignatureVerified=true")
 	}
+	assertQuarantined(t, path)
 	os.Remove(path)
 }
 

@@ -344,7 +344,7 @@ func (t *trayManager) rebuildMenu() {
 		}
 	}()
 
-	tunnels, err := t.svc.ListTunnelsLocal()
+	tunnels, err := wgapp.ListTunnelsLocal(t.svc)
 	if err != nil {
 		slog.Debug("tray: list tunnels failed", "error", err)
 	}

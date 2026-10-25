@@ -123,7 +123,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
 	})
-	tunnelService.SetApp(app)
+	wgapp.SetApp(tunnelService, app)
 	bindAppToLogHandler(app)
 
 	// Register the log event shape so Wails knows how to marshal it.
@@ -160,12 +160,15 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	})
 
 	// Wire the window into the service (for ResizeToFit) and tray helpers.
-	tunnelService.SetWindow(win)
+	wgapp.SetWindow(tunnelService, win)
 	dockWindow = win
 
 	// Native file drop forwarded to frontend
 	win.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {
 		files := event.Context().DroppedFiles()
+		// Authorize exactly these paths (single use, short TTL) for the
+		// path-taking bindings the frontend calls in response.
+		wgapp.GrantPaths(tunnelService, files)
 		app.Event.Emit("files-dropped", map[string]any{"files": files})
 	})
 
@@ -186,7 +189,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 			slog.Info("shutting down GUI + helper")
 			// Close any open history sessions BEFORE the helper shuts down
 			// so we can still query GetStatus for last-known rx/tx.
-			tunnelService.CloseHistorySessions("app_quit")
+			wgapp.CloseHistorySessions(tunnelService, "app_quit")
 			c := clients.Get()
 			if c != nil {
 				// Disconnect EVERY active tunnel, not just one. A single
@@ -201,7 +204,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 				// (matching the 60s budget used everywhere else — DNS
 				// restore + networksetup calls across services + route
 				// teardown can take 15+ s on macOS).
-				if names, err := tunnelService.ActiveTunnelNames(); err == nil {
+				if names, err := wgapp.ActiveTunnelNames(tunnelService); err == nil {
 					for _, name := range names {
 						_ = tunnelService.DisconnectTunnel(name)
 					}
@@ -251,7 +254,9 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	//
 	// The bridge tolerates a nil client (resubscribe is a no-op until the
 	// holder has one), so we can construct it before the helper is ready.
-	bridge := newEventBridge(app, clients, trayMgr.updateStatus, tunnelService.ReconcileHistoryFromStatus)
+	bridge := newEventBridge(app, clients, trayMgr.updateStatus, func(active []string, rx, tx map[string]int64, reason string) {
+		wgapp.ReconcileHistoryFromStatus(tunnelService, active, rx, tx, reason)
+	})
 	bridge.start()
 
 	healthDone := make(chan struct{})
@@ -277,7 +282,7 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(_ *application.ApplicationEvent) {
 		bootstrapOnce.Do(func() {
 			go bootstrapHelper(app, clients, bridge, settingsStore, dataDir)
-			go tunnelService.MigrateAutostart()
+			go wgapp.MigrateAutostart(tunnelService)
 		})
 	})
 

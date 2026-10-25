@@ -559,7 +559,7 @@
 
   async function handleUpdate() {
     try {
-      await TunnelService.RunUpdate(updateInfo);
+      await TunnelService.RunUpdate(updateInfo?.version ?? "");
     } catch (e) {
       showToast('Update failed: ' + errText(e));
     }

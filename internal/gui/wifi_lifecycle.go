@@ -111,7 +111,7 @@ func (lc *wifiLifecycle) handleSSIDChange(_, newSSID string) {
 // tear all of them down first — running extra tunnels just because the user
 // moved between SSIDs is rarely what they want.
 func (lc *wifiLifecycle) connectTunnel(name string) {
-	active, err := lc.tunnelService.ActiveTunnelNames()
+	active, err := wgapp.ActiveTunnelNames(lc.tunnelService)
 	if err != nil {
 		slog.Warn("wifi: cannot query active tunnels — helper may be unavailable", "tunnel", name, "error", err)
 		return
@@ -137,7 +137,7 @@ func (lc *wifiLifecycle) connectTunnel(name string) {
 // helper resolves to only the FIRST active tunnel, silently leaving any
 // others running and mis-recording their history sessions as closed).
 func (lc *wifiLifecycle) disconnectAll() {
-	active, err := lc.tunnelService.ActiveTunnelNames()
+	active, err := wgapp.ActiveTunnelNames(lc.tunnelService)
 	if err != nil {
 		slog.Warn("wifi: cannot query active tunnels for auto-disconnect", "error", err)
 		return

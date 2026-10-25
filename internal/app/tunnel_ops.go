@@ -12,13 +12,13 @@ import (
 	"github.com/steiale/wireguide/internal/tunnel"
 )
 
-// ListTunnelsLocal returns stored tunnels WITHOUT asking the helper which one
+// listTunnelsLocal returns stored tunnels WITHOUT asking the helper which one
 // is active — callers that already know the active name (e.g. the system
 // tray, which tracks it from the status event stream) should use this to
 // avoid an IPC round-trip on every refresh. IsConnected is always false in
 // the returned slice; the caller is responsible for applying its own
 // active-name match.
-func (s *TunnelService) ListTunnelsLocal() ([]TunnelInfo, error) {
+func (s *TunnelService) listTunnelsLocal() ([]TunnelInfo, error) {
 	names, err := s.tunnelStore.List()
 	if err != nil {
 		return nil, err
@@ -374,7 +374,7 @@ func (s *TunnelService) snapshotActiveStats(wantName string) (string, int64, int
 	return wantName, 0, 0
 }
 
-// ReconcileHistoryFromStatus syncs the history's open-session map against the
+// reconcileHistoryFromStatus syncs the history's open-session map against the
 // list of active tunnels reported by the helper. Used by the event bridge so
 // helper-driven Connect / Disconnect (auto-reconnect on wake, health-check
 // recovery, etc.) is recorded too — not just the buttons in the GUI.
@@ -385,7 +385,7 @@ func (s *TunnelService) snapshotActiveStats(wantName string) (string, int64, int
 //
 // rxByTunnel/txByTunnel let the caller forward last-known counters from the
 // status event itself; missing keys default to 0.
-func (s *TunnelService) ReconcileHistoryFromStatus(activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string) {
+func (s *TunnelService) reconcileHistoryFromStatus(activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string) {
 	if s.history == nil {
 		return
 	}
@@ -435,10 +435,10 @@ func (s *TunnelService) ReconcileHistoryFromStatus(activeNames []string, rxByTun
 	}
 }
 
-// CloseHistorySessions closes any open history sessions with reason. Called
+// closeHistorySessions closes any open history sessions with reason. Called
 // from gui.Run during shutdown so the UI doesn't show phantom "Active" rows
 // after a quit.
-func (s *TunnelService) CloseHistorySessions(reason string) {
+func (s *TunnelService) closeHistorySessions(reason string) {
 	if s.history == nil {
 		return
 	}
@@ -501,7 +501,7 @@ func (s *TunnelService) GetTunnelDetail(name string) (*domain.WireGuardConfig, e
 // only compared against ActiveName let B be deleted/renamed/edited right out
 // from under the still-running helper.
 func (s *TunnelService) isTunnelActive(name string) (bool, error) {
-	names, err := s.ActiveTunnelNames()
+	names, err := s.activeTunnelNames()
 	if err != nil {
 		return false, err
 	}
@@ -513,12 +513,12 @@ func (s *TunnelService) isTunnelActive(name string) (bool, error) {
 	return false, nil
 }
 
-// ActiveTunnelNames returns every currently active tunnel name (WireGuard
+// activeTunnelNames returns every currently active tunnel name (WireGuard
 // AND OpenVPN — the helper supports multiple concurrent tunnels). Exported
 // for callers outside this package that need to act on the full active set
 // rather than the single "primary" name MethodActiveName reports (e.g. the
 // Wi-Fi auto-connect lifecycle's "disconnect everything" path).
-func (s *TunnelService) ActiveTunnelNames() ([]string, error) {
+func (s *TunnelService) activeTunnelNames() ([]string, error) {
 	var active ipc.ActiveTunnelsResponse
 	if err := s.call(ipc.MethodActiveTunnels, nil, &active); err != nil {
 		return nil, err

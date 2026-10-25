@@ -152,6 +152,18 @@ tasks:
     cmds:
       - |
         if [ -f "build/openvpn/bin/openvpn" ]; then
+          # Release gate: openvpn runs as root, and OpenSSL loads openssl.cnf
+          # (which can load provider modules) from OPENSSLDIR. It must point
+          # into root-owned /var/empty, never a user-writable build tree.
+          SSLDIR=$(strings "build/openvpn/bin/openvpn" | grep -m1 '^OPENSSLDIR: ' || true)
+          case "${SSLDIR}" in
+            'OPENSSLDIR: "/var/empty'*) echo "openvpn ${SSLDIR}" ;;
+            *)
+              echo "ERROR: build/openvpn/bin/openvpn has unsafe or missing OPENSSLDIR (${SSLDIR:-none})."
+              echo "       It must be under /var/empty. Rebuild with build/openvpn/build.sh."
+              exit 1
+              ;;
+          esac
           cp "build/openvpn/bin/openvpn" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/openvpn"
           echo "openvpn bundled"
         else
@@ -279,8 +291,15 @@ tasks:
         elif install -m 600 /dev/null "${SIGN_KEY_TMP}" && security find-generic-password -s wireguide-sign -w > "${SIGN_KEY_TMP}" 2>/dev/null; then
           go run ./cmd/sign --version "${VERSION}" --key "${SIGN_KEY_TMP}" "${ZIP}"
         else
-          echo "WARNING: no Ed25519 signing key found (KEY_PATH, WIREGUIDE_SIGNING_KEY, or Keychain 'wireguide-sign')"
-          echo "         the release will work in grace mode but won't be signed."
+          echo "ERROR: no Ed25519 signing key found (KEY_PATH, WIREGUIDE_SIGNING_KEY, or Keychain 'wireguide-sign')."
+          echo "       Clients refuse unsigned updates; aborting release."
+          rm -f "${ZIP}"
+          exit 1
+        fi
+        if [ ! -s "${ZIP}.sig" ]; then
+          echo "ERROR: signing did not produce ${ZIP}.sig; aborting release."
+          rm -f "${ZIP}"
+          exit 1
         fi
 
         echo "Release zip ready: ${ZIP}"

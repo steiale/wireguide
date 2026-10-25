@@ -33,27 +33,10 @@ import * as update$0 from "../update/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as wifi$0 from "../wifi/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as application$0 from "../../../../wailsapp/wails/v3/pkg/application/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
-
-/**
- * ActiveTunnelNames returns every currently active tunnel name (WireGuard
- * AND OpenVPN — the helper supports multiple concurrent tunnels). Exported
- * for callers outside this package that need to act on the full active set
- * rather than the single "primary" name MethodActiveName reports (e.g. the
- * Wi-Fi auto-connect lifecycle's "disconnect everything" path).
- * @returns {$CancellablePromise<string[]>}
- */
-export function ActiveTunnelNames() {
-    return $Call.ByID(3482408702).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
-    }));
-}
 
 /**
  * BaseName extracts the filename without extension from a path.
@@ -74,17 +57,18 @@ export function BaseName(path) {
  */
 export function CheckConflicts(name) {
     return $Call.ByID(604900757, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType2($result);
+        return $$createType1($result);
     }));
 }
 
 /**
- * CheckForUpdate queries GitHub for a newer release.
+ * CheckForUpdate queries GitHub for a newer release. The result is cached in
+ * Go so RunUpdate acts on what Go fetched, never on frontend-supplied data.
  * @returns {$CancellablePromise<update$0.UpdateInfo | null>}
  */
 export function CheckForUpdate() {
     return $Call.ByID(4127090372).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType4($result);
+        return $$createType3($result);
     }));
 }
 
@@ -94,17 +78,6 @@ export function CheckForUpdate() {
  */
 export function ClearConnectionHistory() {
     return $Call.ByID(3616246409);
-}
-
-/**
- * CloseHistorySessions closes any open history sessions with reason. Called
- * from gui.Run during shutdown so the UI doesn't show phantom "Active" rows
- * after a quit.
- * @param {string} reason
- * @returns {$CancellablePromise<void>}
- */
-export function CloseHistorySessions(reason) {
-    return $Call.ByID(3018497415, reason);
 }
 
 /**
@@ -213,7 +186,7 @@ export function GetConfigText(name) {
  */
 export function GetConnectionHistory() {
     return $Call.ByID(4142379542).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType6($result);
+        return $$createType5($result);
     }));
 }
 
@@ -233,7 +206,7 @@ export function GetCurrentSSID() {
  */
 export function GetRoutingTable() {
     return $Call.ByID(2660289744).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType8($result);
+        return $$createType7($result);
     }));
 }
 
@@ -246,7 +219,7 @@ export function GetRoutingTable() {
  */
 export function GetSavedCredentials(tunnelName) {
     return $Call.ByID(1122228093, tunnelName).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType10($result);
+        return $$createType9($result);
     }));
 }
 
@@ -255,7 +228,7 @@ export function GetSavedCredentials(tunnelName) {
  */
 export function GetSettings() {
     return $Call.ByID(1159302687).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType12($result);
+        return $$createType11($result);
     }));
 }
 
@@ -267,7 +240,7 @@ export function GetSettings() {
  */
 export function GetStatus() {
     return $Call.ByID(3347375428).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType14($result);
+        return $$createType13($result);
     }));
 }
 
@@ -279,7 +252,7 @@ export function GetStatus() {
  */
 export function GetTunnelDetail(name) {
     return $Call.ByID(881582661, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType16($result);
+        return $$createType15($result);
     }));
 }
 
@@ -308,7 +281,7 @@ export function GetTunnelLatency(name) {
  */
 export function GetTunnelMeta(name) {
     return $Call.ByID(402927985, name).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType17($result);
     }));
 }
 
@@ -327,7 +300,7 @@ export function GetVersion() {
  */
 export function GetWifiRules() {
     return $Call.ByID(2048144510).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType20($result);
+        return $$createType19($result);
     }));
 }
 
@@ -340,7 +313,7 @@ export function GetWifiRules() {
  */
 export function ImportConfig(name, content) {
     return $Call.ByID(188679809, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType21($result);
     }));
 }
 
@@ -355,19 +328,20 @@ export function ImportConfig(name, content) {
  */
 export function ImportFile(name, content, filename) {
     return $Call.ByID(2721946621, name, content, filename).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType21($result);
     }));
 }
 
 /**
  * ImportFoundConfigs reads and imports the .conf files at the given absolute
- * paths. Returns per-file results reusing the ZipImportResult shape.
+ * paths. Returns per-file results reusing the ZipImportResult shape. Only
+ * paths returned by ScanForWireGuardConfigs are accepted, once each.
  * @param {string[]} paths
  * @returns {$CancellablePromise<$models.ZipImportResult[]>}
  */
 export function ImportFoundConfigs(paths) {
     return $Call.ByID(1596298812, paths).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType24($result);
+        return $$createType23($result);
     }));
 }
 
@@ -380,7 +354,7 @@ export function ImportFoundConfigs(paths) {
  */
 export function ImportOVPN(name, content) {
     return $Call.ByID(3345483956, name, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType21($result);
     }));
 }
 
@@ -416,7 +390,7 @@ export function ImportQRFromPath(path, name) {
  */
 export function ImportZip(path) {
     return $Call.ByID(2515408722, path).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType24($result);
+        return $$createType23($result);
     }));
 }
 
@@ -428,7 +402,7 @@ export function ImportZip(path) {
  */
 export function ImportZipData(data) {
     return $Call.ByID(368497186, data).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType24($result);
+        return $$createType23($result);
     }));
 }
 
@@ -456,22 +430,7 @@ export function IsHelperReady() {
  */
 export function ListTunnels() {
     return $Call.ByID(3011645541).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType25($result);
-    }));
-}
-
-/**
- * ListTunnelsLocal returns stored tunnels WITHOUT asking the helper which one
- * is active — callers that already know the active name (e.g. the system
- * tray, which tracks it from the status event stream) should use this to
- * avoid an IPC round-trip on every refresh. IsConnected is always false in
- * the returned slice; the caller is responsible for applying its own
- * active-name match.
- * @returns {$CancellablePromise<$models.TunnelInfo[]>}
- */
-export function ListTunnelsLocal() {
-    return $Call.ByID(3553304200).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType25($result);
+        return $$createType24($result);
     }));
 }
 
@@ -489,33 +448,12 @@ export function OpenURL(url) {
 /**
  * ReadFile reads a file from disk (used by native file drop). Returns the
  * content as a string so the frontend can handle name conflicts before import.
+ * Only paths granted by the Go side (drop events) are readable, once each.
  * @param {string} path
  * @returns {$CancellablePromise<string>}
  */
 export function ReadFile(path) {
     return $Call.ByID(2692059968, path);
-}
-
-/**
- * ReconcileHistoryFromStatus syncs the history's open-session map against the
- * list of active tunnels reported by the helper. Used by the event bridge so
- * helper-driven Connect / Disconnect (auto-reconnect on wake, health-check
- * recovery, etc.) is recorded too — not just the buttons in the GUI.
- * 
- * reason classifies sessions that disappeared since the last call:
- *   - "" : default — store as "reconnect"
- *   - "health_check" : helper detected a stale handshake and is re-bringing it up
- * 
- * rxByTunnel/txByTunnel let the caller forward last-known counters from the
- * status event itself; missing keys default to 0.
- * @param {string[]} activeNames
- * @param {{ [_ in string]?: number }} rxByTunnel
- * @param {{ [_ in string]?: number }} txByTunnel
- * @param {string} disappearReason
- * @returns {$CancellablePromise<void>}
- */
-export function ReconcileHistoryFromStatus(activeNames, rxByTunnel, txByTunnel, disappearReason) {
-    return $Call.ByID(345336368, activeNames, rxByTunnel, txByTunnel, disappearReason);
 }
 
 /**
@@ -559,18 +497,19 @@ export function ResizeToFit(tunnelCount) {
  */
 export function RunDNSLeakTest() {
     return $Call.ByID(2844578013).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType27($result);
+        return $$createType26($result);
     }));
 }
 
 /**
- * RunUpdate performs the update. If installed via Homebrew, runs brew upgrade.
- * Otherwise downloads and installs directly from GitHub Releases.
- * @param {update$0.UpdateInfo | null} info
+ * RunUpdate performs the update to version, which must match the release
+ * found by the last CheckForUpdate. If installed via Homebrew, runs brew
+ * upgrade. Otherwise downloads and verifies the asset from GitHub Releases.
+ * @param {string} version
  * @returns {$CancellablePromise<void>}
  */
-export function RunUpdate(info) {
-    return $Call.ByID(2979792246, info);
+export function RunUpdate(version) {
+    return $Call.ByID(2979792246, version);
 }
 
 /**
@@ -640,17 +579,8 @@ export function SaveWifiRules(rules) {
  */
 export function ScanForWireGuardConfigs() {
     return $Call.ByID(2588850719).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType29($result);
+        return $$createType28($result);
     }));
-}
-
-/**
- * SetApp injects the Wails app for dialog access.
- * @param {application$0.App | null} app
- * @returns {$CancellablePromise<void>}
- */
-export function SetApp(app) {
-    return $Call.ByID(1847627805, app);
 }
 
 /**
@@ -703,15 +633,6 @@ export function SetPinInterface(enabled) {
 }
 
 /**
- * SetWindow injects the main window so ResizeToFit can adjust its height.
- * @param {application$0.WebviewWindow | null} win
- * @returns {$CancellablePromise<void>}
- */
-export function SetWindow(win) {
-    return $Call.ByID(3841803210, win);
-}
-
-/**
  * TunnelExists reports whether a tunnel with the given name is stored.
  * @param {string} name
  * @returns {$CancellablePromise<boolean>}
@@ -740,38 +661,38 @@ export function UpdateConfig(name, content) {
  */
 export function ValidateConfig(content) {
     return $Call.ByID(3943944654, content).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
+        return $$createType29($result);
     }));
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = tunnel$0.ConflictInfo.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = update$0.UpdateInfo.createFrom;
-const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = history$0.Session.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = $models.RouteEntry.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = $models.SavedCredentials.createFrom;
-const $$createType10 = $Create.Nullable($$createType9);
-const $$createType11 = storage$0.Settings.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = domain$0.ConnectionStatus.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = domain$0.WireGuardConfig.createFrom;
-const $$createType16 = $Create.Nullable($$createType15);
-const $$createType17 = storage$0.TunnelMeta.createFrom;
-const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = wifi$0.Rules.createFrom;
-const $$createType20 = $Create.Nullable($$createType19);
-const $$createType21 = $models.TunnelInfo.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = $models.ZipImportResult.createFrom;
-const $$createType24 = $Create.Array($$createType23);
-const $$createType25 = $Create.Array($$createType21);
-const $$createType26 = $models.DNSLeakResult.createFrom;
-const $$createType27 = $Create.Nullable($$createType26);
-const $$createType28 = $models.FoundConfig.createFrom;
-const $$createType29 = $Create.Array($$createType28);
+const $$createType0 = tunnel$0.ConflictInfo.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = update$0.UpdateInfo.createFrom;
+const $$createType3 = $Create.Nullable($$createType2);
+const $$createType4 = history$0.Session.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = $models.RouteEntry.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = $models.SavedCredentials.createFrom;
+const $$createType9 = $Create.Nullable($$createType8);
+const $$createType10 = storage$0.Settings.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = domain$0.ConnectionStatus.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);
+const $$createType14 = domain$0.WireGuardConfig.createFrom;
+const $$createType15 = $Create.Nullable($$createType14);
+const $$createType16 = storage$0.TunnelMeta.createFrom;
+const $$createType17 = $Create.Nullable($$createType16);
+const $$createType18 = wifi$0.Rules.createFrom;
+const $$createType19 = $Create.Nullable($$createType18);
+const $$createType20 = $models.TunnelInfo.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);
+const $$createType22 = $models.ZipImportResult.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = $Create.Array($$createType20);
+const $$createType25 = $models.DNSLeakResult.createFrom;
+const $$createType26 = $Create.Nullable($$createType25);
+const $$createType27 = $models.FoundConfig.createFrom;
+const $$createType28 = $Create.Array($$createType27);
+const $$createType29 = $Create.Array($Create.Any);
