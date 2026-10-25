@@ -273,11 +273,12 @@
                   <span class="proto-badge proto-wg">WG</span>
                 {/if}
               </span>
-              {#if status?.state === 'error' && status.error_message}
+              {#if status?.state === 'error' && (status.error_message || status.kill_switch_blocked)}
                 <!-- Helper-reported failure (e.g. OpenVPN web/SSO auth
                      unsupported, key passphrase needed, FATAL): visible
-                     without expanding the card. -->
-                <span class="card-status-error" role="alert">{status.error_message}</span>
+                     without expanding the card. A kill-switch block carries
+                     only the flag; its text is localized here. -->
+                <span class="card-status-error" role="alert">{status.error_message || $t('app.blocked_message')}</span>
               {/if}
               {#if notesMap[tun.name]}
                 <span class="card-notes">{notesMap[tun.name]}</span>

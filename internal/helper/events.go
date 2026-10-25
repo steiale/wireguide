@@ -18,9 +18,10 @@ import (
 //
 // ActiveTunnels lists only tunnels that are actually running (WireGuard's
 // own list, plus live OpenVPN entries not in an error state). An OpenVPN
-// error kept after its process exited, and a tunnel kept blocked by the
-// kill switch, appear in Tunnels only (State=error, ErrorMessage set), so
-// the GUI never counts them as connected.
+// error kept after its process exited (State=error, ErrorMessage set) and
+// a tunnel kept blocked by the kill switch (State=error, KillSwitchBlocked
+// set; the GUI renders its localized text from that flag) appear in Tunnels
+// only, so the GUI never counts them as connected.
 func (h *Helper) statusDTO() ipc.ConnectionStatus {
 	s := h.manager.Status()
 
@@ -48,15 +49,11 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 				if extra[i].State != domain.StateConnected {
 					extra[i].State = domain.StateError
 				}
-				if extra[i].ErrorMessage == "" {
-					extra[i].ErrorMessage = blockedMessage
-				}
 				continue
 			}
 			extra = append(extra, domain.ConnectionStatus{
 				State:             domain.StateError,
 				TunnelName:        name,
-				ErrorMessage:      blockedMessage,
 				Protocol:          proto,
 				KillSwitchBlocked: true,
 			})
@@ -148,6 +145,7 @@ func (h *Helper) eventLoop() {
 			return
 		case <-ticker.C:
 			h.rearmShutdownIfIdle()
+			h.checkOVPNWatchdog(time.Now())
 			status := h.statusDTO()
 			currentJSON, err := json.Marshal(status)
 			if err != nil {

@@ -264,7 +264,19 @@ func (m *Monitor) triggerReconnectTunnel(tunnelName string) {
 	m.retries[tunnelName] = rs
 	wg := m.wg
 	wg.Add(1)
+	suspend := m.fwSuspendFn
 	m.mu.Unlock()
+
+	// The new sequence's firewall hold is taken BEFORE the old sequence is
+	// cancelled: holds are counted, so the old sequence's release then only
+	// drops its own count and never ends the hold (which, with the tunnel
+	// down, would briefly block it as a give-up). reconnectWithBackoff
+	// releases this hold on every exit path.
+	if suspend != nil {
+		if err := suspend(tunnelName); err != nil {
+			slog.Warn("failed to hold firewall for reconnect", "tunnel", tunnelName, "error", err)
+		}
+	}
 
 	// Replace an older sequence for the same tunnel (outside the lock).
 	if old != nil {
@@ -301,17 +313,13 @@ func (m *Monitor) clearRetryState(tunnelName string, rs *retryState) {
 }
 
 // reconnectWithBackoff retries one tunnel with exponential backoff. The
-// firewall hold spans the WHOLE sequence, backoff waits included: releasing
-// it between attempts would drop the kill switch while the tunnel is down.
+// firewall hold (taken by triggerReconnectTunnel) spans the WHOLE sequence,
+// backoff waits included: releasing it between attempts would drop the kill
+// switch while the tunnel is down. It is released here on exit.
 func (m *Monitor) reconnectWithBackoff(ctx context.Context, tunnelName string, rs *retryState) {
 	m.mu.Lock()
-	suspend, resume := m.fwSuspendFn, m.fwResumeFn
+	resume := m.fwResumeFn
 	m.mu.Unlock()
-	if suspend != nil {
-		if err := suspend(tunnelName); err != nil {
-			slog.Warn("failed to hold firewall for reconnect", "tunnel", tunnelName, "error", err)
-		}
-	}
 	if resume != nil {
 		defer func() {
 			if err := resume(tunnelName); err != nil {

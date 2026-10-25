@@ -23,6 +23,7 @@ import (
 	"github.com/steiale/wireguide/internal/history"
 	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/storage"
+	"github.com/steiale/wireguide/internal/wifi"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
@@ -74,6 +75,9 @@ func Run(assetsHandler http.Handler, dataDir string) error {
 		return fmt.Errorf("create dirs: %w", err)
 	}
 	paths.MigrateLegacyTunnels()
+	if err := wifi.InitSSIDTagKey(paths.ConfigDir); err != nil {
+		slog.Warn("wifi: SSID tag key unavailable, using a per-launch key", "error", err)
+	}
 	tunnelStore := storage.NewTunnelStore(paths.TunnelsDir)
 	settingsStore := storage.NewSettingsStore(paths.ConfigDir)
 	wifiRulesStore := storage.NewWifiRulesStore(paths.ConfigDir)

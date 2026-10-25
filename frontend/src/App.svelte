@@ -453,15 +453,24 @@
   // connected (not just connecting — active_tunnels includes connecting tunnels,
   // so checking it would close the modal before the user can submit credentials).
   // While the modal is open a prompt is pending (submitting closes it), and
-  // openvpn is alive waiting for the answer: an error state (e.g. the
-  // previous password was rejected) never closes it — the text is shown
-  // inside so the user can retry. Only the tunnel disappearing (openvpn
-  // exited: timeout, unsupported web auth) ends the prompt.
+  // openvpn is alive waiting for the answer: an error state of a live tunnel
+  // (e.g. the previous password was rejected; it stays in active_tunnels as
+  // Connecting) never closes it — the text is shown inside so the user can
+  // retry. The prompt ends when openvpn exited: the tunnel disappears, or the
+  // helper keeps only its final error (state 'error', not in active_tunnels).
   $: if (showAuth && authTunnelName) {
     const tunnelStatus = ($connectionStatus?.tunnels || []).find(t => t.tunnel_name === authTunnelName);
+    const live = ($connectionStatus?.active_tunnels || []).includes(authTunnelName);
     if (tunnelStatus?.state === 'connected') {
       // Success — close silently.
       showAuth = false;
+    } else if (tunnelStatus?.state === 'error' && !live && helperReady) {
+      // Terminal failure: openvpn exited and only its error is kept.
+      showAuth = false;
+      authSubmittedFor = '';
+      showToast(tunnelStatus.error_message
+        ? $t('toast.connect_failed_named', { name: authTunnelName, error: tunnelStatus.error_message })
+        : $t('toast.ovpn_lost'));
     } else if (tunnelStatus?.state === 'error' && tunnelStatus.error_message && !authError) {
       authError = tunnelStatus.error_message;
     } else if (!tunnelStatus && helperReady) {

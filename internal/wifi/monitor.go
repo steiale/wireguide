@@ -1,23 +1,10 @@
 package wifi
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
 )
-
-// SSIDTag returns a short, stable hash of ssid for Info-level logs, so log
-// files and diagnostics don't record the networks the user visits. Empty
-// stays empty (no Wi-Fi).
-func SSIDTag(ssid string) string {
-	if ssid == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(ssid))
-	return "ssid#" + hex.EncodeToString(sum[:4])
-}
 
 // SSIDChangedFunc is called when the WiFi SSID changes.
 type SSIDChangedFunc func(oldSSID, newSSID string)

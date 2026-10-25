@@ -4,7 +4,8 @@
     "connecting": "연결 중…",
     "connected": "연결됨",
     "no_handshake": "핸드셰이크 없음",
-    "blocked": "차단됨"
+    "blocked": "차단됨",
+    "blocked_message": "연결이 끊어졌습니다. 이 터널을 다시 연결하거나 연결 해제할 때까지 킬 스위치가 모든 트래픽을 차단합니다."
   },
   "nav": {
     "tunnels": "터널",

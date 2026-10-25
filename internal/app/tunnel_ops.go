@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/ipc"
@@ -456,7 +457,7 @@ func (s *TunnelService) GetTunnelDetail(name string) (*domain.WireGuardConfig, e
 }
 
 // isTunnelActive reports whether name is anywhere in the helper's full set
-// of currently active tunnels (WireGuard AND OpenVPN, any number of each —
+// of currently running tunnels (WireGuard AND OpenVPN, any number of each —
 // the app supports multiple concurrent tunnels). Checking only
 // MethodActiveName (a single name, WG-first with an OVPN fallback for when
 // no WG tunnel is up) was wrong: with e.g. a WireGuard tunnel A and an
@@ -464,33 +465,57 @@ func (s *TunnelService) GetTunnelDetail(name string) (*domain.WireGuardConfig, e
 // only compared against ActiveName let B be deleted/renamed/edited right out
 // from under the still-running helper.
 func (s *TunnelService) isTunnelActive(name string) (bool, error) {
-	names, err := s.activeTunnelNames()
+	active, err := s.activeTunnels()
 	if err != nil {
 		return false, err
 	}
-	for _, n := range names {
-		if n == name {
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.Contains(active.Names, name), nil
 }
 
-// activeTunnelNames returns every currently active tunnel name (WireGuard
-// AND OpenVPN — the helper supports multiple concurrent tunnels). Exported
-// for callers outside this package that need to act on the full active set
-// rather than the single "primary" name MethodActiveName reports (e.g. the
-// Wi-Fi auto-connect lifecycle's "disconnect everything" path).
-func (s *TunnelService) activeTunnelNames() ([]string, error) {
+// isTunnelTracked reports whether the helper holds any state under name:
+// running, or protected (reconnecting, or kept blocked by the kill switch).
+// Rename and edit refuse tracked tunnels: the helper's hold or block is
+// keyed by name and would otherwise outlive the stored tunnel.
+func (s *TunnelService) isTunnelTracked(name string) (bool, error) {
+	active, err := s.activeTunnels()
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(active.Names, name) || slices.Contains(active.Protected, name), nil
+}
+
+func (s *TunnelService) activeTunnels() (ipc.ActiveTunnelsResponse, error) {
 	var active ipc.ActiveTunnelsResponse
-	if err := s.call(ipc.MethodActiveTunnels, nil, &active); err != nil {
+	err := s.call(ipc.MethodActiveTunnels, nil, &active)
+	return active, err
+}
+
+// trackedTunnelNames returns every tunnel the helper tracks: running ones
+// (WireGuard AND OpenVPN — the helper supports multiple concurrent tunnels)
+// plus protected ones (reconnecting, or blocked by the kill switch). For
+// callers that tear everything down (quit, the Wi-Fi auto-connect
+// lifecycle's "disconnect everything" path): a Disconnect also releases a
+// block, which would otherwise outlive the GUI with nothing showing why.
+func (s *TunnelService) trackedTunnelNames() ([]string, error) {
+	active, err := s.activeTunnels()
+	if err != nil {
 		return nil, err
 	}
-	return active.Names, nil
+	names := slices.Clone(active.Names)
+	for _, n := range active.Protected {
+		if !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	return names, nil
 }
 
-// DeleteTunnel removes a tunnel from local storage. Rejects deletion of the
-// currently connected tunnel (would orphan the interface).
+// DeleteTunnel removes a tunnel from local storage. Rejects deletion of a
+// running tunnel (would orphan the interface). Otherwise it first asks the
+// helper to Disconnect the name, which is a no-op for an idle tunnel and
+// releases a reconnecting or kill-switch-blocked one (holds, block, kept
+// error, pending retries): deleting it behind the helper's back would leave
+// an invisible block-all. Fails closed if the helper is unreachable.
 func (s *TunnelService) DeleteTunnel(name string) error {
 	active, err := s.isTunnelActive(name)
 	if err != nil {
@@ -498,6 +523,9 @@ func (s *TunnelService) DeleteTunnel(name string) error {
 	}
 	if active {
 		return fmt.Errorf("cannot delete connected tunnel %q — disconnect first", name)
+	}
+	if err := s.DisconnectTunnel(name); err != nil {
+		return fmt.Errorf("cannot release tunnel %q in the helper: %w", name, err)
 	}
 	// Best-effort: remove any stored OpenVPN credentials for this tunnel. Done
 	// directly (not via IPC) since Keychain access works from the GUI process
@@ -510,8 +538,9 @@ func (s *TunnelService) DeleteTunnel(name string) error {
 	return s.tunnelStore.Delete(name)
 }
 
-// RenameTunnel changes a tunnel's name. Rejects rename of the connected
-// tunnel since the interface name is derived from it. For OpenVPN tunnels,
+// RenameTunnel changes a tunnel's name. Rejects rename of a tunnel the
+// helper tracks (running, reconnecting or blocked): the interface name and
+// the helper's holds are keyed by it. For OpenVPN tunnels,
 // also migrates any Keychain-stored credentials to the new name — otherwise
 // they're silently orphaned under the old name (GetSavedCredentials(newName)
 // comes back empty, forcing the user to re-enter them, while the stale
@@ -520,12 +549,12 @@ func (s *TunnelService) RenameTunnel(oldName, newName string) error {
 	if err := storage.ValidateTunnelName(newName); err != nil {
 		return err
 	}
-	active, err := s.isTunnelActive(oldName)
+	tracked, err := s.isTunnelTracked(oldName)
 	if err != nil {
 		return fmt.Errorf("cannot verify tunnel state (helper unreachable): %w", err)
 	}
-	if active {
-		return fmt.Errorf("cannot rename connected tunnel %q — disconnect first", oldName)
+	if tracked {
+		return fmt.Errorf("cannot rename tunnel %q while it is connected, reconnecting or blocked — disconnect first", oldName)
 	}
 	isOVPN := s.tunnelStore.IsOVPN(oldName)
 	if err := s.tunnelStore.Rename(oldName, newName); err != nil {

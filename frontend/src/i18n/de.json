@@ -4,7 +4,8 @@
     "connecting": "Verbinde...",
     "connected": "Verbunden",
     "no_handshake": "Kein Handshake",
-    "blocked": "Blockiert"
+    "blocked": "Blockiert",
+    "blocked_message": "Verbindung verloren. Der Kill Switch blockiert den gesamten Datenverkehr, bis du diesen Tunnel neu verbindest oder trennst."
   },
   "nav": {
     "tunnels": "Tunnel",

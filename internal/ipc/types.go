@@ -127,9 +127,14 @@ type DisconnectRequest struct {
 	TunnelName string `json:"tunnel_name,omitempty"`
 }
 
-// ActiveTunnelsResponse lists all currently active tunnel names.
+// ActiveTunnelsResponse lists the tunnels the helper tracks. Names are the
+// running ones (connected or connecting). Protected are tunnels that are not
+// running but still hold kill-switch state under their name: reconnecting
+// (held or pending) or blocked after dying. A protected tunnel must not be
+// renamed, edited or deleted without a Disconnect, which releases it.
 type ActiveTunnelsResponse struct {
-	Names []string `json:"names"`
+	Names     []string `json:"names"`
+	Protected []string `json:"protected,omitempty"`
 }
 
 // MultiStatusResponse carries status for every active tunnel plus an

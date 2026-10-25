@@ -271,9 +271,13 @@ func (m *Manager) start(name string, e *entry, ovpnContent []byte) (*exec.Cmd, e
 //     required for CRV1 (the challenge arrives as a failure).
 //   - --persist-tun keeps the same utun across restarts so the kill-switch
 //     rule stays valid.
-//   - --persist-remote-ip keeps the last authenticated remote ip:port (and
-//     skips re-resolving) across SIGUSR1/ping-restart restarts, so the
-//     CONNECTED-time remote the kill switch passes is the one reused.
+//   - --persist-remote-ip, for a profile with exactly one remote only (after
+//     <connection> expansion): keeps the last authenticated remote ip:port
+//     (and skips re-resolving) across SIGUSR1/ping-restart restarts, so the
+//     CONNECTED-time remote the kill switch passes is the one reused. A
+//     multi-remote profile goes without it (it would pin a dead remote); the
+//     helper then passes all of its remotes and recycles a process stuck in
+//     its own reconnect (see the helper's OpenVPN watchdog).
 //   - keepalive/mssfix floors only when the profile sets none, so a
 //     provider's tuned values win.
 func (m *Manager) args(cfgPath, sockPath string, p *profile) []string {
@@ -286,8 +290,10 @@ func (m *Manager) args(cfgPath, sockPath string, p *profile) []string {
 		"--dns-updown", "disable",
 		"--auth-retry", "interact",
 		"--persist-tun",
-		"--persist-remote-ip",
 		"--verb", p.runtimeVerb(),
+	}
+	if p.persistRemoteIP() {
+		args = append(args, "--persist-remote-ip")
 	}
 	if !p.hasKeepalive {
 		args = append(args, "--ping", "10", "--ping-restart", "60")
@@ -683,6 +689,19 @@ func (m *Manager) FeedCredentials(name, username, fullPassword, response string)
 	default:
 		return fmt.Errorf("tunnel %q is not waiting for credentials", name)
 	}
+}
+
+// persistRemoteIP reports whether --persist-remote-ip is safe: only with a
+// single remote. Upstream FIXME (openvpn init.c ~544-568, next_connection_entry):
+// persist-remote-ip is broken with connection lists/multiple remotes.
+func (p *profile) persistRemoteIP() bool { return len(p.cfg.Remotes) == 1 }
+
+// Recycle stops a running tunnel's openvpn as an unexpected death (not a
+// user disconnect): an active tunnel is then reported through onDied, so
+// the helper holds it and the reconnect monitor starts a fresh process, or,
+// without auto-reconnect, the kill switch keeps it blocked.
+func (m *Manager) Recycle(name string) error {
+	return m.stop(name, false)
 }
 
 // Disconnect asks openvpn to exit; supervise reaps and cleans up.

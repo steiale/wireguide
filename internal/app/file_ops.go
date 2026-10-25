@@ -306,15 +306,16 @@ func (s *TunnelService) GetConfigText(name string) (string, error) {
 }
 
 // UpdateConfig parses, validates, and overwrites an existing tunnel's config.
-// Rejects edits of the connected tunnel. Routes to the OpenVPN path for .ovpn
+// Rejects edits of a tunnel the helper tracks (running, reconnecting or
+// blocked). Routes to the OpenVPN path for .ovpn
 // tunnels so the raw config is saved without WireGuard parsing.
 func (s *TunnelService) UpdateConfig(name, content string) error {
-	active, err := s.isTunnelActive(name)
+	tracked, err := s.isTunnelTracked(name)
 	if err != nil {
 		return fmt.Errorf("cannot verify tunnel state: %w", err)
 	}
-	if active {
-		return fmt.Errorf("cannot edit connected tunnel %q — disconnect first", name)
+	if tracked {
+		return fmt.Errorf("cannot edit tunnel %q while it is connected, reconnecting or blocked — disconnect first", name)
 	}
 	if s.tunnelStore.IsOVPN(name) {
 		if err := ovpn.ValidateOVPN([]byte(content)); err != nil {

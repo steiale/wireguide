@@ -3,6 +3,7 @@ package ovpn
 import (
 	"encoding/base64"
 	"net"
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -177,30 +178,77 @@ func TestInterfaceAfterConnectedReapplies(t *testing.T) {
 	}
 }
 
-// Stop waits for each tunnel's teardown before returning.
+// Stop waits for each tunnel's teardown before returning. Asserted on what
+// cleanup itself does (entry removed, runtime files gone, final status
+// emitted), all of which happens before it closes e.done.
 func TestStopWaitsForCleanup(t *testing.T) {
-	m, _ := newTestManager(t)
+	m, spy := newTestManager(t)
 	addEntry(m, "t")
-	cleaned := make(chan struct{})
+	for _, p := range []string{m.configPath("t"), m.sockPath("t"), m.pidPath("t")} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 		m.cleanup("t")
-		close(cleaned)
 	}()
 	start := time.Now()
 	m.Stop()
-	select {
-	case <-cleaned:
-	default:
-		t.Fatalf("Stop returned after %v before cleanup finished", time.Since(start))
+	if m.GetStatus("t") != nil {
+		t.Fatalf("Stop returned after %v with the entry still present", time.Since(start))
+	}
+	for _, p := range []string{m.configPath("t"), m.sockPath("t"), m.pidPath("t")} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("Stop returned before cleanup removed %s", p)
+		}
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if n := len(spy.statuses); n == 0 || spy.statuses[n-1].State != domain.StateDisconnected {
+		t.Fatalf("final status not emitted before Stop returned: %+v", spy.statuses)
 	}
 }
 
+// --persist-remote-ip only for a single-remote profile (after <connection>
+// expansion): openvpn's persist-remote-ip is broken with multiple remotes.
 func TestArgsPersistRemoteIP(t *testing.T) {
 	m, _ := newTestManager(t)
-	args := m.args("c", "s", &profile{verb: -1})
-	if !slices.Contains(args, "--persist-remote-ip") || !slices.Contains(args, "--persist-tun") {
-		t.Fatalf("args = %v", args)
+	for _, tc := range []struct {
+		profile string
+		want    bool
+	}{
+		{"client\nremote a.example 1194\n", true},
+		{"client\n<connection>\nremote a.example\n</connection>\n", true},
+		{"client\nremote a.example\nremote b.example\n", false},
+		{"client\nremote 192.0.2.1\n<connection>\nremote b.example\n</connection>\n", false},
+	} {
+		p, err := inspectProfile([]byte(tc.profile))
+		if err != nil {
+			t.Fatalf("%q: %v", tc.profile, err)
+		}
+		args := m.args("c", "s", p)
+		if slices.Contains(args, "--persist-remote-ip") != tc.want || !slices.Contains(args, "--persist-tun") {
+			t.Errorf("%q: args = %v, want persist-remote-ip=%v", tc.profile, args, tc.want)
+		}
+	}
+}
+
+// Recycle is not a user disconnect: an active tunnel it stops is a death.
+func TestRecycleIsDeath(t *testing.T) {
+	m, spy := newTestManager(t)
+	e := addEntry(m, "t")
+	m.onMgmtState("t", "CONNECTED", "", "203.0.113.5:1194")
+	m.onMgmtState("t", "RECONNECTING", "", "")
+	if err := m.Recycle("t"); err != nil {
+		t.Fatal(err)
+	}
+	if e.userInitiated {
+		t.Fatal("recycle marked as user-initiated")
+	}
+	m.cleanup("t")
+	if len(spy.died) != 1 {
+		t.Fatalf("onDied = %v, want one death", spy.died)
 	}
 }
 

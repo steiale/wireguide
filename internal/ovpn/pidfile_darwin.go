@@ -109,17 +109,23 @@ func KillStaleProcesses(runtimeDir, binaryPath string) []string {
 			slog.Warn("ovpn: ignoring stale pid file", "path", path, "error", err)
 			continue
 		}
-		exe, err := procExecPath(pid)
-		if err != nil || filepath.Clean(exe) != filepath.Clean(binaryPath) {
+		// The pid can be recycled at any point after the openvpn exits, so
+		// the executable is re-checked right before every signal and on each
+		// poll: once it no longer matches, the pid is never signalled again.
+		ours := func() bool {
+			exe, err := procExecPath(pid)
+			return err == nil && filepath.Clean(exe) == filepath.Clean(binaryPath)
+		}
+		if !ours() {
 			continue // gone, or the pid now belongs to something else
 		}
 		slog.Warn("ovpn: killing orphaned openvpn from a previous helper", "tunnel", name, "pid", pid)
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) && processAlive(pid) {
+		for time.Now().Before(deadline) && processAlive(pid) && ours() {
 			time.Sleep(100 * time.Millisecond)
 		}
-		if processAlive(pid) {
+		if processAlive(pid) && ours() {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 		killed = append(killed, name)

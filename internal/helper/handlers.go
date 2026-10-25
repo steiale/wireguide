@@ -77,17 +77,19 @@ func (h *Helper) handleShutdown(params json.RawMessage) (interface{}, error) {
 }
 
 func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
-	h.connectMu.Lock()
-	defer h.connectMu.Unlock()
-
 	var req ipc.ConnectRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
+	// DNS lookups happen before connectMu (see preResolveConnect).
+	resolved := h.preResolveConnect(&req)
+
+	h.connectMu.Lock()
+	defer h.connectMu.Unlock()
 
 	// An empty protocol means WireGuard.
 	if domain.NormalizeProtocol(req.Protocol) == domain.ProtocolOpenVPN {
-		return h.connectOpenVPN(&req)
+		return h.connectOpenVPN(&req, resolved)
 	}
 
 	if req.Config == nil {
@@ -140,7 +142,7 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	h.activeCfgs[name] = req.Config
 	h.autoReconnect[name] = req.AutoReconnect
 	h.mu.Unlock()
-	lifted := h.liftBlockForConnect(name)
+	lifted := h.liftBlockForConnect(name, resolved)
 
 	if err := h.manager.Connect(req.Config); err != nil {
 		h.mu.Lock()
@@ -167,21 +169,29 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 
 // liftBlockForConnect turns a kill-switch block on name (a dead tunnel the
 // user now reconnects) into a pending hold: everything stays blocked except
-// the tunnel's own server endpoints, resolved first if they are hostnames,
-// so the connect can get out. Returns whether a block was lifted. Caller
-// holds connectMu.
-func (h *Helper) liftBlockForConnect(name string) bool {
+// the tunnel's own server endpoints (IP literals, plus the hostname
+// endpoints resolved by preResolveConnect before connectMu was taken), so
+// the connect can get out. It records resolved either way (a multi-remote
+// OpenVPN tunnel passes them while active). No DNS lookup happens here:
+// the caller holds connectMu. Returns whether a block was lifted.
+func (h *Helper) liftBlockForConnect(name string, resolved []literalEndpoint) bool {
 	h.mu.Lock()
 	_, blocked := h.fwBlocked[name]
 	if blocked {
 		delete(h.fwBlocked, name)
 		h.fwPending[name] = true
 	}
+	if len(resolved) > 0 {
+		h.storeResolvedLocked(name, resolved)
+	} else if _, hosts := h.configuredEndpointsLocked(name); blocked && len(hosts) > 0 {
+		// Blocked only after preResolveConnect looked (it died meanwhile):
+		// its hostname endpoints are passed if earlier resolved, else not.
+		slog.Warn("lifting kill-switch block without fresh hostname resolution", "tunnel", name)
+	}
 	h.mu.Unlock()
 	if !blocked {
 		return false
 	}
-	h.passResolvedHostnames(name)
 	_ = h.applyFirewall("connect-lift-block")
 	return true
 }
@@ -267,12 +277,39 @@ func (h *Helper) handleActiveName(params json.RawMessage) (interface{}, error) {
 	return ipc.StringResponse{Value: name}, nil
 }
 
+// handleActiveTunnels reports running tunnels (Names) separately from
+// protected ones (Protected): not running, but held for reconnect or kept
+// blocked by the kill switch under their name (see ActiveTunnelsResponse).
 func (h *Helper) handleActiveTunnels(params json.RawMessage) (interface{}, error) {
 	names := h.manager.ActiveTunnels()
 	if h.ovpnManager != nil {
 		names = append(names, h.ovpnManager.ActiveTunnelNames()...)
 	}
-	return ipc.ActiveTunnelsResponse{Names: names}, nil
+	return ipc.ActiveTunnelsResponse{Names: names, Protected: h.protectedTunnels(names)}, nil
+}
+
+// protectedTunnels returns, sorted, every tunnel with a reconnect hold,
+// pending hold or kill-switch block that is not in running.
+func (h *Helper) protectedTunnels(running []string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	add := func(name string) {
+		if !slices.Contains(running, name) && !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	for name := range h.fwHeld {
+		add(name)
+	}
+	for name := range h.fwPending {
+		add(name)
+	}
+	for name := range h.fwBlocked {
+		add(name)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // handleSetKillSwitch sets the kill switch policy (see firewall.go): stored,
@@ -348,7 +385,7 @@ func (h *Helper) handleSetPinInterface(params json.RawMessage) (interface{}, err
 // connectOpenVPN brings up an OpenVPN tunnel. Called from handleConnect (which
 // already holds connectMu) when the request protocol is OpenVPN. The raw .ovpn
 // content is validated server-side and handed to the OpenVPN manager.
-func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
+func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest, resolved []literalEndpoint) (interface{}, error) {
 	if h.ovpnManager == nil {
 		return nil, fmt.Errorf("openvpn support not available")
 	}
@@ -388,7 +425,7 @@ func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
 	h.activeOVPNCfgs[req.TunnelName] = []byte(req.OVPNConfig)
 	h.autoReconnect[req.TunnelName] = req.AutoReconnect
 	h.mu.Unlock()
-	lifted := h.liftBlockForConnect(req.TunnelName)
+	lifted := h.liftBlockForConnect(req.TunnelName, resolved)
 
 	if err := h.ovpnManager.Connect(req.TunnelName, []byte(req.OVPNConfig)); err != nil {
 		h.mu.Lock()

@@ -11,8 +11,10 @@ import (
 
 	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/firewall"
+	"github.com/steiale/wireguide/internal/ipc"
 	"github.com/steiale/wireguide/internal/network"
 	"github.com/steiale/wireguide/internal/ovpn"
+	"github.com/steiale/wireguide/internal/storage"
 )
 
 // Firewall policy model.
@@ -26,6 +28,11 @@ import (
 //   - tunnels up (WireGuard connected; OpenVPN active, including while
 //     openvpn itself is RECONNECTING): block-all except their interfaces
 //     and endpoints; DNS protection allows only the tunnels' DNS servers.
+//     A multi-remote OpenVPN profile (no --persist-remote-ip) passes every
+//     remote while active, since openvpn may fail over to any of them in its
+//     own reconnect: IP literals plus hostname remotes resolved at connect
+//     time (no DNS window during that internal reconnect; the watchdog in
+//     helper.go recycles a process stuck there).
 //   - a tunnel reconnecting (held by the reconnect monitor, or pending
 //     between its death and the monitor taking over): its server endpoints
 //     (cached and configured) stay passed on any interface. While a hostname
@@ -47,6 +54,10 @@ type fwPolicy struct {
 type cachedEndpoints struct {
 	passes   []firewall.KillSwitchTunnel // endpoint-only entries (no interface)
 	hostname bool                        // configured endpoint is a hostname that needs DNS
+	// resolved holds the configured hostname endpoints as resolved at the
+	// last connect or reconnect attempt, passed while the tunnel is held
+	// and, for a multi-remote OpenVPN tunnel, while it is active.
+	resolved []literalEndpoint
 }
 
 // addPass adds ep (proto) to c unless already present.
@@ -62,9 +73,27 @@ func (c *cachedEndpoints) addPass(proto, ep string) {
 	c.passes = append(c.passes, firewall.KillSwitchTunnel{Proto: proto, Endpoints: []string{ep}})
 }
 
-// blockedMessage is the status text of a tunnel kept blocked (item: the
-// GUI's error line on the tunnel card).
-const blockedMessage = "Connection lost. The kill switch is blocking all traffic until you reconnect or disconnect this tunnel."
+// endpointPassesLocked returns every server pass known for name, as fresh
+// slices: the cached (last connected) passes, every configured IP-literal
+// remote (a multi-remote profile can come back on any of them) and the
+// resolved hostname remotes. Caller holds h.mu.
+func (h *Helper) endpointPassesLocked(name string) []firewall.KillSwitchTunnel {
+	var out cachedEndpoints
+	c := h.fwEndpoints[name]
+	for _, p := range c.passes {
+		for _, ep := range p.Endpoints {
+			out.addPass(p.Proto, ep)
+		}
+	}
+	literal, _ := h.configuredEndpointsLocked(name)
+	for _, l := range literal {
+		out.addPass(l.proto, l.ep)
+	}
+	for _, r := range c.resolved {
+		out.addPass(r.proto, r.ep)
+	}
+	return out.passes
+}
 
 // isHeldLocked reports whether name is in a reconnect hold. Caller holds h.mu.
 func (h *Helper) isHeldLocked(name string) bool {
@@ -140,12 +169,22 @@ func (h *Helper) applyFirewall(reason string) error {
 	for i, name := range names {
 		delete(h.fwBlocked, name) // up again: no longer a dead tunnel
 		_, hosts := h.configuredEndpointsLocked(name)
-		h.fwEndpoints[name] = cachedEndpoints{
-			passes:   []firewall.KillSwitchTunnel{{Proto: tunnels[i].Proto, Endpoints: slices.Clone(tunnels[i].Endpoints)}},
-			hostname: len(hosts) > 0,
-		}
+		c := h.fwEndpoints[name] // keeps resolved
+		c.passes = []firewall.KillSwitchTunnel{{Proto: tunnels[i].Proto, Endpoints: slices.Clone(tunnels[i].Endpoints)}}
+		c.hostname = len(hosts) > 0
+		h.fwEndpoints[name] = c
 	}
 	rs := firewall.Ruleset{KillSwitch: pol.killSwitch, DNSProtection: pol.dnsProtection, DNSServers: dns, Tunnels: tunnels}
+	// A live multi-remote OpenVPN tunnel: every remote stays passed, so its
+	// own failover during RECONNECTING can reach any of them.
+	for i, name := range names {
+		if i > 0 && names[i-1] == name || !h.isMultiRemoteOVPNLocked(name) {
+			continue
+		}
+		for _, p := range h.endpointPassesLocked(name) {
+			rs.Tunnels = append(rs.Tunnels, firewall.KillSwitchTunnel{Proto: p.Proto, Endpoints: p.Endpoints})
+		}
+	}
 	held := make([]string, 0, len(h.fwHeld)+len(h.fwPending))
 	for name := range h.fwHeld {
 		held = append(held, name)
@@ -160,19 +199,11 @@ func (h *Helper) applyFirewall(reason string) error {
 		if slices.Contains(names, name) {
 			continue
 		}
-		// Cached (last connected) passes plus every configured IP-literal
-		// remote, so a multi-remote profile can come back on any of them.
-		c := h.fwEndpoints[name]
-		literal, _ := h.configuredEndpointsLocked(name)
-		for _, l := range literal {
-			c.addPass(l.proto, l.ep)
+		passes := h.endpointPassesLocked(name)
+		for _, p := range passes {
+			rs.Tunnels = append(rs.Tunnels, firewall.KillSwitchTunnel{Proto: p.Proto, Endpoints: p.Endpoints})
 		}
-		for _, p := range c.passes {
-			if len(p.Endpoints) > 0 {
-				rs.Tunnels = append(rs.Tunnels, firewall.KillSwitchTunnel{Proto: p.Proto, Endpoints: slices.Clone(p.Endpoints)})
-			}
-		}
-		if len(c.passes) == 0 {
+		if len(passes) == 0 {
 			// Nothing known yet: still keep the ruleset (blocked) rather than
 			// flushing it while the tunnel is down.
 			rs.Tunnels = append(rs.Tunnels, firewall.KillSwitchTunnel{})
@@ -186,7 +217,10 @@ func (h *Helper) applyFirewall(reason string) error {
 		}
 	}
 	for name := range h.fwEndpoints {
-		if !slices.Contains(names, name) && !h.isHeldLocked(name) {
+		// An OpenVPN tunnel keeps its connect-time resolved remotes while it
+		// is wanted, including between Connect and CONNECTED.
+		_, wanted := h.activeOVPNCfgs[name]
+		if !slices.Contains(names, name) && !h.isHeldLocked(name) && !wanted {
 			delete(h.fwEndpoints, name)
 		}
 	}
@@ -297,11 +331,61 @@ var resolveHost = func(ctx context.Context, host string) ([]string, error) {
 // systemResolvers is network.SystemResolvers; a var for tests.
 var systemResolvers = network.SystemResolvers
 
+// lookupBudget bounds one resolveEndpoints call in total (each lookup is
+// also capped at lookupTimeout); vars for tests.
+var (
+	lookupBudget  = 10 * time.Second
+	lookupTimeout = 5 * time.Second
+)
+
+// resolveEndpoints resolves hosts to ip:port literals. It does no firewall
+// work: callers that need port 53 open wrap it in openLookupWindow.
+func resolveEndpoints(name string, hosts []hostPort) []literalEndpoint {
+	budget, cancelBudget := context.WithTimeout(context.Background(), lookupBudget)
+	defer cancelBudget()
+	var out []literalEndpoint
+	for _, hp := range hosts {
+		ctx, cancel := context.WithTimeout(budget, lookupTimeout)
+		ips, err := resolveHost(ctx, hp.host)
+		cancel()
+		if err != nil {
+			slog.Warn("resolving endpoint failed", "tunnel", name, "host", hp.host, "error", err)
+			continue
+		}
+		for _, ip := range ips {
+			out = append(out, literalEndpoint{net.JoinHostPort(ip, hp.port), hp.proto})
+		}
+	}
+	return out
+}
+
+// openLookupWindow passes port 53 to the system resolvers (only) while
+// name's endpoints are resolved; the caller deletes dnsLookups[name] and
+// re-applies when done.
+func (h *Helper) openLookupWindow(name string) {
+	resolvers := systemResolvers()
+	h.mu.Lock()
+	h.dnsLookups[name] = resolvers
+	h.mu.Unlock()
+	_ = h.applyFirewall("endpoint-lookup")
+}
+
+// storeResolvedLocked records name's resolved hostname endpoints (kept if
+// the lookup found nothing). Caller holds h.mu.
+func (h *Helper) storeResolvedLocked(name string, answers []literalEndpoint) {
+	c := h.fwEndpoints[name]
+	c.hostname = true
+	if len(answers) > 0 {
+		c.resolved = answers
+	}
+	h.fwEndpoints[name] = c
+}
+
 // passResolvedHostnames resolves a held tunnel's hostname endpoints and adds
 // the answers to its pass list before a reconnect attempt, so the attempt
 // (which resolves the same names moments later, from mDNSResponder's cache)
 // can reach the server. Port 53 to the system resolvers is opened only for
-// the duration of these lookups.
+// the duration of these lookups. Never called under connectMu.
 func (h *Helper) passResolvedHostnames(name string) {
 	h.mu.Lock()
 	_, hosts := h.configuredEndpointsLocked(name)
@@ -309,38 +393,74 @@ func (h *Helper) passResolvedHostnames(name string) {
 	if len(hosts) == 0 {
 		return
 	}
-	resolvers := systemResolvers()
-	h.mu.Lock()
-	h.dnsLookups[name] = resolvers
-	h.mu.Unlock()
-	_ = h.applyFirewall("reconnect-lookup")
-
-	type answer struct {
-		proto, ep string
-	}
-	var added []answer
-	for _, hp := range hosts {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		ips, err := resolveHost(ctx, hp.host)
-		cancel()
-		if err != nil {
-			slog.Warn("reconnect: resolving endpoint failed", "tunnel", name, "host", hp.host, "error", err)
-			continue
-		}
-		for _, ip := range ips {
-			added = append(added, answer{hp.proto, net.JoinHostPort(ip, hp.port)})
-		}
-	}
-
+	h.openLookupWindow(name)
+	answers := resolveEndpoints(name, hosts)
 	h.mu.Lock()
 	delete(h.dnsLookups, name)
-	c := h.fwEndpoints[name]
-	c.hostname = true
-	for _, a := range added {
-		c.addPass(a.proto, a.ep)
-	}
-	// Only kept (and pruned) while the tunnel is held or live.
-	h.fwEndpoints[name] = c
+	h.storeResolvedLocked(name, answers)
 	h.mu.Unlock()
 	_ = h.applyFirewall("reconnect-resolve")
+}
+
+// connectHosts returns the hostname endpoints of a connect request and
+// whether it is a multi-remote OpenVPN profile. Unvalidated requests (the
+// connect itself rejects them) yield nothing.
+func connectHosts(req *ipc.ConnectRequest) (name string, hosts []hostPort, multi bool) {
+	if domain.NormalizeProtocol(req.Protocol) == domain.ProtocolOpenVPN {
+		if storage.ValidateTunnelName(req.TunnelName) != nil || ovpn.ValidateOVPN([]byte(req.OVPNConfig)) != nil {
+			return "", nil, false
+		}
+		cfg, err := ovpn.ParseOVPN([]byte(req.OVPNConfig))
+		if err != nil {
+			return "", nil, false
+		}
+		for _, r := range cfg.Remotes {
+			if net.ParseIP(r.Host) == nil {
+				hosts = append(hosts, hostPort{r.Host, r.Port, r.Proto})
+			}
+		}
+		return req.TunnelName, hosts, len(cfg.Remotes) > 1
+	}
+	if req.Config == nil || storage.ValidateTunnelName(req.Config.Name) != nil {
+		return "", nil, false
+	}
+	for _, p := range req.Config.Peers {
+		host, port, err := net.SplitHostPort(p.Endpoint)
+		if err == nil && net.ParseIP(host) == nil {
+			hosts = append(hosts, hostPort{host, port, "udp"})
+		}
+	}
+	return req.Config.Name, hosts, false
+}
+
+// preResolveConnect resolves a connect request's hostname endpoints BEFORE
+// handleConnect takes connectMu (a lookup can take seconds, and Disconnect
+// must not wait for it). Needed when the tunnel is blocked (the lifted
+// block passes only its endpoints) or is a multi-remote OpenVPN profile
+// (every remote is passed while active). Under the kill switch port 53 to
+// the system resolvers is passed for the lookup only. The caller re-checks
+// the block under connectMu (liftBlockForConnect).
+func (h *Helper) preResolveConnect(req *ipc.ConnectRequest) []literalEndpoint {
+	name, hosts, multi := connectHosts(req)
+	if name == "" || len(hosts) == 0 {
+		return nil
+	}
+	h.mu.Lock()
+	_, blocked := h.fwBlocked[name]
+	ks := h.policy.killSwitch
+	h.mu.Unlock()
+	if !blocked && !multi {
+		return nil
+	}
+	if ks {
+		h.openLookupWindow(name)
+	}
+	answers := resolveEndpoints(name, hosts)
+	if ks {
+		h.mu.Lock()
+		delete(h.dnsLookups, name)
+		h.mu.Unlock()
+		_ = h.applyFirewall("connect-resolve")
+	}
+	return answers
 }

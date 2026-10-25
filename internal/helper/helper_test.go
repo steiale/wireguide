@@ -195,10 +195,24 @@ type fakeOVPN struct {
 	awaiting bool
 	polls    int
 	onPoll   func(f *fakeOVPN, n int) // called under mu on each GetStatus
+
+	connected []string
+	recycled  []string
 }
 
-func (f *fakeOVPN) Connect(string, []byte) error            { return nil }
-func (f *fakeOVPN) Disconnect(string) error                 { return nil }
+func (f *fakeOVPN) Connect(name string, _ []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.connected = append(f.connected, name)
+	return nil
+}
+func (f *fakeOVPN) Disconnect(string) error { return nil }
+func (f *fakeOVPN) Recycle(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recycled = append(f.recycled, name)
+	return nil
+}
 func (f *fakeOVPN) FeedCredentials(_, _, _, _ string) error { return nil }
 func (f *fakeOVPN) SetOnDied(func(string))                  {}
 func (f *fakeOVPN) Stop()                                   {}

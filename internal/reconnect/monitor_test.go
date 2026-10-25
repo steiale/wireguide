@@ -902,3 +902,42 @@ func TestErrGiveUp_EndsSequence(t *testing.T) {
 		t.Fatalf("retry state not cleared: %v", mon.retries)
 	}
 }
+
+// A replacement sequence takes its firewall hold before the old sequence is
+// cancelled, so the old release never ends the (counted) hold: the hold
+// count never drops to zero across the handover.
+func TestReplacementHoldsBeforeOldRelease(t *testing.T) {
+	cfg := testConfig()
+	cfg.InitialDelay = time.Hour // both sequences wait in backoff
+	mon, _, _ := newTestMonitor(cfg, func(string) error { return errors.New("fail") })
+	var mu sync.Mutex
+	held, minAfterFirst := 0, 99
+	mon.SetFirewallCallbacks(
+		func(string) error { mu.Lock(); held++; mu.Unlock(); return nil },
+		func(string) error {
+			mu.Lock()
+			held--
+			minAfterFirst = min(minAfterFirst, held)
+			mu.Unlock()
+			return nil
+		},
+	)
+	mon.mu.Lock()
+	mon.running = true
+	mon.mu.Unlock()
+
+	mon.triggerReconnectTunnel("t")
+	mon.triggerReconnectTunnel("t") // replaces the first
+	mu.Lock()
+	if held != 1 || minAfterFirst != 1 {
+		mu.Unlock()
+		t.Fatalf("after replacement held=%d, min during handover=%d; want 1, 1", held, minAfterFirst)
+	}
+	mu.Unlock()
+	mon.CancelRetry("t")
+	waitFor(t, 2*time.Second, "last hold released", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return held == 0
+	})
+}

@@ -26,8 +26,10 @@ func SetWindow(s *TunnelService, win *application.WebviewWindow) { s.setWindow(w
 // ListTunnelsLocal returns stored tunnels without an IPC round-trip (tray).
 func ListTunnelsLocal(s *TunnelService) ([]TunnelInfo, error) { return s.listTunnelsLocal() }
 
-// ActiveTunnelNames returns every currently active tunnel name.
-func ActiveTunnelNames(s *TunnelService) ([]string, error) { return s.activeTunnelNames() }
+// ActiveTunnelNames returns every tunnel the helper tracks: running, or
+// protected (reconnecting, or blocked by the kill switch). Disconnecting
+// each releases all of them.
+func ActiveTunnelNames(s *TunnelService) ([]string, error) { return s.trackedTunnelNames() }
 
 // ReconcileHistoryFromStatus syncs history sessions against helper status.
 func ReconcileHistoryFromStatus(s *TunnelService, activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string) {
