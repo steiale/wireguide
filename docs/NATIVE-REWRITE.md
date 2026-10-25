@@ -22,7 +22,7 @@ LockPlus will only ever target macOS. The rewrite is native Swift:
 | Kill switch | `includeAllNetworks` (full tunnel) / `enforceRoutes` (split) | pf anchors |
 | DNS | `NEDNSSettings` (`matchDomains: [""]` for full, explicit domains for split) | networksetup/scutil + DNS journal |
 | Wi-Fi auto-connect | `NEOnDemandRule` with `ssidMatch` | CoreWLAN polling + Location |
-| Secrets | app: data-protection keychain; extension: System keychain copy, handed over via XPC | legacy file keychain |
+| Secrets | app: data-protection keychain; extension: sealed root-owned 0600 files in its own sandbox container, handed over via XPC (System keychain only as an optional upgrade, see DESIGN §6.3) | legacy file keychain |
 | Updates | Sparkle 2 (EdDSA, deltas) | custom GitHub + Ed25519 updater that only revealed the zip |
 | Login item | `SMAppService.mainApp` | LaunchAgent plist, later the Wails AutostartManager |
 | Build | `xcodebuild archive/export` (Xcode 27+) + `notarytool` + create-dmg | go-task Taskfiles + wails3 CLI |
@@ -130,7 +130,7 @@ Each item: what happened (evidence) → the requirement in the native app → th
     - store raw `Data` through the native API only, never on the main thread;
     - key items by a stable profile UUID, not the display name (a rename orphaned credentials, tunnel_ops.go);
     - the app owns the data-protection copy;
-    - the extension owns its System-keychain copy, imported over XPC with an explicit access group/ACL, and the app never reads it;
+    - the extension owns its own copy, imported over XPC and stored as sealed root-owned 0600 files in its sandbox container; the app never reads it. (Revised 2026-10-25: a sandboxed NE system extension runs into sandbox violations on the System keychain (DTS, forum 672456), `SecAccess` is deprecated, and partition lists can't be set through a supported API (forum 98182). Root ownership is the real boundary, and admin users are out of scope. See DESIGN §6.3);
     - `passwordReference` written by the app is **not** readable from the extension (-25308).
 
 ### Menu bar
@@ -211,14 +211,15 @@ Practices:
 - Local Network privacy applies to the app if it probes LAN hosts, not to the root extension (TN3179).
 - On-demand rules are evaluated by the system: prototype them with a configuration profile first.
 
-## 5. Phased plan (about 65–95 developer-days)
+## 5. Phased plan (about 77–106 developer-days after the October 2026 design review; was 65–95)
 
 0. **Done in Go (v1.1.0):** dependency upgrades, security hardening, review fixes. The Go app stays the release line until parity.
-1. **Spike (3–5 d):** an openvpn3 shim connecting BHP and AllService with CRV1/SC, plus WireGuardKit (forked, current wireguard-go) in one system extension. Answer the open questions below. **Go/no-go for OpenVPN-in-NE.**
+1. **Spike (15–20 d, re-estimated in DESIGN §18, including test-server infrastructure):** an openvpn3 shim connecting BHP and AllService with CRV1/SC, plus WireGuardKit (forked, current wireguard-go) in one system extension. Answer the open questions below. **Go/no-go for OpenVPN-in-NE.**
 2. **WireGuard beta (about 20 d):**
    - Xcode project, extension activation, WG tunnel;
    - `includeAllNetworks`, `NEDNSSettings`, the two keychain stores;
-   - importer from the Go app, Developer ID export and notarization, DMG, a separate cask.
+   - importer from the Go app, Developer ID export and notarization, DMG, a separate cask;
+   - Sparkle and the update-with-extension-replacement flow (moved here from phase 4, because the beta's N-1 → N update test needs it).
    - Coexistence: refuse to connect while the Go helper's pf anchor is loaded.
 3. **OpenVPN (20–30 d):** shim hardening, the auth UI (password, SC, CRV1), the profile allowlist port, a corpus test of the real profiles, an "unsupported directive" report at import.
 4. **UI parity (15–25 d):**
@@ -226,15 +227,15 @@ Practices:
    - stats (Swift Charts), history, logs (`OSLog`), export/export-all;
    - on-demand Wi-Fi rules, settings, onboarding;
    - String Catalogs (en/de/ko/ja);
-   - Sparkle, `SMAppService.mainApp`, in-app Uninstall.
+   - `SMAppService.mainApp`, in-app Uninstall.
 5. **Cutover (5–10 d):** the Go app's final release runs its uninstaller (helper, pf, DNS). The native app becomes the `lockplus` cask; the old cask is retired.
 
 ## 6. Open questions for the spike
 
 1. Does `ssidMatch` work without Location on macOS 15/27?
-2. How do `includeAllNetworks` and the exclude flags behave on macOS 27 for AirDrop, Xcode device debugging, and Sparkle while blocked?
-3. Does `NEDNSOverHTTPSSettings` inside tunnel network settings work on macOS?
-4. Importing into the System keychain from a sandboxed extension: which access group/ACL avoids -25291 and -25308?
+2. How do `includeAllNetworks` and the exclude flags behave on macOS 15/26/27: for AirDrop, Xcode device debugging and Sparkle while blocked, and does traffic stay blocked after provider `kill -9`, `stopVPNTunnel` and `cancelTunnelWithError`? Does it break the provider's own TCP connects, such as OpenVPN over TCP (DESIGN §10.1.1)?
+3. ~~Does `NEDNSOverHTTPSSettings` inside tunnel network settings work on macOS?~~ Deferred: DoH/DoT is cut from v2.0 (DESIGN §21).
+4. Extension secret storage: do root-owned container files work from the sandboxed extension across replacement, and can a CryptoKit Secure Enclave key wrap their file key (forum 804612)? The System keychain is tested only as an optional upgrade.
 5. Is `sendProviderMessage` enough, or is XPC required? Does the per-version Mach name have side effects?
 6. Does the extension's root context get the TN3179 exemption?
 7. Can WireGuardKit (Go runtime) and openvpn3 (asio + OpenSSL) coexist in one extension process?
@@ -272,6 +273,10 @@ Apple Developer Forums:
 - Packaging, XPC, app groups: https://developer.apple.com/forums/thread/800887
 - XPC breaks after replacement while connected (FB17032197): https://developer.apple.com/forums/thread/779395
 - System keychain hand-off pattern: https://developer.apple.com/forums/thread/680013
+- Sysex keychain limits (sandbox violations on the System keychain): https://developer.apple.com/forums/thread/672456, https://developer.apple.com/forums/thread/824202
+- No supported partition-list API: https://developer.apple.com/forums/thread/98182
+- Secure Enclave keys from daemons via CryptoKit: https://developer.apple.com/forums/thread/804612
+- XPC code-signing requirement enforced on the first message: https://developer.apple.com/forums/thread/760287
 - `passwordReference` not readable in the extension: https://developer.apple.com/forums/thread/672748
 - Stopping vs. cancelling the tunnel: https://developer.apple.com/forums/thread/772393
 - Sleep/wake: https://developer.apple.com/forums/thread/95988

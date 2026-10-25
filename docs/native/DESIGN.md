@@ -1,6 +1,6 @@
 # LockPlus Native: technical design
 
-Status: draft 1, 2026-10-25. Implements the decision in [`../NATIVE-REWRITE.md`](../NATIVE-REWRITE.md) (cited below as **NR**). Every `L-*` requirement in NR §3 is addressed by name; §19 maps each one to the section that satisfies it and to its test.
+Status: draft 2, 2026-10-25 (security design review applied; see the revision log). Implements the decision in [`../NATIVE-REWRITE.md`](../NATIVE-REWRITE.md) (cited below as **NR**). Every `L-*` requirement in NR §3 is addressed by name; §19 maps each one to the section that satisfies it and to its test.
 
 This document is written for one developer working with AI coding agents. Every section ends in something implementable: a type, a sequence, a rule, or a test. Where Apple behaviour is uncertain, the text states the **assumption**, the **spike** that validates it (§17), and the **fallback**.
 
@@ -8,6 +8,32 @@ Conventions:
 - `MUST`/`MUST NOT` are hard rules. Reviewers reject code that breaks them.
 - **Decision** marks a choice this document makes that NR leaves open.
 - Team ID: `M53GHX9FAY`. App bundle ID: `io.github.steiale.lockplus.mac`. Extension: `io.github.steiale.lockplus.mac.tunnel`.
+- **TBD-by-Sn** marks an expected outcome that spike Sn must confirm before code depends on it. Every TBD has a designed response for each possible result.
+
+## Revision log
+
+Draft 2 applies the security design review of draft 1. Each finding was checked against primary sources (openvpn3 `master`: `openvpn/client/cliopt.hpp`, `client/ovpncli.{hpp,cpp}`, `openvpn/client/cliconstants.hpp`, `openvpn/tun/builder/client.hpp`, `openvpn/tun/client/tunprop.hpp`, `openvpn/tun/mac/client/tunsetup.hpp`, `openvpn/client/clicreds.hpp`; Apple forums 672456, 680013, 824202, 98182, 804612, 760287; Sparkle documentation; the Go app's `internal/helper/firewall.go`, `internal/firewall/darwin.go`, `internal/ipc/peercred_*.go`, `internal/ovpn/allowlist.go`).
+
+| ID | Change |
+|---|---|
+| C1 | The extension's primary secret store is now root-owned 0600 files in its sandbox container, sealed with a file key; spike S4 tests wrapping that key with a CryptoKit Secure Enclave key, with a plain root-file key as the fallback. The System keychain is demoted to an optional S4 upgrade. Root ownership is stated as the real boundary; admin users are out of scope (§1.3 A2/A6, §3.3, §6.3, §17 S4, §20). Nuance: DTS does not forbid the System keychain outright (824202: "That's what I'd use"), but 672456 reports sandbox violations for a sandboxed NE sysex, `SecAccess`/`SecTrustedApplication` are deprecated, and 98182 confirms there is no supported way to set partition lists. The change stands. |
+| H1 | `includeAllNetworks` semantics are now TBD-by-S2 expectations. S2 measures provider `kill -9`, `stopVPNTunnel`, `cancelTunnelWithError`, OVPN over TCP and provider TCP connects on 15/26/27. LK-02 has one expected outcome. §10.1 designs the app's behaviour for each S2 result, including replicating the Go app's fail-closed-on-death, and documents regressions against the Go kill switch (§10.1.1). |
+| H2 | `actionForReplacingExtension` is now a pure, synchronous compare. Quiescing happens **before** any activation request is submitted, driven by `propertiesRequest`. This covers drag-replace and `brew upgrade` while the app was closed with the tunnel up (§4.2, §4.3, §12.3). |
+| H3 | `EngineSupport` is generated from openvpn3's `settings_*` lists and verified by constructing `ClientOptions` per directive. `validateProfile` constructs `ClientOptions`, so `UNUSED_OPTIONS` surfaces at import. Canonical size is capped at 256 KiB and lines at 512 bytes. `USE_TUN_BUILDER` is mandatory and `tun/mac/client` is excluded from the build. The endpoint is protected with `tunnelRemoteAddress` plus an excluded host route instead of dropping routes. `ProvideCreds` assumptions are corrected (§8.1, §8.2, §8.4, §8.5, §2.2). Found during verification: `topology`, `route-gateway`, `ping-timer-rem`, `socks-proxy`, `verify-hash` and `dh` are fatal in openvpn3 when left untouched, but the Go allowlist accepts them, so draft 1's "mapped" rows were wrong. |
+| M1 | Sparkle accepts a changed code-signing identity whenever EdDSA validates (documented key-rotation behaviour), so "team match" is not a control. Archives and the appcast are signed on the dev Mac; the EdDSA key never enters CI. The XPC team pin and the same-team requirement for system extension replacement are named as the blast-radius limits (§1.3 A5, §12.1, §12.4). |
+| M2 | Adds a user-initiated, confirmed "Reinstall tunnel component" path (deactivate → activate) for legitimate rollbacks (§4.2, §4.6, §12.1). |
+| M3 | The leak harness drives the shipped release candidate through `scutil --nc`, the shipped UI/file-open paths and Sparkle channels. Fault injection lives in a separate, non-gating `FaultInjection` build (§15.2, §15.3). |
+| M4 | Captive portals: `probeURL` on the on-demand connect rule, an Ignore fallback rule, and a "Pause protection for N minutes" action with its UX (§10.4, §11.3). |
+| M5 | **Decision:** v4-only full-tunnel profiles route `::/0` into the tunnel as a blackhole, whatever the kill-switch setting; the import report notes it (§9.3, §10.5, LK-09). |
+| M6 | S8 verifies `auth-token` push on BHP/AllService. Without a session token, the shim purges cached credentials after CONNECTED for OTP profiles, so engine-internal reconnects go through the prompt (§8.4, §17 S8). |
+| M7 | Sparkle and §12.3 move from P4 into P2c (the WireGuard beta's DoD needs an N-1→N update). P1 is re-estimated at 15–20 days, and the test infrastructure is specified (§15.7, §18). |
+| M8 | **Decision:** state the limit honestly. The LAContext gate is enforced by our code, not by the OS; why it still holds against the A6 adversary, and where it does not, is spelled out. An OS-enforced reveal key is listed under Later (§1.3 A6, §21). |
+| L-sig | The requirement strings pin Developer ID by certificate OIDs with a quoted team ID; the Apple Development clause is gone; first-message enforcement is noted. The audit-token pre-check was **rejected**: `NSXPCConnection.auditToken` is not public API. A replacement rule is given (§5.3). |
+| L-A1 | The launch-constraints claim is dropped (none are configured; **Decision:** not in v2.0). Profile metadata JSON is HMAC'd with a key derived from the sealing key (§1.3 A1, §3.3, §3.4). |
+| L-TM | Restoring Time Machine to a new Mac loses the `ThisDeviceOnly` sealing key. This is documented, with an export-all nudge and a "profiles locked" recovery UX; passphrase-encrypted export goes under Later (§3.3, §6.8). |
+| L-IPC | The Go IPC authenticates by uid only, so the Farewell `Uninstall` RPC is a same-user DoS (stated). A crashed Go helper with pf loaded is detected through the `pf-was-enabled` marker without root (§4.5, §13.3). |
+| L-cask | The cask uninstall stays `must_succeed: false`; a possible admin dialog during deactivation is documented (§4.4, §12.2). |
+| L-cut | Cut from v2.0 and moved to §21 "Later": the Linux fuzz build and C++ differential harness (replaced by macOS `-sanitize=fuzzer`), Tart VMs with MDM-scripted approval, DoH/DoT (S3), `ssidProfileMap`, ICMP from root, and the per-connection token bucket. |
 
 ---
 
@@ -56,7 +82,7 @@ Non-goals (NR §1):
  │  on-demand evaluation)       │   │  WireGuardAdapter (wireguard-go)                 │
  └──────────────────────────────┘   │  OpenVPNAdapter (openvpn3 + OpenSSL 3.5)         │
                                     │  TunnelServiceListener (XPC)                     │
-                                    │  System keychain items (root, ACL = this ext)    │
+                                    │  Secret files (root 0600, own sandbox container) │
                                     └──────────┬──────────────────────────────────────┘
                                                │ UDP/TCP to VPN servers (bypasses tunnel)
                                        ┌───────▼────────┐
@@ -71,22 +97,23 @@ Non-goals (NR §1):
 |---|---|---|---|
 | B1 | App ↔ extension (XPC) | profile payloads, credentials, auth answers, status/stats/logs | **The extension distrusts the app's input**: it re-validates every payload (§8.1). Both verify the peer's code signature (§5.3). |
 | B2 | App/ext ↔ NE preferences | non-secret profile config | Readable by any local admin and visible in System Settings, so it holds no secrets (§3.3). |
-| B3 | User ↔ app (files, QR, zip, clipboard) | untrusted profiles | Every parser treats its input as hostile, with caps (§3.6, §8.1, §9.1). |
+| B3 | User ↔ app (files, QR, zip, clipboard) | untrusted profiles | Every parser treats its input as hostile, with caps (§3.5, §8.1, §9.1). |
 | B4 | Extension ↔ VPN server | handshake, pushed options, packets | A server can be malicious or MITM'd. Pushed options are allowlisted (§8.5). |
-| B5 | App ↔ update channel | appcast, archives | EdDSA, Developer ID team match, signed feed, no downgrades (§12). |
-| B6 | Extension ↔ System keychain | secrets at rest | Item ACLs trust only the extension's designated requirement (§6). |
+| B5 | App ↔ update channel | appcast, archives | The EdDSA key is the trust anchor (Sparkle accepts a changed code-signing identity when EdDSA validates). Signed feed, no automatic downgrades (§12). |
+| B6 | Extension ↔ its secret store | secrets at rest | Root ownership (0600 files in the extension's sandbox container) is the boundary. Any admin can become root, so admins are out of scope (§6.3). |
 | B7 | App ↔ legacy Go app | tunnel files, legacy keychain, helper socket | Read-only and copy-only. Legacy data is validated like any import (§13). |
 
 ### 1.3 Threat model (STRIDE per adversary)
 
 **A1. Local malware running as the same user (no root, no TCC grants).**
 - *Spoofing:* it connects to our Mach service and pretends to be the app.
-  - Mitigation: the listener sets `setConnectionCodeSigningRequirement` (§5.3), so an unsigned or foreign-team peer is rejected before any message.
+  - Mitigation: the listener sets `setConnectionCodeSigningRequirement` (§5.3), so an unsigned or foreign-team peer is invalidated on its first message, before any handler runs.
 - *Tampering:* it modifies `/Applications/LockPlus.app`, which a drag-install leaves user-writable.
-  - Mitigation: a modified bundle fails dynamic code validation, so the extension refuses it, and the hardened runtime blocks DYLD injection.
-  - Gatekeeper and launch constraints re-check on the next launch.
-- *Tampering:* it rewrites `profiles/*.json` metadata.
-  - Mitigation: metadata carries no security policy the extension trusts blindly. The extension takes policy from NE preferences, which the user cannot write, and from its own provisioned copy.
+  - Mitigation: a modified bundle fails dynamic code validation, so the extension refuses it, and the hardened runtime blocks DYLD injection. A modified app also loses access to the data-protection keychain items of our access group, so it cannot unseal anything.
+  - **Decision:** no launch constraints in v2.0 (draft 1 claimed they re-check; none were configured). Gatekeeper only assesses quarantined first launches, so it is not counted as a control here. Launch/environment constraints are listed under Later (§21).
+- *Tampering:* it rewrites `profiles/*.json` metadata, hoping the app faithfully re-saves a weakened policy (e.g. `killSwitch = false`) to NE preferences on the next reconcile.
+  - Mitigation: each metadata file carries an HMAC-SHA256 over its canonical JSON, keyed by a subkey derived from the sealing key (§3.4). Same-user code cannot read the sealing key, so it cannot forge the HMAC. A mismatch quarantines the file and never propagates to NE preferences.
+  - The extension takes policy only from NE preferences (written through `nesessionmanager`, not a user-writable file) and from its own provisioned copy.
 - *Information disclosure:* it reads App Support.
   - Mitigation: payloads are AES-GCM-sealed with a key in the data-protection keychain (§3.4). Same-user code without our team signature cannot read that key.
   - Credentials live only in the keychains.
@@ -95,15 +122,16 @@ Non-goals (NR §1):
   - Mitigation: secrets never reach `Logger` (§14). Dynamic strings are `.private`.
 - *Denial of service:* it runs `scutil --nc stop`, kills the app, or floods XPC.
   - Accepted, because same-user code can always disrupt.
-  - Kill-switch profiles fail closed: includeAllNetworks keeps traffic blocked while reasserting (§10.1).
-  - The XPC listener rate-limits each connection (§5.4).
+  - Kill-switch profiles are expected to fail closed while reasserting (TBD-by-S2; §10.1). What happens after `scutil --nc stop` or after the provider is killed depends on S2, and §10.1 defines the response to each result.
+  - The XPC listener enforces size caps and per-handler deadlines (§5.4). There is no per-connection rate limiting in v2.0 (§21): same-user code can flood XPC anyway, and that only costs it CPU.
 - *Elevation of privilege:* it uses the root extension as a confused deputy (file read/write, exec).
   - Mitigation: the extension is sandboxed and exposes no path-taking or exec-taking API.
   - Profiles go through an allowlist with no path directives (§8.1), and openvpn3 has no script hooks.
 
 **A2. Other local users.**
 - NE configurations are system-wide, so another user can see the profile names in System Settings and start them.
-- *Disclosure:* they cannot read the payload or credentials. App Support is 0700, the data-protection keychain is per-user, and System keychain items are ACL'd to the extension.
+- *Disclosure:* a non-admin user cannot read the payload or credentials. App Support is 0700, the data-protection keychain is per-user, and the extension's secret files are root-owned 0600 (§6.3).
+- **Out of scope: admin users.** An admin can become root and read the extension's secret files, the extension's memory, and anything else root can. Root ownership is the real boundary of the extension store; no keychain ACL would change that (an admin can also unlock the System keychain). This is stated in the user docs.
 - *Tampering:* another user's copy of LockPlus can see our managers through `loadAllFromPreferences`.
   - Mitigation: `providerConfiguration.ownerUID`. The app hides and refuses to edit foreign profiles.
   - The extension enforces ownership on every profile-scoped XPC call using the peer's `effectiveUserIdentifier` (§5.4).
@@ -111,13 +139,13 @@ Non-goals (NR §1):
 
 **A3. Malicious profiles (.ovpn/.conf/zip/QR from an attacker).**
 - Root file read/write, library loading and exec through directives.
-  - Mitigation: an allowlist, the openvpn-exact tokenizer, and a canonical re-serialization verified by openvpn3's own parser (§8.1).
-  - The extension re-validates the profile and runs sandboxed.
+  - Mitigation: an allowlist, the openvpn-exact tokenizer, and a canonical re-serialization verified by openvpn3's own parser and by constructing openvpn3's `ClientOptions` (§8.1).
+  - The extension re-validates the profile and runs sandboxed. openvpn3 is built with `USE_TUN_BUILDER` only, so no code path can shell out to `route`/`ifconfig` (§8.1).
 - Parser memory-safety bugs in openvpn3's C++.
-  - Mitigation: libFuzzer + ASan on the shim's parse entry point (§15.4).
+  - Mitigation: libFuzzer + ASan on the shim's parse entry point, built on macOS (§15.4).
   - The extension parses only canonical text it generated itself after validation.
 - Zip bombs and zip-slip.
-  - Mitigation: 500 entries max, 10 MiB per entry decompressed, 1 MiB per profile, and nothing is unpacked to disk.
+  - Mitigation: 500 entries max, 10 MiB per entry decompressed, 1 MiB per raw profile (256 KiB canonical, §8.1), and nothing is unpacked to disk.
 - QR decompression bombs.
   - Mitigation: 20 MiB per image and 64 Mpx maximum, decoded by Vision.
 - Display-name injection.
@@ -144,22 +172,24 @@ Non-goals (NR §1):
 **A5. Compromised update channel.**
 - Attack: a replaced appcast or archive.
   - Mitigation: an EdDSA signature on every archive with the public key in Info.plist, and `SURequireSignedFeed` (Sparkle ≥ 2.9).
-  - Sparkle's Developer ID team-match check.
   - HTTPS only.
+  - **Not a control:** Sparkle's code-signing check. Sparkle documents that an update may change *either* the Apple code-signing certificate *or* the EdDSA key (key rotation), so an archive signed by a different Developer ID team is accepted whenever its EdDSA signature validates. The EdDSA key is therefore the single trust anchor.
 - Attack: a downgrade to a vulnerable build.
-  - Mitigation: Sparkle never offers a lower version.
-  - The extension's `actionForReplacingExtension` returns `.cancel` when the incoming version is lower (§4.3).
+  - Mitigation: Sparkle never offers a lower version, and our `bestValidUpdate` filter drops them (§12.1).
+  - The app never submits an activation request for a lower extension version on its own; `actionForReplacingExtension` returns `.cancel` for a lower version (§4.3). The only downgrade path is the user-initiated, confirmed "Reinstall tunnel component" (§4.6).
 - Attack: a stolen EdDSA key.
-  - Mitigation: Developer ID notarization is still required.
-  - The key lives only in a GitHub Actions environment secret with required reviewers, plus an offline backup.
+  - Mitigation: the key never enters CI. Archives and the appcast are signed on the dev Mac (`sign_update`/`generate_appcast` reading the key from the login keychain), with an offline backup in 1Password (§12.1). A CI compromise therefore cannot sign an update.
+  - **Blast-radius limits if the key is stolen anyway:** a different-team app installed this way (a) fails the extension's XPC requirement, which pins team `M53GHX9FAY` (§5.3), so it cannot reach provisioned secrets; (b) cannot replace our system extension, because the system only replaces an extension with one from the same team; (c) cannot read the app's data-protection keychain items, whose access group is bound to our team's provisioning profile, so sealed payloads stay sealed. Notarization is **not** claimed as a limit: Sparkle-installed updates are not quarantined, so Gatekeeper does not assess them. What the attacker does get is code execution as the user (A1 capabilities) plus the user's trust in the app name. Recovery: rotate the key with a Developer ID-signed update (Sparkle's rotation rule) and publish an advisory.
 
 **A6. Physical access to an unlocked Mac.**
 - Exporting or viewing secrets.
   - Mitigation: Reveal, Edit-config, Export and Export-all require `LAContext` `.deviceOwnerAuthentication`, with a 60 s reuse window.
+  - **Limit, stated honestly (M8 decision):** the gate is enforced by **our code**, not by the OS. The sealing key and the saved credentials are readable by the app without user presence, because provisioning and reconcile must run unattended. The gate holds against the A6 adversary only because that adversary can't run code inside our signed process: the hardened runtime blocks injection, a modified bundle loses keychain access, and same-user tools such as Terminal or `security` aren't in our access group. It does **not** hold against a bug in our app that reaches `payload(for:)` without the gate, or against an admin (A2). A unit test asserts that every UI path to plaintext goes through `RevealGate`.
+  - **Decision:** no separate OS-enforced reveal key in v2.0. The candidate design (an HPKE copy of each payload sealed to a Secure Enclave key with `SecAccessControl(.userPresence)`) is in §21.
 - Disconnecting the VPN or disabling the kill switch.
   - Possible by design for the user. Changing the kill switch requires the tunnel to be disconnected (L-KS-2), so it is visible.
-- Reading the System keychain.
-  - Requires an admin password. Items are created non-extractable to non-trusted apps.
+- Reading the extension's secret files.
+  - Requires root, i.e. an admin password (out of scope, A2). With the S4 Secure Enclave wrap, a copied file or disk image is useless on another machine. On this Mac, a live root process can still use the wrapped key.
 
 ### 1.4 Security invariants (checked in review and in tests)
 
@@ -168,6 +198,9 @@ Non-goals (NR §1):
 3. Every XPC call has a timeout. No call waits for a tunnel connect.
 4. The kill-switch policy lives only in the NE configuration (L-LC-4).
 5. The extension links no AppKit, SwiftUI or Sparkle (L-EXT-5). CI greps `otool -L`.
+6. The extension's secrets exist at rest only as root-owned 0600 sealed files in its sandbox container (§6.3).
+7. The Sparkle EdDSA private key never exists on a CI runner (§12.1).
+8. openvpn3 is compiled with `USE_TUN_BUILDER`, and no object from `openvpn/tun/mac/client` is linked. CI checks the symbols (§8.1).
 
 ---
 
@@ -188,7 +221,7 @@ native/
   App/                      # target LockPlus (SwiftUI + AppKit)
   Tunnel/                   # target LockPlusTunnel (main.swift, PacketTunnelProvider.swift)
   Packages/
-    LockPlusCore/           # Foundation-only; builds on Linux for fuzzing
+    LockPlusCore/           # Foundation-only; fuzzed on macOS (-sanitize=fuzzer)
     TunnelEngine/           # NetworkExtension + Network; no UI
     WireGuardBridge/        # fork of WireGuardKit + External Build System target for libwg-go.a
     OpenVPN3Shim/           # ObjC++ over openvpn3 ClientAPI; also exposes OpenVPN3Options
@@ -208,10 +241,10 @@ native/
 
 | Target / package | Kind | Depends on | MUST NOT depend on |
 |---|---|---|---|
-| `LockPlusCore` | SPM library, modules `LPModel`, `LPParsing`, `LPWire` | Foundation | AppKit, SwiftUI, NetworkExtension, Security, CryptoKit (so the parsers build on Linux for fuzzing) |
+| `LockPlusCore` | SPM library, modules `LPModel`, `LPParsing`, `LPWire` | Foundation | AppKit, SwiftUI, NetworkExtension, Security, CryptoKit (keeps the parsers pure and fast to fuzz; no Linux build in v2.0) |
 | `TunnelEngine` | SPM library | LockPlusCore, NetworkExtension, Network, Security, os | AppKit, SwiftUI, Sparkle |
 | `WireGuardBridge` | SPM library + `WireGuardGoBridge` External Build System target (`make` → `libwg-go.a`, arm64, current wireguard-go) | — | AppKit |
-| `OpenVPN3Shim` | SPM library, ObjC++ (`.mm`), modules `OpenVPN3Shim` (client) and `OpenVPN3Options` (options parser only, no crypto or network) | openvpn3 headers, OpenSSL static (client module only) | AppKit |
+| `OpenVPN3Shim` | SPM library, ObjC++ (`.mm`), modules `OpenVPN3Shim` (client, compiled with `-DUSE_TUN_BUILDER`; `openvpn/tun/mac/client` excluded) and `OpenVPN3Options` (options parser only, no crypto or network) | openvpn3 headers, OpenSSL static (client module only) | AppKit |
 | `LockPlus` (app) | macOS app | LockPlusCore, OpenVPN3Options, Sparkle 2.9+, ZIPFoundation (pinned) | WireGuardBridge, OpenVPN3Shim (client) |
 | `LockPlusTunnel` | System extension (`SYSX`) | LockPlusCore, TunnelEngine, WireGuardBridge, OpenVPN3Shim | AppKit, SwiftUI, Sparkle, ZIPFoundation |
 
@@ -290,7 +323,7 @@ App:
 - `SUVerifyUpdateBeforeExtraction = YES`, `SURequireSignedFeed = YES`
 - `SUEnableAutomaticChecks = YES`, `SUAutomaticallyUpdate = NO`
 - `LSApplicationCategoryType = public.app-category.utilities`
-- `NSLocationWhenInUseUsageDescription`, used only by the optional SSID→profile map (§10.4)
+- `NSLocationWhenInUseUsageDescription`, used only by the optional "Add current network" button and by the app-assisted fallback if S1 fails (§10.4)
 - `LSMinimumSystemVersion = 15.0`
 - `LPTunnelBundleIdentifier = io.github.steiale.lockplus.mac.tunnel`
 
@@ -414,7 +447,8 @@ public struct AutoConnectRules: Codable, Sendable {
     public var profileID: UUID?                  // the one on-demand profile
     public var trustedSSIDs: [String] = []       // ≤ 64 entries, each ≤ 32 bytes UTF-8
     public var connectOnEthernet = false
-    public var ssidProfileMap: [String: UUID] = [:] // optional, app-assisted (§10.4)
+    public var pausedUntil: Date?                // "Pause protection" (§10.4); nil = not paused
+    // ssidProfileMap (SSID → specific profile) is cut from v2.0 (§21)
 }
 public struct HistoryEntry: Codable, Sendable, Identifiable {
     public let id: UUID                          // session ID minted by the extension
@@ -433,15 +467,20 @@ public struct HistoryEntry: Codable, Sendable, Identifiable {
 
 | Data | Location | Format | Secret? |
 |---|---|---|---|
-| Profile metadata | `~/Library/Application Support/io.github.steiale.lockplus.mac/profiles/<uuid>.json` (0600, dir 0700) | JSON `Profile` | no |
+| Profile metadata | `~/Library/Application Support/io.github.steiale.lockplus.mac/profiles/<uuid>.json` (0600, dir 0700) | JSON `{"profile": Profile, "mac": hex HMAC-SHA256}` over the canonical (sorted-keys) encoding of `profile`; key = HKDF-SHA256(sealing key, info `"lockplus.metadata-mac.v1"`) | no (integrity-protected) |
 | Profile payload, app copy (canonical `.conf` / canonical `.ovpn` text) | `…/profiles/<uuid>.sealed` (0600) | `AES.GCM.SealedBox.combined`, AAD = `uuid‖revision` | **yes**, sealed |
 | Payload sealing key | data-protection keychain, service `io.github.steiale.lockplus.mac.payload-key`, account `v1` | 32 random bytes | yes |
 | OVPN credentials, app copy | DP keychain, service `io.github.steiale.lockplus.mac.credentials`, account `<uuid>` | `CredentialRecord` binary plist | yes |
 | Settings, auto-connect, history, migration marker | `…/settings.json`, `history.json`, `migration.json` (0600) | JSON | no |
 | NE configuration | NE preferences, one `NETunnelProviderManager` per profile | see below | **no** |
-| Payload, extension copy | System keychain, service `io.github.steiale.lockplus.mac.tunnel.payload`, account `<uuid>` | canonical text bytes | yes |
-| Credentials, extension copy | System keychain, service `io.github.steiale.lockplus.mac.tunnel.credentials`, account `<uuid>` | `CredentialRecord` | yes |
-| Extension runtime state (session ring, auth backoff, provision index) | extension sandbox container `Data/Library/Application Support/state.plist` (root, 0600) | plist | no |
+| Payload, extension copy | extension sandbox container `Data/Library/Application Support/secrets/<uuid>.payload` (root, 0600, dir 0700) | `AES.GCM.SealedBox.combined` under the extension file key; AAD = `uuid‖"payload"‖revision` | yes, sealed |
+| Credentials, extension copy | same directory, `<uuid>.cred` | sealed `CredentialRecord`; AAD = `uuid‖"cred"` | yes, sealed |
+| Extension file key | S4 primary: `secrets/filekey.wrapped` = the file key HPKE-sealed to a CryptoKit Secure Enclave P-256 key-agreement key, whose wrapped `dataRepresentation` is in `secrets/se.key`. Fallback: `secrets/filekey.raw` (32 bytes) | binary | yes (root 0600) |
+| Extension runtime state (session ring, auth backoff, provision index) | extension sandbox container `Data/Library/Application Support/state.plist` (root, 0600) | plist, with a `schema` field; a newer schema than the running build understands is discarded and rebuilt by reconcile (needed for §4.6 rollbacks) | no |
+
+The container is `/private/var/root/Library/Containers/io.github.steiale.lockplus.mac.tunnel/`. It is created by the sandbox for the root extension, so no other path or entitlement is involved.
+
+**Device-bound data (Time Machine / Migration Assistant).** The sealing key is `…ThisDeviceOnly`, so it is not restored to a new Mac. The extension's file key does not move either: it is root-container data, and the Secure Enclave wrap is device-bound. After a restore to a new Mac the profiles are therefore **unrecoverable from the sealed files**. This is deliberate (a backup must not carry usable VPN keys) and handled in §6.8.
 
 - The app data directory is named after the **bundle ID**, never `lockplus`.
   - So no Go-app cask `zap` stanza can ever match it (L-DIST-1, the bb50f10 incident).
@@ -476,13 +515,14 @@ public protocol ProfileStore: Sendable {
 - It is implemented as an `actor FileProfileStore`. All I/O is off the main actor (L-CRED-1).
 - Writes are atomic: temp file in the same dir, `F_FULLFSYNC`, `rename`.
 - Corrupt JSON is moved to `*.corrupt.<UTC>` and logged, never fatal. This is ported from Go `SettingsStore.Load`.
+- **Metadata integrity (A1):** every metadata write recomputes the HMAC (§3.3); every load verifies it in constant time. On mismatch, the file is moved to `*.tampered.<UTC>`. The profile is shown as "Settings were changed outside LockPlus", and its NE manager is **not** re-saved and reconcile skips it. The user can restore the policy from the NE manager (the system's copy), re-import, or delete. The HMAC covers `policy`, `auth`, `ownerUID`, `payloadRevision` and `payloadDigest`, i.e. the whole `Profile`.
 - The store keeps a **single cached `[UUID: NETunnelProviderManager]`**. `loadAllFromPreferences` is called once at launch and again after a `NEVPNConfigurationChange` notification; managers are never reloaded per call (NR §4 practices).
 
 ### 3.5 Import caps (ported, NR §3 "Security posture")
 
 | Input | Cap |
 |---|---|
-| single profile file | 1 MiB (`.ovpn`, matches `maxOVPNSize`), 64 KiB (`.conf`) |
+| single profile file | 1 MiB raw `.ovpn` (matches `maxOVPNSize`; comments and ignored directives are dropped before the canonical cap of **256 KiB** = openvpn3 `MAX_PROFILE_SIZE`, §8.1), 64 KiB (`.conf`) |
 | zip | 500 profile entries, 10 MiB decompressed per entry (`LimitReader` semantics), 100 MiB total; read in memory only |
 | QR image | 20 MiB, 8000×8000 px (checked from `CGImageSource` properties before decoding) |
 | drag-drop | the same as a file; directories are rejected |
@@ -504,22 +544,37 @@ final class SystemExtensionManager: NSObject, OSSystemExtensionRequestDelegate {
         case deactivating, uninstalled
     }
     private(set) var state: State = .unknown
-    func activate()                             // idempotent; called on every launch (L-EXT-2)
+    func activate() async                       // idempotent; called on every launch (L-EXT-2); quiesces first (§4.2)
     func deactivate() async throws              // uninstall path (L-EXT-4)
+    func reinstall() async throws               // user-initiated rollback path (§4.6)
     var machServiceName: String { get }         // read from embedded ext Info.plist
 }
 ```
 
 ### 4.2 Activation on every launch (L-EXT-1, L-EXT-2)
 
+`OSSystemExtensionRequestDelegate.request(_:actionForReplacingExtension:withExtension:)` is **synchronous**: it must return a `ReplacementAction` immediately and cannot await a tunnel stop. All quiescing therefore happens **before** any activation request is submitted.
+
 1. At `applicationDidFinishLaunching`, run `activate()` once.
-   - First call `propertiesRequest(forExtensionWithIdentifier:)` to learn whether the extension is `isAwaitingUserApproval`. If it is, show the approval **banner** rather than a new modal.
-2. Submit `OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier:queue: .main)`.
-3. Handle the delegate callbacks:
+2. **Preflight:** submit `OSSystemExtensionRequest.propertiesRequest(forExtensionWithIdentifier:queue:)` and wait for `request(_:foundProperties:)` (5 s timeout; on timeout, treat it as "unknown" and go to step 4 without quiescing, logged).
+   - `isAwaitingUserApproval` on any entry → show the approval **banner** rather than a new modal.
+   - Find the **enabled** entry (`isEnabled && !isUninstalling`) and compare its `(bundleShortVersion, bundleVersion)` numerically with the embedded extension's Info.plist.
+     - No enabled entry, or equal versions → step 4.
+     - Enabled version **lower** than embedded (an update is pending) → step 3.
+     - Enabled version **higher** than embedded (the user installed an older app) → do **not** submit. `state = .failed(.olderAppThanExtension)`. The UI offers "Reinstall tunnel component" (§4.6). The higher extension keeps running and keeps working with its own per-version Mach name, but this app can't talk to it, so the UI is read-only (status via `NEVPNStatus` only).
+3. **Quiesce (only when a replacement is pending):** for every owned manager whose status is not `.disconnected`/`.invalid`, or that has `isOnDemandEnabled`:
+   1. write `pendingResume = {profileID, onDemandProfileID, onDemandEnabled, reason: .extensionUpdate}` to `settings.json` (unless §12.3 already wrote one);
+   2. set `isOnDemandEnabled = false` and save;
+   3. `stopVPNTunnel()` and await `.disconnected` (15 s; on timeout continue, logged);
+   4. show "Updating tunnel component…" in the menu bar and window.
+   - This covers every way a new app can arrive with the old extension still running: Sparkle (§12.3 has usually quiesced already, so this is a no-op), a drag-replace in Finder, and `brew upgrade` while the app was closed and the tunnel was up (on-demand or connected). In the last two cases the old extension has kept protecting the user until this launch. With a kill-switch profile, the Mac is unprotected from step 3.3 until the resume in step 6. That window is the price of L-KS-3 and is shown: "Updating — not protected for a moment".
+4. Submit `OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier:queue: .main)`.
+5. Handle the delegate callbacks (table below).
+6. On `.completed` with a `pendingResume`, run `UpdateCoordinator.resumeAfterUpdate()` (§12.3 step 4).
 
 | Callback / result | Action |
 |---|---|
-| `actionForReplacingExtension(existing, ext)` | Compare `(CFBundleShortVersionString, CFBundleVersion)` numerically. If the new one is higher, first run `UpdateCoordinator.quiesceTunnel()` (§12.3), then return `.replace`. If equal, `.replace` (dev rebuilds with the same stamp are harmless). If **lower**, `.cancel` and `state = .failed(.downgradeRefused)`, unless a DEBUG build has `LPAllowExtensionDowngrade` set. |
+| `actionForReplacingExtension(existing, ext)` | **Pure compare, no side effects.** Compare `(CFBundleShortVersionString, CFBundleVersion)` numerically. Higher or equal → `.replace` (equal: dev rebuilds with the same stamp are harmless). **Lower** → `.cancel` and `state = .failed(.downgradeRefused)`; this cannot normally happen because step 2 does not submit in that case. The only exception is `reinstall()` (§4.6), which deactivates first, so no replacement is involved. |
 | `requestNeedsUserApproval` | `state = .needsUserApproval`. Show **one** sheet: an explanation plus "Open System Settings", which opens `x-apple.systempreferences:com.apple.LoginItems-Settings.extension`. Keep the request alive; never resubmit. |
 | `didFinishWithResult(.completed)` | `state = .ready`, then the XPC `hello` (§5) and `ProfileStore.reconcile()`. |
 | `didFinishWithResult(.willCompleteAfterReboot)` | `state = .needsReboot`. Show one dialog, "Restart to finish installing", with no retry. |
@@ -531,6 +586,7 @@ final class SystemExtensionManager: NSObject, OSSystemExtensionRequestDelegate {
 | `.extensionNotFound` | Bundle damaged (as above). |
 
 - **No automatic retries anywhere.** A "Try again" button exists only in the failure UI and is user-initiated.
+- Settings › Advanced › "Reinstall tunnel component…" is in **release** builds (§4.6).
 - Debug menu (DEBUG builds and `⌥`-click on About):
   - Activate;
   - Deactivate;
@@ -539,7 +595,8 @@ final class SystemExtensionManager: NSObject, OSSystemExtensionRequestDelegate {
 
 ### 4.3 Replacement policy
 
-- The system replaces the extension when the app requests activation of a bundle whose versions differ. We always answer `.replace` (except downgrades), **but only after the tunnel is quiesced** (L-EXT-3, L-KS-3).
+- The system replaces the extension when the app requests activation of a bundle whose versions differ. We answer `.replace` for higher or equal versions. The tunnel has **already** been quiesced by the §4.2 preflight before the request was submitted (L-EXT-3, L-KS-3); the delegate itself does nothing but compare.
+- Edge case: the system extension is enabled but `propertiesRequest` timed out, so step 3 was skipped. The replacement then happens with the tunnel possibly up. The FB17032197 XPC breakage is avoided by the per-version Mach name. The tunnel is torn down by the replacement, and on-demand restarts it on the new extension. S5 records what the user sees in this case.
 - `NEMachServiceName` includes `CURRENT_PROJECT_VERSION`, so the old extension's listener and the new app never talk across versions (FB17032197). The app connects to the name in **its own** embedded extension's plist. Before replacement completes, that lookup fails, and the app shows "Updating tunnel component…".
 - **Assumption A-EXT-1:** a per-version Mach name has no side effects beyond a launchd registration per version. Spike S5 validates this. **Fallback:** a fixed name plus the mandatory stop-before-replace rule, which already prevents the FB17032197 scenario.
 
@@ -548,7 +605,7 @@ final class SystemExtensionManager: NSObject, OSSystemExtensionRequestDelegate {
 The Settings › Advanced › "Uninstall LockPlus…" sequence:
 1. Authenticate with `LAContext`, then confirm.
 2. For every manager: `isOnDemandEnabled = false`, save, `stopVPNTunnel()`, wait for `.disconnected` (10 s timeout).
-3. XPC `wipeAllSecrets(ownerUID)`, which makes the extension delete its System keychain items and state for this UID. Errors are recorded but not fatal.
+3. XPC `wipeAllSecrets(ownerUID)`, which makes the extension delete this UID's sealed secret files and state entries. When the last UID is wiped, it also deletes the file key and the Secure Enclave key blob. This step matters: deactivation does not reliably delete the extension's sandbox container (TBD-by-S5), so leftover sealed files would otherwise outlive the app. Errors are recorded but not fatal.
 4. `removeFromPreferences()` for each owned manager.
 5. Delete the DP keychain items (payload key, credentials).
 6. `deactivationRequest`. This may require admin approval or a reboot; both are shown.
@@ -556,7 +613,9 @@ The Settings › Advanced › "Uninstall LockPlus…" sequence:
 8. `SMAppService.mainApp.unregister()` if registered.
 9. Move the app to the Trash with `NSWorkspace.recycle`, then quit.
 
-The cask's `uninstall` runs the app headless with `--uninstall-system-components` (steps 2–6, no UI, 60 s timeout), followed by `quit`.
+The cask's `uninstall` runs the app headless with `--uninstall-system-components` (steps 2–6, no windows, 60 s timeout), followed by `quit`.
+- "Headless" is best effort. `deactivationRequest` may show the system's admin-authorization dialog, or end in `.willCompleteAfterReboot`; `brew uninstall` cannot answer either. The stanza therefore keeps `must_succeed: false`. On timeout, or when authorization is needed and nobody answers, the extension stays installed until the user removes it in System Settings › General › Login Items & Extensions, or until a reboot completes it.
+- The cask `caveats` and the README say this plainly: "If macOS asks for an administrator password while uninstalling, that's the tunnel component being removed. If you dismiss it, remove LockPlus's network extension in System Settings."
 
 ### 4.5 Coexistence with the Go app
 
@@ -564,16 +623,32 @@ Detection (`LegacyAppDetector`, app side; the extension cannot see pf):
 1. `/Library/LaunchDaemons/io.github.steiale.lockplus.helper.plist` exists → helper installed.
 2. Connect to `/var/run/lockplus/lockplus.sock` (0600, owned by this user, per `internal/ipc/transport_unix.go`) with a 2 s timeout and send the Go IPC status request.
    - The response tells us whether a tunnel is active or the kill switch is enabled. We send a read-only call only.
+   - Note: the Go IPC authenticates the peer by **uid only** (`LOCAL_PEERCRED`, `internal/ipc/peercred_darwin.go`, `verifyPeerUID`), not by code signature. That is why the native app can call it at all, and it is also why §13.3's `Uninstall` RPC is callable by any same-user process.
 3. `NSRunningApplication` with bundle ID `io.github.steiale.lockplus` → the Go GUI is running.
 4. `/Library/Application Support/lockplus/dns-journal.json` or `pf-was-enabled` exists → state is left behind.
+   - `pf-was-enabled` is written when the Go helper first loads its pf anchor and removed on every clean teardown (`internal/firewall/darwin.go`, `Apply`/`teardownLocked`). Its presence therefore means "the Go kill switch's pf rules were active and never torn down". Checking it needs no root: `stat` on a world-readable directory. It is the non-root signal for a **crashed helper with pf loaded**, since `pfctl` itself needs root.
 
 Policy:
 
 | Finding | Behaviour |
 |---|---|
 | Helper reports an active tunnel or the kill switch on (pf anchor `com.apple/wireguide` loaded) | **Refuse to connect.** Dialog: "Disconnect in the old LockPlus and turn off its kill switch first", plus a button that opens the Go app. |
-| Helper installed but idle, or unreachable | Allow connecting, with a persistent banner: "The old LockPlus helper is still installed. Run its uninstaller (§13.3)." |
-| Leftover DNS journal, no helper | Banner with instructions. We never touch root state ourselves. |
+| Helper installed but idle | Allow connecting, with a persistent banner: "The old LockPlus helper is still installed. Run its uninstaller (§13.3)." |
+| Helper installed but **unreachable**, and `pf-was-enabled` exists | The helper probably crashed with its kill switch loaded, so pf may block our tunnel's traffic and the connect would fail without explanation. Allow connecting (pf may be gone), but show a warning before connecting: "The old LockPlus may have left its firewall on." The helper's LaunchDaemon has `KeepAlive=true`, and a restarted helper's `RecoverStaleState` flushes the anchors. An unreachable helper with the marker present therefore means it is crash-looping or was booted out. Offer to open the old app or to restart the Mac (a reboot clears pf rules), and link the §13.3 uninstaller. If the connect then fails with `.connectTimeout`/`.peerUnreachable`, the error banner repeats this hint. |
+| Helper installed but unreachable, no `pf-was-enabled` | As "idle". |
+| Leftover DNS journal or `pf-was-enabled`, no helper | Banner with instructions (restart, or reinstall and run the Go app's v1.2.0 uninstaller). We never touch root state ourselves. |
+
+### 4.6 Reinstall tunnel component (user-initiated rollback, M2)
+
+Automatic replacement never downgrades (§4.3). A legitimate rollback (the user installs N-1 because N broke something) therefore needs an explicit path. It is offered in Settings › Advanced › "Reinstall tunnel component…" and in the `.failed(.olderAppThanExtension)` / `.failed(.downgradeRefused)` UI.
+
+1. Confirmation sheet: "This removes the installed tunnel component (version X) and installs the one bundled with this app (version Y). VPN connections stop. macOS may ask for an administrator password." Buttons Cancel / Reinstall; **Cancel** is the default. LAContext is required, because a downgrade is security-relevant.
+2. Quiesce as in §4.2 step 3, with `pendingResume.reason = .reinstall`.
+3. `deactivationRequest`, then await the result. `.willCompleteAfterReboot` → "Restart to finish", and the app resumes at step 4 on the next launch (a marker in `settings.json`).
+4. `activationRequest` for the embedded extension. Since nothing is enabled, no replacement callback occurs. The normal approval rules (§4.2) apply.
+5. On `.completed`: `hello`, then `reconcile()`, which re-provisions every profile; the extension's `state.plist` with a newer schema is discarded (§3.3). Then resume.
+- Never automatic, never offered by a background path, and logged at `.notice` with both versions.
+- S5 confirms that deactivate → activate of a *lower* version works without a reboot on 15 and 27 (TBD-by-S5). If it needs a reboot, step 3's path is the normal one.
 
 ---
 
@@ -621,11 +696,11 @@ public let LPWireVersion: UInt16 = 1
 public struct ClientHello: Codable { var wire: UInt16; var appVersion: String; var appBuild: String }
 public struct ServerHello: Codable {
     var wire: UInt16; var extVersion: String; var extBuild: String
-    var capabilities: Set<Capability>   // .openVPN, .wireGuard, .dnsOverHTTPS, .keyPassphrase
+    var capabilities: Set<Capability>   // .openVPN, .wireGuard, .keyPassphrase (DoH/DoT: §21)
 }
 public struct ProvisionRequest: Codable {
     var profileID: UUID; var kind: VPNProtocolKind; var revision: UInt64
-    var payload: Data                    // canonical text, ≤ 1 MiB
+    var payload: Data                    // canonical text, ≤ 256 KiB (§8.1)
     var credentials: CredentialRecord?   // ≤ 4 KiB encoded
 }
 public struct CredentialRecord: Codable {
@@ -647,7 +722,7 @@ Size limits are enforced in `LPWire.decode(_:max:)`:
 | Message | Limit |
 |---|---|
 | `hello` | 4 KiB |
-| `provision` | 1.1 MiB |
+| `provision`, `validateProfile` | 300 KiB |
 | `answerAuth` | 8 KiB |
 | `recentLogs` reply | 1000 lines, 256 KiB |
 | `sessionSummaries` reply | 100 entries |
@@ -664,19 +739,22 @@ Oversized messages are rejected with `.payloadTooLarge` and never decoded.
 
 Requirement strings, compiled in from `Signing.xcconfig`:
 ```
-APP_REQ = anchor apple generic and certificate leaf[subject.OU] = "M53GHX9FAY"
-          and identifier "io.github.steiale.lockplus.mac"
-EXT_REQ = anchor apple generic and certificate leaf[subject.OU] = "M53GHX9FAY"
-          and identifier "io.github.steiale.lockplus.mac.tunnel"
+DEVID   = anchor apple generic
+          and certificate 1[field.1.2.840.113635.100.6.2.6] exists       // Developer ID CA
+          and certificate leaf[field.1.2.840.113635.100.6.1.13] exists   // Developer ID Application leaf
+          and certificate leaf[subject.OU] = "M53GHX9FAY"
+APP_REQ = $(DEVID) and identifier "io.github.steiale.lockplus.mac"
+EXT_REQ = $(DEVID) and identifier "io.github.steiale.lockplus.mac.tunnel"
 ```
 
-- Extension, in `listener(_:shouldAcceptNewConnection:)`:
-  - `conn.setCodeSigningRequirement(APP_REQ)` (macOS 13+). The framework checks the requirement against the peer's audit token and invalidates the connection on mismatch.
-  - The listener itself also calls `setConnectionCodeSigningRequirement(APP_REQ)` as belt and braces.
-  - The extension then records `conn.effectiveUserIdentifier` for ownership checks.
+- The requirement pins **Developer ID only**, with the team ID quoted. Apple Development, Mac App Distribution and ad-hoc signatures all fail by design. L-EXT-6 makes every dev build Developer ID-signed, so nothing legitimate is lost.
+- Extension:
+  - The listener calls `setConnectionCodeSigningRequirement(APP_REQ)` (macOS 13+) **before `resume()`**. This is the primary check.
+  - In `listener(_:shouldAcceptNewConnection:)` it also calls `conn.setCodeSigningRequirement(APP_REQ)` as belt and braces, and records `conn.effectiveUserIdentifier` for ownership checks.
+  - **Enforcement timing:** the check runs when the **first message** arrives on the connection, not at accept time (forum 760287). Rejected peers are invalidated before any handler runs. Rule: `shouldAcceptNewConnection` does no work and allocates nothing beyond the connection object. All per-connection state (ownership, auth subscriptions) is created lazily inside the first handler, `hello`, which by then has passed the check.
+  - *Reviewed: "pre-check the audit token in `shouldAcceptNewConnection`" was not adopted.* `NSXPCConnection.auditToken` is not public API (it is SPI used through KVC), and the public `processIdentifier` is PID-reuse-racy, so neither is a sound pre-check. The lazy-state rule above gets the same effect, namely that no work is done for an unvalidated peer, using only public API.
 - App: `conn.setCodeSigningRequirement(EXT_REQ)` before `resume()`. The app's exported `LPAppCallbackXPC` is only reachable over this already-validated connection.
-- The requirement covers Developer ID and Apple Development leaf certificates for our team. Both are acceptable because both are ours. Ad-hoc signatures fail by design (L-EXT-6).
-- Test: a team-signed helper binary with a different identifier, and an unsigned binary, both get `NSXPCConnectionInvalid` (§15.6).
+- Test: a team-signed binary with a different identifier, an Apple Development-signed copy of the app, and an unsigned binary all get `NSXPCConnectionInvalid` before any handler log line (§15.6).
 
 ### 5.4 Timeouts, ownership and rate limits
 
@@ -704,7 +782,7 @@ actor TunnelServiceClient {
 - `interruptionHandler` reconnects lazily on the next call.
 - Extension side: every handler replies on every path. Handlers never await the engine without their own internal deadline, which is 1 s below the client's.
 - Ownership: every profile-scoped request carries `profileID`. The extension looks up `ownerUID` in its provision index and rejects a mismatch with the connection's `effectiveUserIdentifier` (`.notOwner`).
-- Rate limit: a token bucket per connection, 50 requests/s and burst 100. Excess gets `.rateLimited`.
+- No rate limiting in v2.0 (cut, §21). Callers are signature-validated same-team code. Flooding by the app itself would be a bug, caught in testing. `.rateLimited` stays reserved in the error enum.
 
 ### 5.5 Error model
 
@@ -716,14 +794,14 @@ public struct LPError: Error, Codable, Sendable {
 public enum LPErrorCode: Int, Codable, Sendable {
     // transport
     case timeout = 1, extensionUnavailable, extensionBusy, versionMismatch, unauthorizedPeer,
-         payloadTooLarge, malformedRequest, rateLimited, notOwner
+         payloadTooLarge, malformedRequest, rateLimited /* reserved */, notOwner
     // profile
     case profileNotProvisioned = 100, profileInvalid, profileRevisionStale, unsupportedDirective
     // tunnel (also used as NSError codes for cancelTunnelWithError, domain "io.github.steiale.lockplus.tunnel")
     case authFailed = 200, authRequired, authTimedOut, webAuthUnsupported, keyPassphraseRequired,
          connectTimeout, peerUnreachable, dnsResolutionFailed, engineFatal, tunDeviceFailed,
          networkSettingsFailed, legacyCryptoUnavailable, serverIdentityMismatch, conflictingVPN,
-         keychainUnavailable
+         secretStoreUnavailable, blockedAfterFailure
 }
 ```
 
@@ -738,11 +816,12 @@ public enum LPErrorCode: Int, Codable, Sendable {
 
 ### 6.1 Ownership matrix
 
-| Secret | App DP keychain | Extension System keychain | Written by | When |
+| Secret | App DP keychain | Extension container store (§6.3) | Written by | When |
 |---|---|---|---|---|
 | Payload sealing key | ✔ | — | app | first launch |
-| Payload (keys inside `.conf`/`.ovpn`) | sealed file (key in DP keychain) | ✔ item `…tunnel.payload/<uuid>` | app; extension via `provisionProfile` | import, edit, reconcile |
-| OVPN username/password/key passphrase | ✔ `…credentials/<uuid>` | ✔ `…tunnel.credentials/<uuid>` | app; extension via provision/`updateCredentials` | user saves, or "save" ticked in a prompt |
+| Extension file key | — | ✔ `secrets/filekey.*` | extension | first provision |
+| Payload (keys inside `.conf`/`.ovpn`) | sealed file (key in DP keychain) | ✔ `secrets/<uuid>.payload` | app; extension via `provisionProfile` | import, edit, reconcile |
+| OVPN username/password/key passphrase | ✔ `…credentials/<uuid>` | ✔ `secrets/<uuid>.cred` | app; extension via provision/`updateCredentials` | user saves, or "save" ticked in a prompt |
 | OTP, SC/CRV1 responses, `auth-token` | never | never (memory only, zeroed) | — | per prompt |
 
 - The app **never** reads the extension's copy, and the extension never reads the app's.
@@ -770,26 +849,36 @@ Behaviour:
 - `save` is `SecItemUpdate`, falling back to `SecItemAdd` on `errSecItemNotFound`. Values are raw `Data`; there is no text encoding at all (the b64:/hex lesson).
 - Calls run on the actor's executor, never on the main thread.
 
-### 6.3 Extension store (System keychain)
+### 6.3 Extension store (root-owned container files)
+
+Why not the System keychain (draft 1's design):
+- An NE system extension is effectively a daemon, so it cannot use the data-protection keychain. A **sandboxed** one hits sandbox violations on `/Library/Keychains/System.keychain` (DTS, forum 672456; the same failure was reported in 680013).
+- Root's *default* keychain is not automatically the System keychain. Targeting it needs `SecKeychainOpen`/`SecKeychainSetPreferenceDomain` + `kSecUseKeychain`, all deprecated and unverified from a sandbox.
+- `SecAccess`/`SecTrustedApplicationCreateFromPath` are deprecated, and there is no supported API to set partition lists (DTS, 98182: "there's no supported way").
+- Draft 1's fallback ("sealed file, key in the System keychain") has the same blocker.
+- DTS does say a sysex *can* use the file-based System keychain with work (824202: "That's what I'd use, possibly with a scrambling layer"). So it stays an **optional upgrade** that S4 may adopt, not the baseline.
 
 ```swift
-actor SystemKeychainSecretStore {
-    func put(_ kind: SecretKind, _ id: UUID, _ bytes: SecretBytes) throws(LPError)
+actor ContainerSecretStore {               // TunnelEngine
+    func put(_ kind: SecretKind, _ id: UUID, ownerUID: uid_t, _ bytes: SecretBytes) throws(LPError)
     func get(_ kind: SecretKind, _ id: UUID) throws(LPError) -> SecretBytes?
     func delete(_ kind: SecretKind, _ id: UUID) throws(LPError)
     func deleteAll(ownerUID: uid_t) throws(LPError)
 }
 ```
 
-- `kSecUseDataProtectionKeychain: false`. The process is root, so the default keychain is `/Library/Keychains/System.keychain`.
-- Each item is created with an explicit `SecAccess`:
-  - a trusted-application list containing **only** the extension (`SecTrustedApplicationCreateFromPath(nil)`, i.e. self);
-  - a partition list `teamid:M53GHX9FAY`.
-  - This means the item stays readable across extension updates (same team and designated requirement) and is unreadable to any other code without an admin prompt.
-- `kSecAttrLabel` is "LockPlus tunnel secret". `kSecAttrDescription` holds the profile UUID only, never the name.
-- Updates are delete+add. This is the e7bbed1/cbd05ce lesson: `SecItemUpdate` never relocates an item.
-- **Assumption A-KC-1:** a sandboxed root system extension can add, read and delete System-keychain items with this ACL without -25291 (`errSecNotAvailable`) or -25308 (`errSecInteractionNotAllowed`). Spike S4 validates this.
-  - **Fallback:** a file per profile in the extension's sandbox container (root, 0600, under `/private/var/root/Library/Containers/<ext-id>/`), sealed with AES-GCM under a key in the System keychain. If even the key cannot be stored, it is a file key protected only by root ownership. Root ownership already defeats A1; the fallback loses only defence against an admin user.
+Layout and rules:
+- The directory is `<container>/Data/Library/Application Support/secrets/` (§3.3). At first use the store creates it with mode 0700 and verifies `lstat` owner `0`, mode `0700` and not a symlink. If verification fails, the store refuses to operate (`.secretStoreUnavailable`).
+- Files are written with `open(O_CREAT|O_EXCL|O_NOFOLLOW, 0600)` to a temp name, `F_FULLFSYNC`, then `rename`. Reads use `O_NOFOLLOW` and check owner and mode via `fstat`.
+- Each file is `AES.GCM.SealedBox.combined` under the 256-bit **file key**, with AAD binding the UUID, kind and revision (§3.3). A file swapped between profiles fails authentication.
+- The **file key** is generated once with `SecRandomCopyBytes`. How it is kept at rest is S4's question:
+  1. **Primary candidate: Secure Enclave wrap.** Create `SecureEnclave.P256.KeyAgreement.PrivateKey` (CryptoKit). Store its wrapped `dataRepresentation` in `se.key` and the file key HPKE-sealed to its public key in `filekey.wrapped`. Quinn (forum 804612) reports this works from a daemon via CryptoKit but has "no official answer" on support. Default accessibility is `AfterFirstUnlockThisDeviceOnly`, so unwrapping **before the first user login after boot** fails with -25308. **Decision:** we accept that rather than use the deprecated `kSecAttrAccessibleAlways`. A pre-login on-demand start fails with `.secretStoreUnavailable` and on-demand retries after login. The Go app never connected before login either.
+  2. **Fallback: plain root file.** `filekey.raw`, 0600 root. This is equivalent to "root ownership only".
+  3. **Optional upgrade (S4, not v2.0 baseline):** the file key in the System keychain, only if S4 shows it works from the sandboxed extension without temporary-exception entitlements and without prompts.
+- **What this protects, and what it doesn't.** Root ownership is the real boundary: it defeats A1 (same-user malware) and non-admin users (A2). The Secure Enclave wrap adds only that copied files, disk images and backups are useless off this Mac. It does **not** stop a live root process on this Mac, which can use the wrapped key the same way we do. **Admin users are out of scope** (§1.3 A2), and this is stated in the user documentation.
+- The provision index records `ownerUID` per UUID, and `deleteAll(ownerUID:)` deletes exactly those files.
+- The app → XPC → extension hand-off is unchanged (§6.4). The app never reads these files, and the extension never reads the app's keychain.
+- **Assumption A-KC-1 (revised):** a sandboxed root system extension can create, read, rename and delete files in its own container on macOS 15/26/27, and the container survives extension replacement. TBD-by-S4. Container access is the sandbox's basic contract, so the risk is low. A-KC-2 (Secure Enclave wrap from the sysex, including after replacement and after reboot before and after login) is TBD-by-S4, with fallback 2.
 
 ### 6.4 Hand-off and reconcile
 
@@ -863,6 +952,17 @@ Read path:
 - Accessing an item the Go binary created triggers **one** macOS "LockPlus wants to use your confidential information" prompt per item. The migration UI announces this up front, and the step is optional ("Import saved OpenVPN passwords").
 
 Write path: `CredentialStore.save(newUUID, …)`, then provision. Legacy items are **never modified or deleted**.
+
+### 6.8 Restore to a new Mac (Time Machine, Migration Assistant)
+
+- The sealing key and saved credentials are `…ThisDeviceOnly` (§6.2), and the extension store is device-bound (§6.3). A restore or migration to **another** Mac brings `profiles/*.sealed` and metadata, but nothing that can open them. The profiles are unrecoverable from those files. A restore onto the **same** Mac (same Secure Enclave, keychain intact) is unaffected.
+- Detection: sealed files exist but the payload-key item is missing (or the HMAC check fails because the key is new). The app then shows "Profiles from another Mac are locked", with the profile names (from metadata) and three actions:
+  - "Re-import" (file picker);
+  - "Import from old LockPlus" (§13.1, if Go data exists);
+  - "Remove locked profiles".
+- It never generates a new key silently over existing sealed files. A new key is created only when the user removes the locked profiles or starts fresh.
+- **Nudge:** after the first successful import, and from Settings › General, the app suggests "Export all profiles" to a location of the user's choosing, with the warning "This file contains your VPN keys in plain text; store it somewhere safe" (Export-all is LAContext-gated, 0600, `O_NOFOLLOW`). The nudge is shown once, then lives in Settings.
+- A passphrase-encrypted export format is listed in §21. v2.0 exports remain standard `.conf`/`.ovpn` files in a zip, so they stay portable to other clients.
 
 ---
 
@@ -942,8 +1042,8 @@ States:
 
 | From | Event | To | Side effects |
 |---|---|---|---|
-| idle | `startTunnel(options)` | starting | Read `providerConfiguration`, load the payload from the System keychain, **re-validate**, check the revision. Arm the **connect deadline** (WG 45 s, OVPN 90 s). |
-| starting | validation or keychain error | stopped | Fail the `startTunnel` completion with `.profileInvalid`/`.profileNotProvisioned`/`.keychainUnavailable`. |
+| idle | `startTunnel(options)` | starting | Read `providerConfiguration`, load the payload from the container secret store (§6.3), **re-validate**, check the revision. Arm the **connect deadline** (WG 45 s, OVPN 90 s). |
+| starting | validation or secret-store error | stopped | Fail the `startTunnel` completion with `.profileInvalid`/`.profileNotProvisioned`/`.secretStoreUnavailable`. |
 | starting | ok | connecting | `adapter.start(…)`. |
 | connecting | `authRequired` | awaitingAuth | **Pause the connect deadline** (L-RC-4) and start the auth deadline (10 min). Push `tunnelEvent(authRequired)` if an app is connected. |
 | awaitingAuth | `answerAuth(promptID)` matching | connecting | Resume the connect deadline with its remaining budget. A non-matching `promptID` is rejected as `.staleAnswer` (drained; L-RC-4). |
@@ -959,10 +1059,11 @@ States:
 | reasserting | adapter data plane up (and settings reapplied if changed) | connected | `setReasserting(false)`, reset the backoff. |
 | reasserting | attempt fails | reasserting(attempt+1) | Wait `backoff.next()` (§7.6). |
 | reasserting | budget exhausted, **kill switch off** | stopped | `cancelTunnelWithError(.peerUnreachable)`. |
-| reasserting | budget exhausted, **kill switch on** | reasserting | Keep retrying at the cap. Traffic stays blocked (fail closed). The UI shows "Reconnecting (blocked)". |
+| reasserting | budget exhausted, **kill switch on** | reasserting | Keep retrying at the cap. Traffic is expected to stay blocked (fail closed; TBD-by-S2, §10.1). The UI shows "Reconnecting (blocked)". |
 | any running | `sleep()` | sleeping | `adapter.sleep()`, stop the watchdog, then call the completion (L-RC-5). |
 | sleeping | `wake()` | reasserting(.wake) | `setReasserting(true)`, `adapter.wake()`. UDP sockets are recreated. Must reach `connected` within 30 s or follow the normal backoff path. |
-| any | adapter `.fatal(e)` | stopped | **`cancelTunnelWithError(e)` immediately** (L-LC-1). |
+| any | adapter `.fatal(e)`, kill switch off | stopped | **`cancelTunnelWithError(e)` immediately** (L-LC-1). |
+| any | adapter `.fatal(e)`, kill switch on | per §10.1 S2 outcome | Default (`blockMode = .cancel`): `cancelTunnelWithError(e)` immediately, as above. If S2 shows that `cancelTunnelWithError` **fails open** under `includeAllNetworks`: `blockMode = .holdBlocked`. The controller tears down the adapter, keeps the provider alive with `reasserting = true` and **no** further retries, and records `lastError = e` with code `.blockedAfterFailure`. The status is `.reasserting`, never `.connected` (L-LC-1 still holds). It stays this way until the user disconnects or reconnects; turning the kill switch off requires disconnecting first (L-KS-2). This mirrors the Go `fwBlocked` state. |
 | any | `stopTunnel(reason)` | stopping → stopped | `adapter.stop()` with a 5 s cap, write the session summary, then the completion. **The provider never calls `exit()` or `stopTunnel` itself** (NR §4 pitfall 10). |
 
 Rules:
@@ -973,7 +1074,7 @@ Rules:
 ### 7.3 Data plane and fds
 
 - **WireGuard:** WireGuardKit locates the utun fd that NE created by scanning fds for the `com.apple.net.utun_control` socket (upstream behaviour). Our fork keeps this.
-- **OpenVPN:** **Decision:** openvpn3's `tun_builder_establish()` returns the **same utun fd** (found by the same scan in `ProviderHost.tunnelFileDescriptor`), after the controller has applied the settings. openvpn3's mac tun code then reads and writes utun frames (4-byte AF header) directly.
+- **OpenVPN:** **Decision:** openvpn3's `tun_builder_establish()` returns the **same utun fd** (found by the same scan in `ProviderHost.tunnelFileDescriptor`), after the controller has applied the settings. openvpn3's `TunBuilderClient` (`openvpn/tun/builder/client.hpp`; the `tun/mac` client is not compiled, §8.1) then reads and writes utun frames (4-byte AF header) on that fd. Whether the builder client handles the AF header on macOS is part of S11.
   - **Assumption A-OVPN-FD:** this works with openvpn3's `TunBuilderClient` on macOS. Spike S11 validates it.
   - **Fallback:** a `socketpair(AF_UNIX, SOCK_DGRAM)` bridge, where a Swift pump moves packets between `packetFlow.readPackets` and the pair, adding or stripping the AF header. It costs about 10–15 % of throughput, which is acceptable.
 
@@ -1004,7 +1105,7 @@ The watchdog ticks every 10 s while `connected`.
   - Still stale → reasserting(.deadPeer) with endpoint re-resolution.
 - **OpenVPN:**
   - openvpn3 keepalive/`ping-restart` handles dead peers internally and reports `RECONNECTING`.
-  - Our floor: if the profile has no `ping`/`ping-restart`/`keepalive`, normalization appends `ping 10` + `ping-restart 60` (ported from the Go `args()` floors).
+  - Our floor: if the profile has no `ping`/`ping-restart`/`keepalive`, normalization appends `ping 10` + `ping-restart 60` (ported from the Go `args()` floors). openvpn3 lists `ping`/`ping-restart` as push-only (`settings_pushonlyoptions`, fatal if left untouched), but `ProtoContext::Config::load` reads them from the profile, which touches them. The §8.1 `ClientOptions` check proves that the floored canonical profile is accepted; if a future openvpn3 stops reading them, the floor is dropped and the watchdog check below becomes the only floor.
   - The watchdog additionally checks that `transport_stats().lastPacketReceived` is younger than 120 s.
 
 ### 7.6 Backoff and timeouts (L-RC-3)
@@ -1047,45 +1148,96 @@ untrusted bytes
   → [3] Allowlist      (port of internal/ovpn/allowlist.go + inspectProfile: rules, inline modes,
                        setenv/setenv opt recursion, ports, providers, dev/dev-type, http/socks proxy)
   → [4] EngineSupport  classify each accepted directive: .mapped | .ignored(reason) | .unsupported(reason)
+                       (table GENERATED from openvpn3's lists, see §8.2)
   → [5] Normalizer     emit CANONICAL text: one directive per line, every argument double-quoted with
                        only \\ and \" escapes, inline blocks as "<name>\n…\n</name>" with body lines
                        validated (no line starting with "</"), comments dropped, ignored directives dropped,
                        floors appended (ping/ping-restart, mssfix 1300 only if no MTU directive),
-                       inline <auth-user-pass> EXTRACTED to CredentialRecord and removed
+                       inline <auth-user-pass> EXTRACTED to CredentialRecord and removed.
+                       Caps on the OUTPUT: total ≤ 256 KiB (openvpn3 MAX_PROFILE_SIZE = 262144),
+                       every line incl. inline-block body lines ≤ 512 bytes (MAX_LINE_SIZE),
+                       directive names ≤ 64 chars (MAX_DIRECTIVE_SIZE); over ⇒ reject with the limit named
   → [6] Differential   OpenVPN3Options.parse(canonical) → [[String]] must equal our directive stream
                        exactly (names, args, inline bodies); mismatch ⇒ reject "parser disagreement"
-  → [7] openvpn3 eval  (extension, validateProfile XPC) ClientAPI eval_config(canonical) → EvalConfig:
-                       error/message, staticChallenge(+echo), autologin, privateKeyPasswordRequired,
-                       remoteHost/Port/Proto, serverList
+  → [7] openvpn3 check (extension, validateProfile XPC):
+                       (a) ClientAPI eval_config(canonical) → EvalConfig: error/message,
+                           staticChallenge(+echo), autologin, privateKeyPasswordRequired,
+                           remoteHost/Port/Proto, serverList;
+                       (b) construct ClientOptions(options, cc) with a no-op TunBuilder stub and no
+                           transport start; its constructor runs handle_unused_options and throws
+                           UNUSED_OPTIONS for unknown, removed, server-only, push-only, standalone,
+                           not-implemented-fatal and management* directives. Any throw ⇒ reject,
+                           with openvpn3's category text mapped to our "Not supported" group (§8.3)
   → ImportReport + Profile + canonical payload
 ```
 
-- Steps [1]–[6] run in the app at import.
+- Steps [1]–[6] run in the app at import. Step [7] runs at import too, through the `validateProfile` XPC, so `UNUSED_OPTIONS` surfaces **before** the profile is saved, not at `connect()`. If the extension is unavailable at import, the profile is saved as "Not yet verified", and Connect is disabled until [7] passes.
+- *Why [7b] is needed:* `eval_config` (`OpenVPNClientHelper::parse_config`) does **not** call `handle_unused_options`. Only the `ClientOptions` constructor does, at `cliopt.hpp` ≈ line 596, and that constructor normally runs inside `connect()` (`ovpncli.cpp`, `new ClientOptions(state->options, cc)`). Constructing `ClientOptions` performs no network I/O. S13 confirms the stub construction is side-effect free (TBD-by-S13). If it is not, the shim calls a vendored copy of `handle_unused_options` over the parsed `OptionList` after running the same `touch()`ing parse steps, and a unit test pins that copy to upstream.
 - The extension repeats [1]–[7] in `provisionProfile` **and** [1]–[6] again before every `startTunnel`.
-- The engine only ever sees canonical text that two independent parsers agree on, so a tokenizer divergence cannot become a bypass.
-- `openvpn3` builds without `OPENVPN_PLATFORM_*` script support and with no file access. The sandbox would deny file access anyway.
+- The engine only ever sees canonical text that two independent parsers agree on, and that the engine's own option consumer accepted, so a tokenizer divergence cannot become a bypass.
+- **Build rules for openvpn3 (MUST):**
+  - compile with `-DUSE_TUN_BUILDER`. Without it, `cliopt.hpp` selects `openvpn/tun/mac/client/tuncli.hpp` on macOS, whose `tunsetup.hpp` shells out to `/sbin/route` and `ifconfig`;
+  - exclude `openvpn/tun/mac/client/*` from the build; CI greps the extension's symbols for `MacTun`/`TunMac` and fails if found;
+  - no `OPENVPN_COMMAND_AGENT`, no `OPENVPN_EXTERNAL_TUN_FACTORY`, no script support, no file access. The sandbox would deny exec and file access anyway; the build rules make it impossible rather than merely denied.
 
 ### 8.2 Directive mapping
 
-The Go allowlist was written for openvpn **2.7**; openvpn3 supports a subset. Classification:
+The Go allowlist was written for openvpn **2.7**; openvpn3 supports a subset. Draft 1 asserted openvpn3's handling per directive. Draft 2 **derives** it, because openvpn3 rejects at `connect()` (via `handle_unused_options`, `cliopt.hpp` ≈ 945) every directive that its option consumers did not `touch()`, unless the directive is on a non-fatal list.
 
-| Group | Directives | openvpn3 handling | Our class |
-|---|---|---|---|
-| Role/transport | `client`, `tls-client`, `pull`, `proto`, `remote`, `remote-random`, `resolv-retry`, `nobind`, `port`, `rport`, `connect-retry(-max)`, `server-poll-timeout`, `explicit-exit-notify`, `<connection>` | native | mapped |
-| Proxy | `http-proxy host port`, `<http-proxy-user-pass>`, `http-proxy-option` | native (credentials → `proxyUsername/Password` in Config) | mapped. `socks-proxy` → unsupported |
-| TLS/crypto | `ca`/`cert`/`key`/`extra-certs`/`tls-auth`/`tls-crypt`/`tls-crypt-v2`/`pkcs12` (inline), `remote-cert-tls`, `verify-x509-name`, `peer-fingerprint`, `auth`, `cipher`, `data-ciphers(-fallback)`, `ncp-ciphers`, `tls-version-min/max`, `tls-cipher`, `tls-ciphersuites`, `tls-cert-profile`, `key-direction`, `reneg-sec` | native (tls-crypt-v2 per spike gate) | mapped. `crl-verify`, `dh`, `verify-hash` → ignored with a warning |
-| Compression | `comp-lzo`, `compress`, `allow-compression` | openvpn3 `compressionMode` | mapped. **Decision:** `compressionMode = "asym"` (decompress only, VORACLE) |
-| DNS/routes | `dhcp-option`, `dns`, `route`, `route-ipv6`, `route-nopull`, `redirect-gateway`, `redirect-private`, `block-ipv6`, `pull-filter`, `topology`, `route-metric`, `route-gateway` | native (`PushedOptionsFilter` for pull-filter/route-nopull) | mapped |
-| MTU | `tun-mtu`, `mssfix`, `link-mtu`, `fragment`, `mtu-disc` | `tun-mtu`, `mssfix` native | `fragment` → **unsupported** (reject: the server requires it); others → ignored |
-| Liveness | `keepalive`, `ping`, `ping-restart`, `ping-exit`, `inactive` | native | mapped |
-| Auth | `auth-user-pass` (bare or inline), `auth-nocache`, `auth-retry`, `static-challenge`, `push-peer-info` | native; `auth-retry` superseded by our prompt flow | mapped; `auth-retry` → ignored |
-| Logging | `verb`, `mute`, `mute-replay-warnings` | n/a (L-OVPN-2: no verb-driven key logging in openvpn3) | ignored |
-| Harmless/Windows/Linux | `persist-*`, `float`, `fast-io`, `sndbuf`, `rcvbuf`, `socket-flags`, `tun-ipv6`, `disable-occ`, `disable-dco`, `ignore-unknown-option`, `script-security`, `dns-updown disable`, `user`, `group`, `route-method`, `block-outside-dns`, `register-dns`, `ip-win32`, `dhcp-renew`, `dhcp-release`, `dhcp-pre-release`, `tap-sleep`, `providers`, `setenv`/`setenv-safe` (UV_/IV_ and listed names) | n/a | ignored (dropped from the canonical text) |
-| `setenv opt X …` | inner X is checked by the allowlist, then classified as X | | as X |
-| `dev`/`dev-type` | `tun` only (allowlist) | native | mapped as `dev tun` |
-| Everything not on the allowlist | | | **forbidden** (import rejected; line and name shown, never the arguments) |
+**How `EngineSupport` is generated (`Tools/gen-engine-support`, run on every openvpn3 submodule bump):**
+1. Extract openvpn3's lists from the pinned `openvpn/client/cliopt.hpp`. Each list maps to a class:
+   - `settings_ignoreWithWarning`, `settings_feature_not_implemented_warn` and `settings_script_plugin_feature` are non-fatal ("Unsupported option (ignored)" etc.) → **ignored(warn)**, dropped from canonical text;
+   - `settings_ignoreSilently` → **ignored(silent)**, dropped;
+   - `settings_removedOptions`, `settings_serverOnlyOptions`, `settings_standalone_options`, `settings_feature_not_implemented_fatal`, `settings_pushonlyoptions` and any `management*` directive are fatal if untouched → **unsupported** unless step 2 proves the profile parser touches them;
+   - a directive on no list is fatal if untouched (`UNKNOWN/UNSUPPORTED OPTIONS`) → **unsupported** unless step 2 proves otherwise.
+2. **Empirical touch test:** for every directive on the Go allowlist, the generator builds a minimal valid client profile plus that directive (with representative arguments from the shared fixtures) and runs [7b] (`ClientOptions` construction) in a host-side test binary.
+   - Accepted with no warning → **mapped**.
+   - Accepted with a warning → **ignored(warn)**.
+   - `UNUSED_OPTIONS` → **unsupported**, or, if the directive is harmless and droppable, **ignored(warn)** by a reviewed override list in `EngineSupportOverrides.swift`, which records the reason.
+3. Emit `LPParsing/OVPNEngineSupport.generated.swift`. It is committed, and the openvpn3 tag is recorded in its header.
 
-`EngineSupport` is a table in `LPParsing/OVPNEngineSupport.swift` with a unit test that asserts the table covers exactly the allowlist's key set.
+Tests:
+- A unit test regenerates the table in CI and **diffs** it against the committed file. Any difference fails the build, so a submodule bump cannot silently change the classification.
+- A second test asserts that the table covers exactly the allowlist's key set.
+
+Expected classification (draft 1's table, corrected by reading openvpn3 `master`; the generated table is authoritative where they differ):
+
+| Group | Directives | Expected class (from the lists; TBD-by-generator where a directive is fatal-if-untouched) |
+|---|---|---|
+| Role/transport | `client`, `tls-client`, `pull`, `proto`, `remote`, `remote-random`, `port`, `rport`, `server-poll-timeout`, `<connection>` | mapped |
+| | `nobind` | ignored(silent) |
+| | `resolv-retry`, `connect-retry(-max)`, `explicit-exit-notify` | ignored(warn) (openvpn3 lists them as "Unsupported option (ignored)") |
+| | `bind`, `float` | `bind`: ignored(warn) (not-implemented-warn); `float`: TBD-by-generator |
+| Proxy | `http-proxy host port`, `<http-proxy-user-pass>`, `http-proxy-option` | mapped (credentials → `proxyUsername/Password` in Config) |
+| | `socks-proxy` | **unsupported** (`settings_feature_not_implemented_fatal`) |
+| TLS/crypto | `ca`/`cert`/`key`/`extra-certs`/`tls-auth`/`tls-crypt`/`tls-crypt-v2`/`pkcs12` (inline), `remote-cert-tls`, `verify-x509-name`, `peer-fingerprint`, `auth`, `cipher`, `tls-version-min`, `tls-cipher`, `tls-ciphersuites`, `tls-cert-profile`, `key-direction`, `reneg-sec` | mapped (tls-crypt-v2 per spike gate) |
+| | `data-ciphers(-fallback)`, `ncp-ciphers`, `tls-version-max` | ignored(warn) (openvpn3 negotiates via IV_CIPHERS; §8.6 uses them only to set our legacy flag) |
+| | `dh` | dropped from canonical text with a warning (server-only: fatal if passed through) |
+| | `verify-hash` | dropped with a warning (fatal if passed through) |
+| | `crl-verify` | TBD-by-generator; if unsupported, dropped with a warning "CRL not checked" |
+| Compression | `comp-lzo`, `compress` | mapped. **Decision:** `compressionMode = "asym"` (decompress only, VORACLE) |
+| | `allow-compression` | ignored(warn) |
+| DNS/routes | `dhcp-option`, `dns`, `route`, `route-ipv6`, `route-nopull`, `redirect-gateway`, `redirect-private`, `block-ipv6`, `pull-filter`, `route-metric` | mapped (`PushedOptionsFilter` for pull-filter/route-nopull); TBD-by-generator for each |
+| | `topology`, `route-gateway` | **push-only** in openvpn3 (fatal if untouched in a profile). Expected: dropped from the profile with an info note ("set by the server"); TBD-by-generator |
+| MTU | `tun-mtu`, `mssfix` | mapped |
+| | `link-mtu` | ignored(warn) |
+| | `mtu-disc` | ignored(warn) (not-implemented-warn) |
+| | `fragment` | **unsupported** (reject: the server requires it) |
+| Liveness | `ping`, `ping-restart` | mapped (touched by `ProtoContext::Config::load` despite being on the push-only list; confirmed by the touch test) |
+| | `keepalive` | expected mapped (also read by `ProtoContext`, although it is on `ignoreWithWarning`); TBD-by-generator |
+| | `ping-exit`, `inactive` | TBD-by-generator; `ping-exit` is push-only |
+| | `ping-timer-rem` | **unsupported** in openvpn3 (fatal list) → dropped with a warning (it only matters for p2p) |
+| Auth | `auth-user-pass` (bare or inline), `auth-nocache`, `static-challenge`, `push-peer-info` | mapped |
+| | `auth-retry` | ignored(warn) (superseded by our prompt flow) |
+| Logging | `verb`, `mute-replay-warnings` | ignored(silent) |
+| | `mute` | ignored(warn) |
+| Harmless/Windows/Linux | `persist-*`, `fast-io`, `sndbuf`, `rcvbuf`, `socket-flags`, `tun-ipv6`, `disable-occ`, `disable-dco`, `ignore-unknown-option`, `script-security`, `dns-updown disable`, `user`, `group`, `route-method`, `block-outside-dns`, `register-dns`, `ip-win32`, `dhcp-renew`, `dhcp-release`, `dhcp-pre-release`, `tap-sleep`, `providers`, `setenv`/`setenv-safe` (UV_/IV_ and listed names) | ignored (dropped from the canonical text) |
+| `setenv opt X …` | inner X is checked by the allowlist, then classified as X | as X |
+| `dev`/`dev-type` | `tun` only (allowlist) | mapped as `dev tun` |
+| `management*`, `log*`, `status`, `daemon`, `writepid`, … | not on the Go allowlist | **forbidden** (and fatal in openvpn3) |
+| Everything not on the allowlist | | **forbidden** (import rejected; line and name shown, never the arguments) |
+
+Directives classed "dropped" never reach openvpn3, so they cannot trigger `UNUSED_OPTIONS`. The [7b] check is the backstop for anything the table gets wrong.
 
 ### 8.3 Unsupported-directive UX
 
@@ -1108,6 +1260,8 @@ The shim sets:
 - `Config.ssoMethods = ""`, so IV_SSO is never advertised;
 - `retryOnAuthFailed = false`, `autologinSessions = true`, `info = true`.
 
+`ProvideCreds` (`client/ovpncli.hpp`, current `master`) has exactly `username`, `password`, `http_proxy_user`, `http_proxy_pass`, `response` and `dynamicChallengeCookie`. It has **no** `cachePassword` or `replacePasswordWithSessionID` fields (those existed in older openvpn3 releases). Credential caching is internal: `ClientCreds` keeps the username/password for the session and prefers a server-pushed `auth-token` (`session_id`) on reconnect when one exists (`openvpn/client/clicreds.hpp`). The shim must not assume any per-call caching control. The only levers are what we pass to `provide_creds`, and `ClientCreds::purge_user_pass()`/`purge_session_id()` through a small, vendored patch (`Vendor/patches/openvpn3/0001-expose-purge-creds.patch`) that exposes them on `OpenVPNClient`.
+
 | Flow | Sequence |
 |---|---|
 | Password (saved) | Extension loads the creds, then `provide_creds(username, password)` before `connect()`. No prompt. |
@@ -1115,7 +1269,7 @@ The shim sets:
 | Static challenge (SC) | Prompt has the password field plus the challenge text as a label and a response field (echo per flag). `ProvideCreds.response = response`; openvpn3 builds `SCRV1:b64(pw):b64(resp)`. If the profile requests the **concat** format and openvpn3 lacks it (spike S8), the shim sets `password = pw + resp` and `response = ""` (Go `combineStaticChallenge` semantics). |
 | Dynamic challenge (CRV1) | `connect()` returns after event `DYNAMIC_CHALLENGE` with the cookie in `info`. `OpenVPNClientHelper::parse_dynamic_challenge(cookie, dc)` → prompt `.dynamicChallenge(text: dc.challenge, echo: dc.echo)`, plus a **read-only username decoded from the cookie's base64 field** (`lockedUsername`). The answer goes to `ProvideCreds{username: <from cookie>, response, dynamicChallengeCookie: cookie}`, then a new `connect()`. The connect deadline is paused throughout. |
 | AUTH_FAILED | Event `AUTH_FAILED` (`fatal` or not). If creds were stored: clear the extension's password copy, then prompt `reason: .rejected` with the server's reason text (sanitized, ≤ 200 chars) shown as secondary text. If they were not stored: prompt `.rejected`. **Never** auto-retry. After 3 consecutive rejections within 10 min: `cancelTunnelWithError(.authFailed)`. |
-| Reconnect requiring auth | openvpn3 reuses session creds or an `auth-token`. If the server rejects (OTP profiles): `reasserting` → `awaitingAuth(reason: .reconnect)`, and the backoff/budget is paused. |
+| Reconnect requiring auth | openvpn3's **internal** reconnect (ping-restart, transport error, our `reconnect(0)`) re-sends the cached credentials, or the `auth-token` if the server pushed one. For OTP profiles (`appendOTP`, static challenge, CRV1) a re-sent password contains a **spent OTP**. Servers count that as a failed login, and repeated reconnects can lock the account (M6). Rule: after CONNECTED, the shim calls `session_token()`. **With an auth-token:** keep engine-internal reconnects. **Without one, on an OTP profile:** the shim immediately calls `purge_user_pass()`, so no stale OTP can be re-sent. The next internal reconnect then raises the need for credentials, and the controller enters `awaitingAuth(reason: .reconnect)` with the backoff/budget paused, so the user enters a fresh code. If the server rejects the auth-token itself (`AUTH_FAILED` on reconnect), the token is purged and the same prompt is used. Non-OTP profiles keep cached credentials for reconnects. S8 verifies that BHP and AllService push `auth-token` (TBD-by-S8) and that purging prevents any re-send, checked in the test server's auth log. If S8 shows that a purged-credential reconnect still reaches the server as a failed login, the fallback is to **disable engine-internal reconnect for OTP profiles without a token**: on the `RECONNECTING` event the shim calls `stop()`, the controller prompts, and the answer starts a fresh `connect()`. |
 | Web/SSO | Event `INFO` with `WEB_AUTH:`/`OPEN_URL:`/`CR_TEXT:` → `cancelTunnelWithError(.webAuthUnsupported)` immediately (no hang). The import pre-check warns when the profile contains `setenv IV_SSO` (stripped). |
 | Encrypted key | Supported: `Config.privateKeyPassword` from `CredentialRecord.keyPassphrase` or a `.keyPassphrase` prompt. |
 | Proxy auth without inline creds | `.unsupported` at import (the Go `msgProxyAuth` equivalent). |
@@ -1139,13 +1293,13 @@ public struct NetworkPlan: Sendable, Equatable {
     var ipv4: [IPv4Assignment], ipv6: [IPv6Assignment]
     var includedRoutes4: [Route4], excludedRoutes4: [Route4], includedRoutes6, excludedRoutes6
     var redirectGateway: (v4: Bool, v6: Bool), blockIPv6: Bool
-    var dns: DNSPlan, mtu: Int?, remoteAddress: String
+    var dns: DNSPlan, mtu: Int?, remoteAddress: String   // remoteAddress from tun_builder_set_remote_address
 }
 public struct DNSPlan: Sendable, Equatable {
     var servers: [String]            // ordered by priority
     var searchDomains: [String]
     var splitDomains: [String]       // resolve-domains / DOMAIN when split
-    var doh: URL?, dot: String?      // from `dns server N transport DoH|DoT` + sni (if supported)
+    // DoH/DoT transports are cut from v2.0 (§21); `transport DoH|DoT` servers are used as plain DNS inside the tunnel
 }
 ```
 
@@ -1154,17 +1308,21 @@ public struct DNSPlan: Sendable, Equatable {
 | `dns server N address A …` (2.7 profile or push; a pushed priority replaces the profile's) | `servers`, ordered by ascending N; a `:port` suffix is stripped (Go `stripDNSPort`) |
 | `dns server N resolve-domains d …` | `splitDomains` |
 | `dns search-domains d …` | `searchDomains` |
-| `dns server N transport DoH\|DoT`, `sni` | `doh`/`dot` (§10.3, spike S3) |
+| `dns server N transport DoH\|DoT`, `sni` | ignored with an import/connect note ("encrypted DNS transport not used; queries go in plain text inside the tunnel"). The server addresses are still used (§10.3) |
 | `dhcp-option DNS`/`DNS6` | `servers`, **only if no `dns server` exists** (2.7 semantics, Go `dnsConfig.entries`) |
 | `dhcp-option DOMAIN` | `searchDomains`; also `splitDomains` when `dnsMode == .split` |
 | `dhcp-option DOMAIN-SEARCH` | `searchDomains` |
 | PUSH_UPDATE changing DNS/routes | openvpn3 re-runs the tun builder (if supported; S13) → the controller re-applies settings with a short `reasserting` |
 
 - The callbacks used: `tun_builder_set_dns_options(const DnsOptions&)` (openvpn3 ≥ 3.10). The legacy `tun_builder_add_dns_server`/`add_search_domain` are kept as fallbacks if a pinned version still emits them.
-- Pushed-route hardening:
-  - drop any included route that covers the server's endpoint IP (it would loop);
-  - cap at 1024 routes;
-  - routes with prefix length < 1 are only honoured via `redirect-gateway`.
+- **Endpoint protection (replaces draft 1's "drop routes covering the endpoint").** That rule would have discarded the pushed `0.0.0.0/1` + `128.0.0.0/1` pair (`redirect-gateway def1`), because both halves "cover" some endpoint, silently turning a full tunnel into a split one. Instead:
+  - `NEPacketTunnelNetworkSettings(tunnelRemoteAddress:)` is set to the address openvpn3 reports via `tun_builder_set_remote_address` (the connected server IP);
+  - `NetworkSettingsBuilder` adds that address as an **excluded route** (`/32` or `/128`) in the matching family, so a pushed route can never capture the transport;
+  - every included route is kept as pushed, subject to the cap and `pull-filter`.
+  - In TunBuilder mode, openvpn3 does **not** add remote-bypass routes itself: `remote_bypass` is never set by `TunBuilderClient`, and only the command-agent builds call `add_bypass_route`. So this is our job.
+  - NE already exempts the provider's own sockets from the tunnel, so the excluded route is defence in depth. Whether it is honoured under `includeAllNetworks` is TBD-by-S2. Either answer is safe, because the provider-socket exemption is what carries the traffic.
+  - On a reconnect to a different server IP (remote list failover), the settings are re-applied with the new `tunnelRemoteAddress` and excluded route.
+- Pushed-route caps: at most 1024 routes; routes with prefix length < 1 are only honoured via `redirect-gateway`.
 
 ### 8.6 Legacy CBC and crypto (L-OVPN-2)
 
@@ -1250,6 +1408,7 @@ The validator returns `[ValidationIssue(field: "Peer[0].Endpoint", message: Loca
   - The value is shown in Detail. A parse failure is an import error, never a silent fallback (the c7e3a74 lesson).
 - MSS: NE does not clamp MSS. For WireGuard the MTU is the lever. For OpenVPN, `mssfix 1300` is the floor (§8.1). The fragment and RDP/SMB cases stay in the harness (L-KS-4).
 - Keepalive floor: WG profiles without `PersistentKeepalive` stay as they are (the user's choice), but the import report suggests 25 s when the kill switch is on.
+- IPv6 for v4-only full tunnels: §10.5.
 
 ---
 
@@ -1268,9 +1427,42 @@ The validator returns `[ValidationIssue(field: "Peer[0].Endpoint", message: Loca
 Rules:
 - `ProfileStore.updatePolicy` throws `.mustBeDisconnected` unless the manager's status is `.disconnected` or `.invalid`. The UI disables the toggles while connected, with an explanation.
 - The policy is set when the manager is saved. **Every** connect path (window, menu bar, on-demand, System Settings) uses the same saved configuration, so policy cannot depend on the UI path (L-LC-4).
-- With a kill-switch profile reasserting, traffic is blocked: fail closed, by design. The menu bar shows "Blocked — reconnecting".
+- With a kill-switch profile reasserting, traffic is expected to be blocked (fail closed; TBD-by-S2). The menu bar shows "Blocked — reconnecting".
 - **Updates while blocked (L-KS-3):** see §12.3. The tunnel is stopped and on-demand disabled before the extension is replaced, then both are restored.
 - **Assumption A-KS-1:** on macOS 27, `includeAllNetworks` with the exclude flags still permits AirDrop and Xcode device debugging (`excludeDeviceCommunication`), and blocks all other non-tunnel traffic, including the app's own (Sparkle). Spike S2 validates this. **Fallback:** document the exceptions and add a per-profile "compatibility" toggle that disables `includeAllNetworks` and uses `enforceRoutes`.
+
+#### 10.1.1 What `includeAllNetworks` does when the tunnel ends (H1)
+
+Draft 1 asserted these semantics. They are **not known**, and the Go app's behaviour must not be dropped silently. The Go kill switch (`internal/helper/firewall.go`) keeps a tunnel that **died unexpectedly** in `fwBlocked`: "blocked (fail closed, nothing passed but loopback/DHCP/ND) until the user disconnects or reconnects it, or turns the kill switch off". Only a user-initiated disconnect removes the rules.
+
+Spike S2 measures on macOS 15, 26 and 27, with a kill-switch WG profile and a kill-switch OVPN-over-TCP profile:
+
+| # | Event | Expected (TBD-by-S2) | What we measure |
+|---|---|---|---|
+| E1 | `kill -9` of the provider process | **blocked** while `nesessionmanager` restarts the provider (on-demand) or until the session is torn down; connectivity returns only after the system marks the session disconnected | time to `.disconnected`/`.reasserting`; packets on `en0` (BPF) during and after |
+| E2 | `stopVPNTunnel()` from the app or `scutil --nc stop` | **open** immediately: this is a user stop | same |
+| E3 | `cancelTunnelWithError` from the provider (fatal error) | unknown: open or blocked | same |
+| E4 | reasserting (`reasserting = true`, no settings) | blocked | same |
+| E5 | a **new** TCP connect (and, for the record, an ICMP echo) from the provider while connected, other than the tunnel transport | works (provider sockets are exempt) | connect success and time-to-first-byte, 50 trials. Mullvad reports (for iOS; unverified on macOS) that the provider's own TCP/ICMP sockets hang undetectably under the flag |
+| E6 | OpenVPN over TCP: connect, 1 h of load, server-side reset → reconnect | works | no hang, no stall > 10 s |
+| E7 | excluded host route to the endpoint (§8.5) | honoured or ignored; both are safe | routing table and behaviour |
+
+**LK-02 expected outcome (single):** after `kill -9` of the provider with the kill switch on, **no packet leaves a physical interface except to the VPN endpoint, until the user acts or the tunnel reconnects**. The status leaves `.connected` within 5 s. If S2 shows E1 fails open, LK-02 still expects this outcome, met by the app-level design below.
+
+App behaviour for each possible S2 result:
+
+| S2 result | Design |
+|---|---|
+| E1 blocked, E3 blocked | Matches the Go app, except that the Go app also allowed lifting the block by turning the kill switch off; here that needs Disconnect first (L-KS-2). `blockMode = .cancel` (§7.2): a fatal error cancels, and the system keeps blocking until the user disconnects. The UI shows "Blocked — <error>. Disconnect to restore internet." |
+| E1 blocked, E3 **open** | `blockMode = .holdBlocked` (§7.2): on a fatal error with the kill switch on, the provider does **not** cancel. It stays alive in `reasserting` with the adapter stopped (code `.blockedAfterFailure`), which E4 shows to be blocking. The user ends it with Disconnect. This replicates `fwBlocked` for engine failures. |
+| E1 **open** (provider death fails open) | We cannot block from a dead process. **Replicate fail-closed-on-death with on-demand.** Every kill-switch profile gets a `NEOnDemandRuleConnect(interfaceTypeMatch: .any)` while it is connected (saved at connect, removed on user disconnect). After a provider death, the system immediately restarts the provider, and `includeAllNetworks` blocks again from the moment the session is restarting. S2 measures the gap between death and re-block; the gap is documented and LK-02 allows packets only inside it (measured bound + 1 s). The user's Disconnect disables that on-demand rule first (§10.4 handles the interaction with Wi-Fi rules). If even on-demand restart leaves an unbounded gap, the regression is documented as below. |
+| E5 hangs | `measureLatency` uses only the WG handshake RTT and OVPN's own transport stats, never a new provider-originated TCP connect while the tunnel is up; when disconnected it runs before any `includeAllNetworks` session exists. OVPN-over-TCP itself (E6) is a different case, because its socket is the tunnel transport. If E6 hangs, OVPN-over-TCP profiles with the kill switch get the compatibility toggle (`enforceRoutes` instead of `includeAllNetworks`) forced on, with a warning at import. |
+| E2 blocked | The Disconnect action first saves the manager with `includeAllNetworks` unchanged but on-demand off, and waits for `.disconnected`. If traffic is still blocked, that is an OS bug. We report it as a known issue rather than toggling the flag (L-KS-2). |
+
+**Regressions against the Go kill switch (user-facing, in the release notes and help):**
+- The Go app also blocked when the **helper itself** was killed (pf rules persist in the kernel). The native app's equivalent depends on E1. If E1 is open and only the on-demand mitigation applies, a short leak window after a provider crash exists, and the help page states its measured length.
+- The Go app's DNS protection (pf rules for port 53/853 outside the tunnel) has no separate switch: with `includeAllNetworks`, DNS follows the kill switch (§10.2).
+- Split-tunnel "route protection" (`enforceRoutes`) does not block non-tunnel traffic, unlike the Go kill switch, which blocked everything except tunnels on any profile. This is shown in the UI (table above).
 
 ### 10.2 DNS (L-DNS-1, L-DNS-2, L-DNS-3)
 
@@ -1293,34 +1485,58 @@ Rules:
 - The Diagnostics "DNS leak test" is the same verifier plus a list of the effective resolvers, each tagged tunnel or non-tunnel.
   - It never infers "leak" from a resolver answering, because with `includeAllNetworks` every resolver answers through the tunnel. The real leak test is the harness's capture on the physical interface.
 
-### 10.3 DNS over HTTPS/TLS
+### 10.3 DNS over HTTPS/TLS (cut from v2.0)
 
-- If `plan.doh`/`plan.dot` is set and spike S3 confirms that `NEDNSOverHTTPSSettings`/`NEDNSOverTLSSettings` work as tunnel network settings on macOS, we use them, with the same server addresses and match domains.
-- **Fallback:** plain `NEDNSSettings` to the same servers. They are still inside the tunnel, so confidentiality holds as far as the VPN server. The import report notes it.
+- v2.0 always uses plain `NEDNSSettings` to the profile's or the server's DNS servers. They are inside the tunnel, so confidentiality holds as far as the VPN server. The import report notes it when a profile asks for `transport DoH|DoT`.
+- `NEDNSOverHTTPSSettings`/`NEDNSOverTLSSettings` as tunnel settings, and the former spike S3, move to §21.
 
 ### 10.4 Wi-Fi auto-connect (on-demand)
 
 - macOS honours on-demand rules only on the **enabled** configuration, and only one packet-tunnel configuration is active.
 - **Decision:** auto-connect designates **one** profile (`AutoConnectRules.profileID`). Its manager gets:
   ```swift
+  let probe = URL(string: "https://steiale.github.io/lockplus/probe.txt")!   // static, returns 200 "ok"
   let trusted = NEOnDemandRuleDisconnect(); trusted.interfaceTypeMatch = .wiFi; trusted.ssidMatch = rules.trustedSSIDs
-  let wifi = NEOnDemandRuleConnect();      wifi.interfaceTypeMatch = .wiFi
+  let wifi = NEOnDemandRuleConnect();      wifi.interfaceTypeMatch = .wiFi;  wifi.probeURL = probe
   let eth  = rules.connectOnEthernet ? NEOnDemandRuleConnect() : NEOnDemandRuleIgnore()
-  eth.interfaceTypeMatch = .ethernet
-  manager.onDemandRules = [trusted, wifi, eth]; manager.isOnDemandEnabled = rules.enabled
+  eth.interfaceTypeMatch = .ethernet;      if rules.connectOnEthernet { eth.probeURL = probe }
+  let portal = NEOnDemandRuleIgnore();     portal.interfaceTypeMatch = .any   // probe failed: likely captive portal
+  manager.onDemandRules = [trusted, wifi, eth, portal]; manager.isOnDemandEnabled = rules.enabled && !paused
   ```
-- `stayConnected` profiles get a single `NEOnDemandRuleConnect(interfaceTypeMatch: .any)`.
+- `stayConnected` profiles get `[NEOnDemandRuleConnect(interfaceTypeMatch: .any, probeURL: probe), portalIgnore]`.
+
+**Captive portals (M4).** On-demand plus `includeAllNetworks` would otherwise make hotel and airport login pages unreachable: on-demand connects on joining the network, the tunnel can't reach its server until the user has logged in, and the kill switch blocks the login page.
+- `probeURL` on the connect rules: the rule only matches when the probe returns HTTP 200. On a captive network the probe is intercepted or redirected, so the connect rule does not match and evaluation falls through to the final **Ignore** rule. The tunnel stays down, the system's Captive Network Assistant appears, and the user logs in. The probe is a static file on our GitHub Pages host; it carries no identifier and is fetched by the system, not by us. Its privacy note is in the help page.
+- After the login no network change happens, so on-demand may not re-evaluate (TBD-by-S1). The app (if running) watches `NWPathMonitor` and re-probes the same URL every 15 s for up to 10 min after joining a network where the connect rule didn't fire. When the probe succeeds, it calls `startVPNTunnel` on the auto profile. Without the app running, protection starts on the next network change. The UI states this.
+- **"Pause protection for N minutes"** covers the case where the tunnel is **already up** (or reasserting/blocked) when the portal appears, e.g. after joining a new network while connected with the kill switch:
+  - In the menu bar: "Pause protection ▸ 5 min / 15 min / 1 hour". The same entries appear in the "Blocked — reconnecting" banner, with the hint "Use this to log in to a Wi-Fi network".
+  - Action: confirmation, "LockPlus will disconnect and allow unprotected internet for 15 minutes." Then `pausedUntil = now + N` in settings, `isOnDemandEnabled = false` and save, then `stopVPNTunnel()`.
+  - While paused, the menu-bar icon shows the warning badge with "Paused — 12 min left", and the menu offers "Resume protection now".
+  - On expiry (an app timer, also checked on wake and launch): restore on-demand, and `startVPNTunnel` if the paused profile was connected.
+  - If the app is quit while paused, the quit dialog defaults to "Resume protection and quit". If the app is not running at expiry (crash, force quit), the pause persists until the next launch. The launch then resumes immediately, and the login item makes this the next login at the latest. This is a documented limitation.
+  - Pause is never automatic.
 - **Manual connect of another profile** makes it the enabled config, which suspends the auto profile.
   - When the user later disconnects it, the app (if running) re-enables the auto profile and restores its on-demand state.
   - The UI explains: "Auto-connect resumes when you disconnect Work".
 - Disconnecting the auto profile from our UI while on-demand is active sets `isOnDemandEnabled = false` until the next network change: "Paused until you join another network". Otherwise on-demand would immediately reconnect.
-- **SSID → specific profile map** (Go `SSIDTunnelMap`) is app-assisted:
-  - while the app runs, `CWWiFiClient` SSID events (which need Location authorization, macOS 14+) switch which profile is the on-demand profile;
-  - it is off by default and requests Location only when the user enables it.
+- **SSID → specific profile map** (Go `SSIDTunnelMap`) is **cut from v2.0** (§21). Migration reports the Go map as "not migrated" (§13.1).
+- On-demand keep-alive for kill-switch profiles: if S2 requires the E1 mitigation (§10.1.1), a connected kill-switch profile carries an `.any` connect rule while connected. When that profile is also the auto profile, its Wi-Fi rules take precedence, and the `.any` rule (with the same `probeURL`) is inserted after them and before the final Ignore rule. A user Disconnect turns on-demand off as described above.
 - **Assumption A-OD-1 (NR Q1):** `ssidMatch` in on-demand rules is evaluated by the system without our app holding Location authorization. Spike S1 validates this, first with a `.mobileconfig` and then with our app.
   - **Fallback:** the app-assisted mode (CoreWLAN + Location) drives `startVPNTunnel`/`stopVPNTunnel` and on-demand toggling for all rules. It is documented as requiring the app to be running.
 - Adding SSIDs: the user types them; "Add current network" needs Location and is optional.
 - Profiles that need interactive auth cannot be the auto profile (§8.4).
+
+### 10.5 IPv6 for v4-only full tunnels (M5)
+
+A full-tunnel profile that assigns only IPv4 (WG `AllowedIPs = 0.0.0.0/0` without `::/0`; OVPN `redirect-gateway def1` without IPv6 settings) leaves the LAN's IPv6 default route in place. With the kill switch **on**, `includeAllNetworks` captures it (LK-09). With the kill switch **off**, every IPv6 destination leaks around the tunnel.
+
+**Decision:** for every full-tunnel profile without IPv6, whatever the kill-switch setting, `NetworkSettingsBuilder` routes `::/0` into the tunnel as a **blackhole**:
+- `ipv6Settings` gets a unique local address (`fdxx:…/128`, derived from the profile UUID) and `includedRoutes = [::/0]`.
+- WireGuard: wireguard-go drops packets that match no peer's AllowedIPs, so the IPv6 traffic dies inside the tunnel.
+- OpenVPN: the shim makes the same plan when openvpn3 reports `block-ipv6` or no IPv6 settings. openvpn3's own `block-ipv6` handling (it also adds `block-ipv6` when `allowUnusedAddrFamilies == No`, `cliopt.hpp`) is honoured as the same blackhole.
+- Effect: dual-stack apps fall back to IPv4 through Happy Eyeballs after the IPv6 attempt fails. The import report notes "IPv6 is blocked while connected (this profile tunnels IPv4 only)". There is no toggle in v2.0.
+- Split-tunnel profiles are untouched: IPv6 not covered by the tunnel goes to the LAN by design.
+- Test: LK-09 with the kill switch **on and off**.
 
 ---
 
@@ -1415,8 +1631,9 @@ All stores are `@MainActor @Observable`. They are driven **only** by `NEVPNStatu
   - the status line;
   - each profile (connect/disconnect toggle, with the active one checked, ◐ while connecting);
   - "Authentication required…" when pending;
+  - "Pause protection ▸ 5 min / 15 min / 1 hour" when a kill-switch or auto-connect profile is active, or "Resume protection now (12 min left)" while paused (§10.4);
   - "Open LockPlus", "Settings…", "Quit LockPlus".
-  - Quit asks first if a tunnel is connected: "The tunnel stays connected after quitting. Disconnect?" — Keep / Disconnect / Cancel.
+  - Quit asks first if a tunnel is connected: "The tunnel stays connected after quitting. Disconnect?" — Keep / Disconnect / Cancel. While paused, quit asks "Resume protection and quit" (default) / "Quit and stay paused" / Cancel.
 
 ### 11.4 Editor
 
@@ -1445,7 +1662,7 @@ All stores are `@MainActor @Observable`. They are driven **only** by `NEVPNStatu
 | `Settings.svelte` | `SettingsView` | |
 | `UpdateNotice.svelte` | Sparkle standard UI | |
 | `KofiBanner.svelte` | `SupportBanner` | dismissible |
-| Latency | `measureLatency` XPC | The extension times a TCP connect (OVPN TCP), an ICMP echo via a `SOCK_DGRAM` ICMP socket, or (WG) the handshake RTT. **Only to the profile's own endpoints** (no probe oracle). |
+| Latency | `measureLatency` XPC | WG: the handshake RTT (forced handshake). OVPN while connected: the engine's keepalive round trip if openvpn3 exposes one, otherwise "—". OVPN while disconnected: a TCP connect for `proto tcp` endpoints, made before any `includeAllNetworks` session exists (§10.1.1 E5). **Only to the profile's own endpoints** (no probe oracle). ICMP from the root extension is cut (§21). |
 
 ### 11.6 Localization and accessibility
 
@@ -1473,9 +1690,11 @@ All stores are `@MainActor @Observable`. They are driven **only** by `NEVPNStatu
 ### 12.1 Sparkle 2 configuration (L-UPD-1)
 
 - Sparkle ≥ 2.9 via SPM, in the app only.
-- An EdDSA key pair is generated once with `generate_keys`.
-  - The private key is held in a GitHub Actions environment `release` (required reviewer: Alex), with an offline backup in 1Password.
-  - **Releases fail hard without it**: `generate_appcast` exits non-zero and the job fails. There is no "grace mode".
+- An EdDSA key pair is generated once with `generate_keys` on the dev Mac.
+  - **The private key never enters CI (M1).** It lives in the dev Mac's login keychain, where `generate_keys` stores it, with an offline backup in 1Password. CI builds, notarizes and uploads **unsigned-for-Sparkle** artifacts to a draft release. Alex then runs `Tools/release/sign-and-publish.sh` on the dev Mac. The script downloads the draft artifacts, verifies their notarization (`spctl`, `stapler validate`) and SHA-256 against the CI log, signs them with `sign_update`, runs `generate_appcast` (feed signature included), and publishes the appcast to gh-pages: first to the `rc` channel only, then, after the release gates (§12.4) are green, to everyone.
+  - Why: Sparkle accepts an update that changes the Apple code-signing identity whenever the EdDSA signature validates (Sparkle's documented key-rotation rule). The EdDSA key is therefore the **only** thing standing between a CI compromise and every user (§1.3 A5). Keeping it off CI removes that path.
+  - **Releases fail hard without it**: `sign-and-publish.sh` exits non-zero if the key is missing, and there is no "grace mode".
+  - Blast-radius limits if it leaks anyway (§1.3 A5): the XPC requirement pins team `M53GHX9FAY` and Developer ID (§5.3), so a foreign-team app cannot reach the extension; the system only replaces a system extension with one from the same team; and the data-protection keychain items are bound to our team's access group.
 - Appcast: `https://steiale.github.io/lockplus/appcast.xml` (GitHub Pages, HTTPS).
   - Archives: `LockPlus-<ver>.zip` on GitHub Releases.
   - `SURequireSignedFeed = YES` with `SUVerifyUpdateBeforeExtraction = YES`.
@@ -1485,7 +1704,9 @@ All stores are `@MainActor @Observable`. They are driven **only** by `NEVPNStatu
   - Sparkle offers only versions higher than the running one;
   - our `SPUUpdaterDelegate.bestValidUpdate(in:for:)` additionally filters items whose `CFBundleVersion` is less than or equal to ours;
   - the extension refuses downgrade replacement (§4.2).
+  - A user who deliberately installs an older version uses "Reinstall tunnel component" (§4.6). There is no silent rollback path.
 - Deltas are enabled (`generate_appcast` default, keeping 3 prior versions).
+- **Channels:** the appcast has the default channel plus `rc`, using Sparkle's `sparkle:channel` and `SPUUpdaterDelegate.allowedChannels(for:)`. Settings › Advanced has "Receive release candidates" (off by default). The leak harness and update tests use this shipped mechanism to pull a release candidate (§15.3, §15.5); no test-only feed override exists in the binary.
 
 ### 12.2 Distribution artifacts
 
@@ -1527,10 +1748,10 @@ All stores are `@MainActor @Observable`. They are driven **only** by `NEVPNStatu
    2. Set `isOnDemandEnabled = false` on the auto profile and save, so the system can't restart the tunnel mid-replacement.
    3. `stopVPNTunnel()` and wait for `.disconnected` (15 s timeout; on timeout continue anyway, logged). Kill-switch blocking ends here, so **the Mac is online during the replacement**.
    4. Invoke the block; Sparkle installs and relaunches.
-3. The new app launches and calls `activate()`. `actionForReplacingExtension` returns `.replace`, with the tunnel already quiesced. On `.completed`, the app connects to the new versioned Mach name and runs `hello` and `reconcile`.
+3. The new app launches and calls `activate()`. Its preflight (§4.2 steps 2–3) finds the old extension enabled and the tunnel already quiesced (step 2 above), so step 3 is a no-op. The request is submitted, and `actionForReplacingExtension` returns `.replace` by pure comparison. On `.completed`, the app connects to the new versioned Mach name and runs `hello` and `reconcile`.
 4. `UpdateCoordinator.resumeAfterUpdate()` restores on-demand and calls `startVPNTunnel` for `pendingResume.profileID`, then clears `pendingResume`.
 5. If activation needs approval or a reboot: on-demand stays restored but the tunnel can't start. The UI shows the approval/reboot dialog. With a kill-switch profile, nothing is blocking in the meantime (the tunnel is off), and the UI says so explicitly: "Not protected until the update finishes".
-6. The **first launch after any update** always runs `activate()` (L-EXT-2), so even an update installed by brew without Sparkle replaces the extension.
+6. The **first launch after any update** always runs `activate()` (L-EXT-2), so even an update installed by brew or by drag-replace without Sparkle replaces the extension. In those cases the §4.2 preflight does the quiescing (stop and on-demand off) that step 2 would have done, then resumes.
 
 ### 12.4 CI (GitHub Actions)
 
@@ -1540,19 +1761,21 @@ Workflows (`.github/workflows/native-*.yml`), path-filtered on `native/**`:
 |---|---|---|
 | `lint` | macos-26 (Xcode 27) | swift-format lint, SwiftLint (custom rules: no secret interpolation in Logger, Backoff required, no `exit(` in Tunnel/), `version-check.sh` |
 | `unit` | macos-26 | `swift test` for LockPlusCore/TunnelEngine; `xcodebuild test -testPlan Unit` |
-| `fuzz-smoke` | ubuntu-latest | `swift build -c release -Xswiftc -sanitize=fuzzer,address` for the LPParsing targets; 10 min per target; corpus cached |
-| `openvpn3-fuzz` | ubuntu-latest | clang libFuzzer + ASan on `OpenVPN3Options` parse; 10 min |
+| `fuzz-smoke` | macos-26 | `swift build -c release -Xswiftc -sanitize=fuzzer,address` for the LPParsing targets, and clang `-fsanitize=fuzzer,address` for the `OpenVPN3Options` parse target; 10 min per target; corpus cached |
+| `engine-support` | macos-26 | regenerate `OVPNEngineSupport.generated.swift` against the pinned openvpn3 and diff (§8.2); symbol check that no `tun/mac/client` code is linked (§8.1) |
 | `build-dev` | macos-26 | archive with Developer ID (secrets), `codesign --verify --deep --strict`, `otool -L` extension check (no AppKit/SwiftUI/Sparkle), entitlement dump diff against golden files |
-| `release` (tag `native-v*`) | macos-26, environment `release` | archive, `-exportArchive` (method `developer-id`, manual signing, both profiles), notarize (`notarytool submit --wait` with an App Store Connect API key), staple, zip + dmg, notarize the dmg, `generate_appcast`, upload to GitHub Release (draft), publish the appcast to gh-pages **after** the gates below |
-| `leak-harness` | self-hosted `macdev` (real NIC, Wi-Fi + Ethernet), environment `release-gate` | §15.3. Required for publishing. |
-| `upgrade-test` | self-hosted, Tart macOS VM | N-1 → N (§15.5). Required for publishing. |
+| `release` (tag `native-v*`) | macos-26, environment `release` | archive, `-exportArchive` (method `developer-id`, manual signing, both profiles), notarize (`notarytool submit --wait` with an App Store Connect API key), staple, zip + dmg, notarize the dmg, upload to a **draft** GitHub Release with SHA-256s in the job log. **No EdDSA signing and no appcast in CI** (§12.1). |
+| Stage RC | dev Mac, `Tools/release/sign-and-publish.sh --channel rc` | EdDSA signing and `generate_appcast`. The item is added with `sparkle:channel rc` only, so default-channel users never see it. |
+| `leak-harness` | self-hosted `macdev` (real NIC, Wi-Fi + Ethernet), environment `release-gate` | §15.3 against the RC (installed from the draft DMG; LK-10 updates N-1 → RC via the `rc` channel). Required for promotion. |
+| Upgrade test | manual, on a VM snapshot or a spare Mac (§15.5) | N-1 → RC via the `rc` channel; the checklist result is attached to the draft release. Required for promotion. |
+| Promote | dev Mac, `Tools/release/sign-and-publish.sh --promote` | Removes the channel tag from the item (same signed archive, re-generated and re-signed feed), pushes gh-pages, and un-drafts the release. Refuses to run unless both gates are recorded as passed. |
 
 - Credential check: the notarization step first runs `xcrun notarytool history --keychain-profile …` or the API-key equivalent. It is never checked with `security find-generic-password` (L-DIST-2).
 - **Xcode 27 export (L-DIST-2, NR Q9):** `xcodebuild -exportArchive` with an `ExportOptions.plist` (`method = developer-id`, `signingStyle = manual`, `provisioningProfiles` for both IDs).
   - Validation:
     - `spctl -a -vv -t exec`;
     - `codesign -d --entitlements :-` on both bundles, compared to golden files;
-    - a smoke activation in the VM.
+    - a smoke activation on the test VM or spare Mac.
   - **Fallback** if S9 fails: `Tools/release/resign-inside-out.sh` (vendored, reviewed) signs the extension first, then the app, with explicit entitlements files.
 
 ---
@@ -1583,7 +1806,7 @@ Workflows (`.github/workflows/native-*.yml`), path-filtered on `native/**`:
 7. **Wi-Fi rules** (`wifi_rules.json`):
    - `enabled`, `trusted_ssids`;
    - `default_tunnel` + `auto_connect_untrusted` → auto profile (by name → UUID);
-   - `ssid_tunnel_map` → `ssidProfileMap` (app-assisted mode is off until enabled).
+   - `ssid_tunnel_map` is **not migrated** (`ssidProfileMap` is cut, §21). The migration report lists it: "Per-network profile choices aren't supported yet".
 8. **History** (`history.json`): each session becomes a `HistoryEntry` with a new UUID, `profileID` by name match (nil if none), and `endReason` mapped from `disconnect_reason`.
 9. **Marker:** `migration.json = {completedAt, source: path, items: [{oldName, newID, digest, result}]}`. Automatic migration runs only when no marker exists. A manual re-run dedupes by payload digest. **Nothing in the Go directories is ever written, moved or deleted.**
 
@@ -1602,6 +1825,7 @@ Added to the Go codebase (Go release line, Fable security review mandatory):
   4. Restore DNS from `dns-journal.json` (the existing journal-restore code path).
   5. Remove `/Library/PrivilegedHelperTools/io.github.steiale.lockplus.helper` and `/Library/PrivilegedHelperTools/openvpn`, `/Library/LaunchDaemons/io.github.steiale.lockplus.helper.plist`, `/var/run/lockplus`, and `/Library/Application Support/lockplus`.
   6. `launchctl bootout system/io.github.steiale.lockplus.helper` as the last step, from a detached child.
+- **Caller authentication, stated:** the Go IPC server authenticates peers by **uid only** (`LOCAL_PEERCRED` → `verifyPeerUID`, `internal/ipc/peercred_*.go`), with no code-signature check. Any process running as the GUI user can therefore call `Uninstall`. The impact is **denial of service only**: it disconnects the Go tunnels, removes the Go kill switch, restores DNS and removes the helper. No secret is read and nothing is executed with attacker input. Same-user malware can already disrupt the Go app (`kill`, socket floods), so this is accepted and not hardened in a release whose purpose is removal. The Fable review checks that the RPC takes **no arguments** (no paths, no names) so this stays true.
 - The GUI then removes its LaunchAgent and login item and shows "Install LockPlus 2" with the download link and the cask command.
 - It does **not** delete `~/Library/Application Support/lockplus` or the legacy keychain items, so a later re-migration stays possible. The user can delete them from the native app (Settings › Advanced › "Remove old LockPlus data…", with confirmation, LAContext, and only after a completed migration marker).
 - The custom Go updater serves v1.2.0 as its last update.
@@ -1626,7 +1850,7 @@ Added to the Go codebase (Go release line, Fable security review mandatory):
 | Subsystem | Categories |
 |---|---|
 | `io.github.steiale.lockplus.mac` | `lifecycle`, `extension`, `xpc`, `profiles`, `import`, `keychain`, `connection`, `menubar`, `update`, `migration`, `diagnostics`, `ui` |
-| `io.github.steiale.lockplus.mac.tunnel` | `lifecycle` (incl. "first light" in `main.swift`, L-EXT-6), `xpc`, `controller`, `engine.wg`, `engine.ovpn`, `auth`, `dns`, `path`, `watchdog`, `keychain` |
+| `io.github.steiale.lockplus.mac.tunnel` | `lifecycle` (incl. "first light" in `main.swift`, L-EXT-6), `xpc`, `controller`, `engine.wg`, `engine.ovpn`, `auth`, `dns`, `path`, `watchdog`, `secrets` |
 
 Privacy rules:
 - Interpolate only enums, state names, error codes, durations, counts and UUIDs as `.public`.
@@ -1666,7 +1890,10 @@ Settings › Advanced › "Export diagnostics…" (LAContext not required, becau
   1. Swift tokenizer vs `OpenVPN3Options` on the corpus (unit) and under fuzzing (§15.4). A mismatch on canonical output fails.
   2. Canonical → openvpn3 → re-serialize is the identity.
   3. The Go 2.7 tokenizer vs the Swift port on the shared fixtures. Equality is required.
-- **EngineSupport** covers exactly the allowlist.
+- **EngineSupport:** covers exactly the allowlist; the regenerated table equals the committed one (§8.2); the canonical caps (256 KiB, 512-byte lines, 64-char names) reject at the boundary +1.
+- **Metadata HMAC:** a flipped bit in any field → quarantine; a re-keyed store → "locked" UX (§6.8).
+- **RevealGate:** every code path to `ProfileStore.payload(for:)` from UI code goes through `RevealGate` (a test enumerating the call sites via a protocol witness, §1.3 A6).
+- **Activation preflight:** a table test of `propertiesRequest` results × manager states → quiesce/submit/refuse decisions (§4.2); the replacement delegate is a pure function.
 - **WG parser and validator:** port `parser_test.go` and `validator_dns_test.go`; add wg-quick inline-comment, bare-IP and CRLF cases.
 - **Legacy keychain decode:** b64, hex and plain fixtures (`keychain_darwin_test.go` vectors).
 - **DNS mapping:** a table test of `DNSPlan` → `NEDNSSettings` for each §10.2 row; the pull-filter vectors from `config.go` `filterPushed`.
@@ -1685,24 +1912,36 @@ Settings › Advanced › "Export diagnostics…" (LAContext not required, becau
 
 - Activation outcomes: approval needed (fresh VM), replace, downgrade refused, `.unsupportedParentBundleLocation` (app run from `~/Downloads`).
 - XPC peer validation: an unsigned client, a team-signed client with the wrong identifier, and the right one.
-- Keychain: provision, read at connect, update, delete, `wipeAll`; ACL survives an extension update (S4).
+- Extension secret store: provision, read at connect, update, delete, `wipeAll`. Files are root 0600 in a 0700 dir; a planted symlink in `secrets/` is refused. Secrets stay readable after an extension update and after a reboot (before and after login, with the S4 key-wrap choice) (S4).
+- Activation preflight (§4.2): drag-replace and `brew upgrade` with the app closed and the tunnel up → on launch the tunnel is stopped before the request, replaced, and resumed. "Reinstall tunnel component" from N to N-1 (§4.6).
+- Captive portal (§10.4): a test AP with a portal (a small Linux VM serving a 302) → no on-demand connect, CNA appears, the app connects after the probe succeeds; "Pause protection" round trip.
 - WG against a test server (docker on a VPS): connect, data-plane-up timing, endpoint failover (first A record blackholed), MTU applied (`ifconfig utunN`).
 - OVPN against test servers:
   - UDP, TCP, tls-crypt-v2;
   - CBC-only (`cipher AES-256-CBC`, no NCP);
   - BF-CBC;
-  - password, SC (SCRV1 and concat), CRV1 (a server plugin that issues a CRV1 with a username), AUTH_FAILED → re-prompt;
+  - password, SC (SCRV1 and concat), CRV1 (a server that issues a CRV1 with a username), AUTH_FAILED → re-prompt;
+  - an OTP profile on a server **without** `auth-gen-token`: force a reconnect (`ping-restart`) → a prompt appears and the server log shows no login attempt with the stale OTP (M6); the same with `auth-gen-token` → silent reconnect;
+  - a profile with each openvpn3-fatal directive class (server-only, push-only, removed, `management*`, unknown) → rejected at **import** by [7b], never at connect;
   - WEB_AUTH → `.webAuthUnsupported` within 2 s;
   - a server pushing `dns server`, `dhcp-option`, PUSH_UPDATE, plus profile `pull-filter ignore "dhcp-option"`.
 - **Real profiles (spike gate and regression):** BHP (Sophos) and AllService, run manually on each release candidate. Credentials are never in CI.
-- L-LC-1: `kill -SEGV` the wireguard-go goroutine via the debug XPC `debugInjectFault(.wgDeviceClose)` (DEBUG builds only) → status leaves `.connected` ≤ 5 s.
+- L-LC-1: close the wireguard-go device via `debugInjectFault(.wgDeviceClose)` → status leaves `.connected` ≤ 5 s.
+  - **Fault injection lives only in a separate `FaultInjection` build configuration** (its own scheme and its own compile flag `LP_FAULT_INJECTION`; never archived for release). CI asserts that the release binary contains no `debugInjectFault` symbol.
+  - These tests are **non-gating** for releases: they verify engine logic, not the shipped binary. The release gates (§15.3) use only the shipped RC.
 
 ### 15.3 Leak harness (L-KS-1, L-KS-4, L-DNS-1)
 
 `Tools/leak-harness/lp-leakcheck`:
 - runs as root on the self-hosted Mac;
-- drives the app through a DEBUG-only automation XPC, or through `scutil --nc` where sufficient;
+- tests the **shipped release candidate**, i.e. the notarized build from the draft release, exactly as users get it. There is no automation XPC and no DEBUG hook (M3);
+- drives it only through interfaces that exist in the shipped product:
+  - `scutil --nc list/start/stop/status "<name>"` for connect, disconnect and status (it works on any NE configuration by name);
+  - fixtures are imported once per machine through the shipped file-open path (`open -a LockPlus fixture.conf`) and confirmed in the UI. Each policy variant is a separate pre-imported profile (`wg-ks`, `wg-noks`, `ovpn-tcp-ks`, `wg-split-rp`, `wg-v4only-noks`, …), so the harness never toggles policy;
+  - root-level OS actions: `pkill -9 -f io.github.steiale.lockplus.mac.tunnel`, `pmset`, `networksetup`, `route`/test-router rules;
+  - Sparkle through the shipped `rc` channel (§12.1) for LK-10;
 - captures on the physical interfaces (`en0` Wi-Fi, `en7` USB Ethernet) with BPF.
+- Fault injection (`FaultInjection` build, §15.2) is a separate, non-gating suite.
 - **Pass criterion for every window:** zero packets on a physical interface except
   - to or from the VPN endpoint (IP:port, proto);
   - DHCP, ARP, ND, RA;
@@ -1711,25 +1950,27 @@ Settings › Advanced › "Export diagnostics…" (LAContext not required, becau
 | Case | Scenario | Assertion |
 |---|---|---|
 | LK-01 | Connected baseline (WG UDP; OVPN UDP) | criterion holds for 60 s of `curl`/`dig`/`ping` load |
-| LK-02 | `kill -9` the extension while connected (kill switch on) | no leak until reconnect or block; status leaves `.connected` ≤ 5 s (L-LC-1) |
+| LK-02 | `kill -9` the extension while connected (kill switch on) | **Single expected outcome (§10.1.1):** no packet on a physical interface except to the VPN endpoint until the user disconnects or the tunnel reconnects; status leaves `.connected` ≤ 5 s (L-LC-1). If S2 required the on-demand mitigation, packets are allowed only within the measured, documented gap. |
 | LK-03 | Reconnect: the server drops (endpoint blackholed by test-router rule), 3 min | blocking continues during `reasserting` (L-KS-1) |
 | LK-04 | Sleep/wake (`pmset sleepnow` + `pmset schedule wake`) | no packets before the tunnel is up; reconnects ≤ 30 s (L-RC-5) |
 | LK-05 | Wi-Fi → Ethernet → Wi-Fi switch (`networksetup -setnetworkserviceenabled`) | no leak; reasserting → connected ≤ 20 s (L-RC-1) |
 | LK-06 | Fragments and large packets: `ping -s 4000` through the tunnel, 1 GB SMB copy, RDP session for 5 min (L-KS-4) | no stalls; throughput ≥ 70 % of baseline |
 | LK-07 | OpenVPN over TCP: LK-01..06 repeated with a `proto tcp` profile | same |
 | LK-08 | DNS: `scutil --dns` shows the tunnel resolver first with a catch-all; `dig @8.8.8.8 example.com` and `dig @<ISP resolver>`; system resolver lookups | zero UDP/TCP 53 and 853 on the physical NICs; queries observed on utun |
-| LK-09 | IPv6: a v4-only tunnel on a dual-stack LAN | no v6 egress on the physical NIC (includeAllNetworks) |
+| LK-09 | IPv6: a v4-only full tunnel on a dual-stack LAN, kill switch **on** and **off** | no v6 egress on the physical NIC (on: includeAllNetworks; off: the `::/0` blackhole, §10.5) |
 | LK-10 | Sparkle update N-1 → N with kill switch on (L-KS-3) | the Mac is online during replacement; the tunnel resumes; no leak during "resumed" connect |
 | LK-11 | `kill -9` the extension with the kill switch off, then `scutil --dns` (L-DNS-1) | resolver config back to baseline ≤ 5 s |
 | LK-12 | Split profile with route protection: a more specific LAN route injected | tunnel routes are still honoured |
 | LK-13 | TN3165 matrix (manual, recorded): AirDrop, Continuity/Handoff, Internet Sharing, Xcode device debugging, AirPlay | expected outcome per policy flag documented |
+| LK-14 | `cancelTunnelWithError` path: a kill-switch OVPN profile whose server starts rejecting with a fatal error (test server switched to a wrong CA) | the §10.1.1 outcome for E3: blocked until the user disconnects (via `.cancel` or `.holdBlocked`) |
+| LK-15 | Captive portal while connected with the kill switch on → "Pause protection 5 min" | the Mac is online only during the pause; protection resumes at expiry with no leak afterwards |
 
 ### 15.4 Fuzzing
 
-libFuzzer targets on Linux in CI (10 min) and nightly on a self-hosted machine (8 h):
+libFuzzer targets built **on macOS** with `swiftc -sanitize=fuzzer,address` (Swift) and `clang -fsanitize=fuzzer,address` (the C++ parse entry point), run in CI (10 min) and nightly on the self-hosted Mac (8 h):
 - `fuzz_ovpn_tokenizer`
 - `fuzz_ovpn_import` (tokenizer → allowlist → normalizer; asserts the normalizer output re-tokenizes to the same stream)
-- `fuzz_ovpn_differential` (C++ harness linking the Swift-exported C API and `OpenVPN3Options`)
+- `fuzz_ovpn3_options` (C++: `OpenVPN3Options` parse of arbitrary bytes, ASan only; memory safety of openvpn3's parser)
 - `fuzz_wg_parser`
 - `fuzz_crv1_cookie`
 - `fuzz_zip_import` (with ZIPFoundation)
@@ -1737,25 +1978,32 @@ libFuzzer targets on Linux in CI (10 min) and nightly on a self-hosted machine (
 
 Crashes become regression fixtures in `Tests/Fixtures/fuzz/`.
 
+The Swift-vs-openvpn3 differential is **not fuzzed** in v2.0. The Linux build and the C++ differential harness are cut (§21). Coverage comes from the unit differential over the shared corpus (§15.1), plus the import pipeline's runtime check [6], which rejects any disagreement for real inputs.
+
 ### 15.5 Update tests (L-UPD-1)
 
-- A Tart VM image with macOS 15 and one with macOS 27.
-- Install N-1 from the published DMG, approve the extension (scripted via MDM profile in the VM), import the fixtures, connect with the kill switch on, then point the appcast to staging N.
+- A macOS 15 and a macOS 27 VM (Virtualization.framework via UTM, on the dev Mac) or a spare Mac. **Manual, checklist-driven** for v2.0; Tart and MDM-scripted approval are cut (§21).
+- Each VM keeps a snapshot "N-1 installed, extension approved by hand, fixtures imported, `rc` channel on". Approval is done by hand once per VM image; later same-team replacements need no re-approval.
+- From the snapshot: connect with the kill switch on, then "Check for Updates" picks up the RC from the `rc` channel (§12.1).
 - Assert:
   - `systemextensionsctl list` shows N activated and enabled, with N-1 terminated;
   - the tunnel resumes;
   - profiles, credentials (connect without prompt) and history are intact;
   - no dialog other than Sparkle's.
-- Also: a downgrade attempt is refused, and an install of N over N-1 by brew alone (no Sparkle) is followed by a launch.
+- Also:
+  - a downgrade attempt is refused automatically, and "Reinstall tunnel component" performs it on request (§4.6);
+  - with the app **quit and the tunnel up**: install N over N-1 by `brew upgrade` and, separately, by Finder drag-replace, then launch → the preflight quiesces, replaces and resumes (§4.2).
 
 ### 15.6 Security test checklist (each release; Fable reviews the code, these verify behaviour)
 
-- [ ] XPC rejects an unsigned and a wrong-identifier peer; the app rejects a fake extension listener (a team-signed binary registering a lookalike name is impossible without our provisioning; tested with a DEBUG override).
+- [ ] XPC rejects an unsigned peer, a wrong-identifier peer and an Apple Development-signed copy of the app, before any handler runs; the app rejects a fake extension listener (a team-signed binary registering a lookalike name is impossible without our provisioning; tested in the `FaultInjection` build).
 - [ ] Profile ownership: a second macOS user cannot provision or remove another user's profile over XPC.
 - [ ] Every forbidden directive is rejected at import **and** at provision, with the app bypassed by a test client.
 - [ ] No secret strings in: the unified log (`log show --predicate 'subsystem BEGINSWITH "io.github.steiale.lockplus"' --info --debug` with private data enabled via a configuration profile on the test Mac), the diagnostics bundle, crash reports (forced crash in DEBUG), `defaults read`, NE prefs (`/Library/Preferences/com.apple.networkextension.plist`).
 - [ ] Sealed payload files are unreadable without the DP key; deleting the key yields "profiles locked" UI, not a crash.
-- [ ] System keychain items: `security find-generic-password` as admin prompts; other apps cannot read them silently.
+- [ ] Extension secret files: root:wheel 0600 in a root 0700 directory; unreadable to a non-admin user; the contents are AES-GCM ciphertext (no plaintext key material found by `strings`/`grep` for planted secrets). Admin readability is documented, not tested as a failure.
+- [ ] Tampered `profiles/*.json` (policy flipped) → quarantined, and NE preferences unchanged (§3.4).
+- [ ] The release build contains no `debugInjectFault`/`LP_FAULT_INJECTION` symbols; the EdDSA private key is absent from all CI secrets and logs.
 - [ ] Export writes 0600 with `O_NOFOLLOW` (a symlink at the destination is refused); LAContext is required.
 - [ ] Zip bomb, 501-entry zip, path-traversal names, huge QR: all rejected within limits.
 - [ ] Sparkle: a tampered archive, an unsigned feed and a lower version are each refused.
@@ -1763,6 +2011,21 @@ Crashes become regression fixtures in `Tests/Fixtures/fuzz/`.
 - [ ] A WEB_AUTH server, an encrypted key without a passphrase, and a proxy-auth profile each produce a visible error ≤ 5 s (L-OVPN-4).
 
 ---
+
+### 15.7 Test infrastructure (needed from P1 on)
+
+Everything below is built in P1 (part of its estimate) and reused through P5. All server configs are committed under `native/Tools/test-servers/`, and nothing lives in `/tmp`.
+
+| Item | How | Used by |
+|---|---|---|
+| Linux server VM(s) | 1–2 arm64 Debian VMs in UTM on the dev Mac (bridged), plus a cheap VPS for internet-path tests. Each runs Docker Compose. | everything below |
+| WireGuard server | `wg-quick` container; a second peer config with a blackholed first A record (for endpoint failover) | S7, S11, §15.2, LK-* |
+| OpenVPN 2.7 server matrix | One `openvpn:2.7` container per profile: (1) UDP AEAD + `tls-crypt-v2`; (2) TCP; (3) CBC-only (`data-ciphers AES-256-CBC`, no NCP fallback, emulating an old server); (4) BF-CBC (`providers legacy default`, `cipher BF-CBC`); (5) `auth-gen-token` on/off variants; (6) PUSH_UPDATE (`push-update-broad` via management); (7) `dns server …` and `dhcp-option` pushes. | S8, S13, §15.2, LK-07 |
+| Auth scripting | A ~150-line Python **management-interface client** (`--management-client-auth`) shared by all OpenVPN containers. It answers `>CLIENT:CONNECT` with: accept; `client-deny … "CRV1:R,E:<state>:<b64 user>:Enter code"` then accept the matching response; SCRV1 decode and check (static challenge, both echo variants and the concat format); `client-pending-auth … WEB_AUTH::…` (to test rejection); configurable AUTH_FAILED. It logs every received password and response (test secrets only) so M6 can prove that no stale OTP was re-sent. | S8, §15.2 auth rows |
+| Captive-portal AP | A travel router (or a Linux VM with hostapd) whose DNS/HTTP returns 302 to a login page until a button is pressed | §10.4, LK-15 |
+| Test router rules | `nftables` on the server VM to blackhole an endpoint (LK-03) and to reset TCP (§10.1.1 E6) | LK-03, S2 |
+| macOS test machines | the dev Mac (15 or 26), the self-hosted `macdev` (27), and UTM macOS VMs with manual approval snapshots (§15.5) | S2, S5, S9, S10, §15.5 |
+| Real servers | BHP (Sophos) and AllService, manual only; credentials never in CI or files | S8, milestone M5 |
 
 ## 16. Key sequences
 
@@ -1792,7 +2055,9 @@ Crashes become regression fixtures in `Tests/Fixtures/fuzz/`.
 3. Success → `setReasserting(false)`.
 4. Failure → `Backoff.next()` loop; the budget rule depends on the kill switch.
 
-**Update:** §12.3.
+**Update:** §12.3 (Sparkle) and §4.2 preflight (brew, drag-replace).
+
+**Captive portal:** §10.4.
 
 **Uninstall:** §4.4.
 
@@ -1805,25 +2070,26 @@ Crashes become regression fixtures in `Tests/Fixtures/fuzz/`.
 
 ## 17. Spike plan (answers NR §6), with go/no-go
 
-Spike duration: 5 days. Each spike has an owner checklist and a written result appended to this document as §17.x "Result".
+Spike duration: **15–20 days** (draft 1's 5 days was not credible for 13 spikes). Each spike has an owner checklist and a written result appended to this document as §17.x "Result". Building the §15.7 test infrastructure is part of P1 and accounts for about 4 of those days.
 
 | ID | NR Q | Question | Method | Go criterion | Fallback / no-go action |
 |---|---|---|---|---|---|
-| S1 | Q1 | `ssidMatch` without Location on 15/27 | `.mobileconfig` with VPN on-demand SSID rules; then our app with no Location grant; toggle Wi-Fi networks | On-demand connects and disconnects per SSID on both OSes with no Location prompt | App-assisted mode (§10.4) for all SSID rules |
-| S2 | Q2 | `includeAllNetworks` + exclude flags on 27: AirDrop, Xcode device, Sparkle while blocked; rename-while-connected doesn't restart | Manual matrix LK-13; save the manager with a changed `localizedDescription` while connected | AirDrop and Xcode work with `excludeDeviceCommunication`; Sparkle check fails gracefully while reasserting; rename keeps the session | Document exceptions; per-profile compatibility toggle; defer rename |
-| S3 | Q3 | `NEDNSOverHTTPSSettings` in tunnel settings | WG test profile with a DoH resolver inside the tunnel | Queries go to DoH (captured on utun as TLS/443 to the resolver), none in plain text | Plain `NEDNSSettings` |
-| S4 | Q4 | System keychain from the sandboxed root extension | Add/read/delete with the §6.3 ACL; update the extension; read again | No -25291/-25308; no prompts; readable after replacement | Sealed container file (§6.3) |
-| S5 | Q5 | XPC via `NEMachServiceName` with a per-version name | App ↔ extension `hello` while the tunnel is down and up; replace the extension while disconnected; check `launchctl print` for stale registrations | XPC works in both states; the new name is reachable after replacement; no side effects | Fixed name + mandatory stop-before-replace |
+| S1 | Q1 | `ssidMatch` without Location on 15/27; `probeURL` behaviour on a captive network | `.mobileconfig` with VPN on-demand SSID rules; then our app with no Location grant; toggle Wi-Fi networks. Captive-portal AP (§15.7) with the §10.4 rule set; log in; observe whether on-demand re-evaluates | On-demand connects and disconnects per SSID on both OSes with no Location prompt. The probe failing → Ignore rule → CNA shows | SSID: app-assisted mode (§10.4) for all SSID rules. Portal: if `probeURL` is ignored, drop it and rely on "Pause protection" |
+| S2 | Q2 | `includeAllNetworks` semantics on **15, 26 and 27** (§10.1.1 E1–E7): `kill -9` of the provider, `stopVPNTunnel`, `cancelTunnelWithError` → does connectivity return or stay blocked; reasserting; OVPN over TCP; a TCP connect from the provider under the flag; the excluded endpoint route. Plus the exclude flags (AirDrop, Xcode device, Sparkle while blocked) and rename-while-connected | BPF capture on `en0` per event, 10 runs each; manual matrix LK-13; save the manager with a changed `localizedDescription` while connected | Each E-row has a recorded result per OS, and §10.1.1 picks the matching design row. AirDrop and Xcode work with `excludeDeviceCommunication`; rename keeps the session | Per §10.1.1 row: `holdBlocked`, the on-demand mitigation, a forced compatibility toggle for OVPN-TCP, documented regressions; defer rename |
+| S4 | Q4 | Extension secret store (§6.3): container files from the sandboxed root extension; CryptoKit Secure Enclave wrap (`SecureEnclave.P256.KeyAgreement` + HPKE) from the sysex; optional System keychain | Create, read, rename and delete files; wrap and unwrap the file key; replace the extension; reboot and test **before and after** the first login; on-demand start at boot. Separately, try the System keychain via `SecKeychainOpen` + `kSecUseKeychain` with no temporary-exception entitlement | Files work and survive replacement. SE wrap: works after replacement and after login. Pre-login failure is acceptable (§6.3 decision) | SE wrap fails → plain root file key (§6.3 fallback 2). System keychain fails (expected per forum 672456) → not used |
+| S5 | Q5 | XPC via `NEMachServiceName` with a per-version name; replacement edge cases; deactivate → activate of a lower version (§4.6); container persistence after deactivation | App ↔ extension `hello` while the tunnel is down and up; replace the extension while disconnected and (edge case, §4.3) while connected; check `launchctl print` for stale registrations; reinstall N-1 over N | XPC works in both states; the new name is reachable after replacement; no side effects; reinstall works without a reboot (or with one, documented) | Fixed name + mandatory stop-before-replace |
 | S6 | Q6 | TN3179 exemption for the root extension | WG endpoint on a LAN IP (192.168.x); no Local Network prompt | Connects with no prompt | Document; the app requests Local Network if needed for diagnostics only |
 | S7 | Q7 | WireGuardKit (Go runtime) + openvpn3 (asio/OpenSSL) in one process | One extension; alternate 50 WG/OVPN connects; ASan build; memory over 1 h | No crashes, no symbol clashes (`nm` check for duplicate OpenSSL/BoringSSL symbols), RSS < 50 MB steady | Two system extensions (`…tunnel.wg`, `…tunnel.ovpn`) behind the same `TunnelAdapter`; the app picks the provider bundle ID per profile |
-| S8 | Q8 | openvpn3 CRV1 and SC through the shim | Test server with a CRV1 plugin; SC with the echo/concat variants; BHP and AllService real profiles | All four work; the username from the CRV1 cookie is used | **No-go for OpenVPN-in-NE** if CRV1 or SC cannot work: ship WG-only native (phase 2), keep the Go app as the OpenVPN line, re-evaluate |
+| S8 | Q8 | openvpn3 CRV1 and SC through the shim; **`auth-token` push** and OTP reconnect behaviour (§8.4) | Test server with the management-interface auth script (§15.7); SC with the echo/concat variants; BHP and AllService real profiles. After CONNECTED, record whether `session_token()` is set; force `ping-restart` and check the server/auth log for a re-sent OTP, with and without the purge | All four flows work; the username from the CRV1 cookie is used; whether BHP/AllService push `auth-token` is recorded; with the purge, no stale OTP reaches the server | Auth flows: **no-go for OpenVPN-in-NE** if CRV1 or SC cannot work (ship WG-only native, keep the Go app as the OpenVPN line, re-evaluate). Stale OTP still sent → disable engine-internal reconnect for OTP profiles without a token (§8.4) |
 | S9 | Q9 | Xcode 27 Developer ID export end to end | `-exportArchive`, notarize, install in a clean VM, activate, connect | Extension loads (no "Plugin failed") | Inside-out re-sign script |
-| S10 | Q10 | Sparkle update replacing the extension while connected and with the kill switch on | Staged appcast in the VM, §12.3 flow | Tunnel resumes; the Mac is never offline > 15 s; no XPC breakage | Require disconnect before "Install and relaunch" with an explicit dialog |
-| S11 | — | openvpn3 on the NE utun fd (§7.3) | Return the scanned fd from `tun_builder_establish` | Traffic flows; throughput ≥ 300 Mbit/s on M1 | socketpair bridge |
+| S10 | Q10 | Sparkle update replacing the extension while connected and with the kill switch on; brew/drag-replace with the app closed (§4.2 preflight) | `rc` channel in the VM, §12.3 flow; then `brew upgrade` and a Finder drag-replace with the app quit and the tunnel up | Tunnel resumes; the Mac is never offline > 15 s; no XPC breakage | Require disconnect before "Install and relaunch" with an explicit dialog |
+| S11 | — | openvpn3 (built with `USE_TUN_BUILDER`) on the NE utun fd (§7.3) | Return the scanned fd from `tun_builder_establish`; check the AF-header handling | Traffic flows; throughput ≥ 300 Mbit/s on M1 | socketpair bridge |
 | S12 | — | `fetchLastDisconnectError` passes custom domain/code/userInfo | Cancel with a custom NSError; read it in the app | Domain and code are intact | `tunnelSnapshot.lastError` |
-| S13 | — | openvpn3: tls-crypt-v2, CBC-only server, BF-CBC with `enableLegacyAlgorithms`, PUSH_UPDATE, `dns` options, `pull-filter` | Test servers | All connect; DNS options arrive via `tun_builder_set_dns_options`; pull-filter honoured | Per item: mark unsupported at import with a clear message (PUSH_UPDATE: reconnect to apply) |
+| S13 | — | openvpn3: tls-crypt-v2, CBC-only server, BF-CBC with `enableLegacyAlgorithms`, PUSH_UPDATE, `dns` options, `pull-filter`; **[7b] `ClientOptions` construction without connecting** (§8.1); the first run of the `EngineSupport` generator (§8.2) over the Go allowlist and the real-profile corpus | Test servers (§15.7); host-side test binary for [7b] and the generator | All connect; DNS options arrive via `tun_builder_set_dns_options`; pull-filter honoured; [7b] performs no I/O and throws `UNUSED_OPTIONS` for each fatal class; the BHP/AllService profiles pass [7b] after normalization | Per item: mark unsupported at import with a clear message (PUSH_UPDATE: reconnect to apply). [7b] not side-effect free → the vendored `handle_unused_options` variant (§8.1) |
 
-**Overall spike gate (NR §3 "Spike gate"):** BHP and AllService connect, CRV1 and SC work, a CBC-only server works, and tls-crypt-v2 works. Failing S8 or S13 (tls-crypt-v2/CBC) means OpenVPN-in-NE is no-go as above. Failing S7 means the two-extension fallback, about 3 more days.
+S3 (DoH/DoT in tunnel settings) is cut with the feature (§21).
+
+**Overall spike gate (NR §3 "Spike gate"):** BHP and AllService connect, CRV1 and SC work, a CBC-only server works, and tls-crypt-v2 works. Failing S8 or S13 (tls-crypt-v2/CBC) means OpenVPN-in-NE is no-go as above. Failing S7 means the two-extension fallback, about 3 more days. S2 has no no-go outcome, but its result selects the §10.1.1 design row and must be recorded before P2b starts on the kill switch.
 
 ---
 
@@ -1837,15 +2103,15 @@ Estimates are in developer-days. Every phase's Definition of Done includes:
 
 | Phase | Scope | Milestone / Definition of Done |
 |---|---|---|
-| **P1 Spike** (5) | §17. Throwaway code in `native/spike/`. | M1: every spike has a written result and decision; the OpenVPN go/no-go recorded; this document amended. |
-| **P2a Skeleton** (6) | Xcode project, xcconfigs, version-check, entitlements, Developer ID signing for dev, `SystemExtensionManager` (§4) with every outcome, XPC skeleton with peer validation and timeouts (§5), CI lint/unit/build-dev, debug menu. | M2: a fresh VM installs a notarized dev build, approves, `hello` round-trips; a wrong-signature client is rejected; the extension `otool -L` check passes. |
-| **P2b WireGuard engine** (8) | WG parser/validator port, fork patches 1–5, `TunnelController` state machine with fakes, `WireGuardAdapterImpl`, `NetworkSettingsBuilder`, path, sleep, watchdog, backoff, stats/sessions. | M3: WG connects with data-plane-up semantics; LK-01..05, LK-08, LK-11 pass for WG; the state-machine suite is complete. |
-| **P2c Storage and credentials** (6) | `ProfileStore` (sealed payloads), `CredentialStore` (DP), `SystemKeychainSecretStore`, provision/reconcile, kill-switch policy (§10.1), DNS (§10.2), `DNSVerifier`, Go migrator (WG part), minimal UI (list, connect, import file), DMG, release workflow, `lockplus-native` cask. | **M4: WireGuard beta.** Alex's Flo VPN runs a week on the beta; the leak harness passes for WG; the N-1 → N update test passes (beta1 → beta2). |
-| **P3 OpenVPN** (20–30) | Tokenizer/allowlist port with shared fixtures, normalizer, `OpenVPN3Options` differential, the OpenSSL static build, `OpenVPN3Shim` (client, TunBuilder, events, logs, redactor), `OpenVPNAdapterImpl`, auth UI (§8.4), import report UX, legacy crypto, DNS mapping, OVPN migration with legacy keychain, fuzzers. | **M5: OpenVPN beta.** BHP and AllService connect (password, SC, CRV1, re-prompt); the full leak harness passes including LK-07; the 8 h fuzz run is clean; the Fable review of shim and parser is fully fixed. |
-| **P4 UI parity** (15–25) | MenuBarController (§11.3), detail, editor with highlighting, statistics, history, logs, diagnostics, auto-connect, settings, onboarding, String Catalogs ×4, accessibility audit, Sparkle (§12), `SMAppService.mainApp`, in-app Uninstall, diagnostics bundle. | **M6: release candidate.** Parity checklist (§11.5) complete; VoiceOver pass; de/ko/ja reviewed; the security checklist (§15.6) passes; the update test passes on 15 and 27. |
+| **P1 Spike** (15–20) | §15.7 test infrastructure (≈ 4 d), then §17 (S1, S2, S4–S13). Throwaway code in `native/spike/`. Rough split: S8 + S13 + S11 (openvpn3 build with `USE_TUN_BUILDER`, shim, auth, [7b], generator) ≈ 6–8 d; S2 on three OS versions ≈ 2–3 d; S4, S5, S10 ≈ 2 d; S1, S6, S7, S9, S12 ≈ 2–3 d. | M1: every spike has a written result and decision; the §10.1.1 row chosen; the OpenVPN go/no-go recorded; this document amended. |
+| **P2a Skeleton** (6) | Xcode project, xcconfigs, version-check, entitlements, Developer ID signing for dev, `SystemExtensionManager` (§4) with every outcome, **the §4.2 preflight and §4.6 reinstall**, XPC skeleton with peer validation and timeouts (§5), CI lint/unit/build-dev, debug menu. | M2: a fresh VM installs a notarized dev build, approves, `hello` round-trips; a wrong-signature or Apple Development-signed client is rejected; the extension `otool -L` check passes. |
+| **P2b WireGuard engine** (8) | WG parser/validator port, fork patches 1–5, `TunnelController` state machine with fakes (including `blockMode`), `WireGuardAdapterImpl`, `NetworkSettingsBuilder` (incl. the §10.5 IPv6 blackhole), path, sleep, watchdog, backoff, stats/sessions. | M3: WG connects with data-plane-up semantics; LK-01..05, LK-08, LK-09, LK-11 pass for WG; the state-machine suite is complete. |
+| **P2c Storage, credentials, updates** (10) | `ProfileStore` (sealed payloads, metadata HMAC, the §6.8 locked-profiles UX), `CredentialStore` (DP), `ContainerSecretStore` (§6.3, with the S4 key-wrap choice), provision/reconcile, kill-switch policy (§10.1 incl. the S2-selected row), DNS (§10.2), `DNSVerifier`, Go migrator (WG part), minimal UI (list, connect, import file, pause protection), **Sparkle (§12.1) with the dev-Mac signing script and `rc` channel, and the §12.3 update flow**, DMG, release workflow, `lockplus-native` cask. | **M4: WireGuard beta.** Alex's Flo VPN runs a week on the beta; the leak harness passes for WG; the N-1 → N **Sparkle** update test passes (beta1 → beta2), and so do the brew and drag-replace variants (§15.5). |
+| **P3 OpenVPN** (20–30) | Tokenizer/allowlist port with shared fixtures, normalizer with caps, `OpenVPN3Options` differential, the `EngineSupport` generator and CI diff, the OpenSSL static build, `OpenVPN3Shim` (client with `USE_TUN_BUILDER`, [7b] validation, TunBuilder with endpoint exclusion, events, logs, redactor, creds-purge patch), `OpenVPNAdapterImpl`, auth UI (§8.4), import report UX, legacy crypto, DNS mapping, OVPN migration with legacy keychain, macOS fuzzers. | **M5: OpenVPN beta.** BHP and AllService connect (password, SC, CRV1, re-prompt, OTP reconnect without lockout); the full leak harness passes including LK-07 and LK-14; the 8 h fuzz run is clean; the Fable review of shim and parser is fully fixed. |
+| **P4 UI parity** (13–22) | MenuBarController (§11.3), detail, editor with highlighting, statistics, history, logs, diagnostics, auto-connect (incl. captive-portal re-probe), settings, onboarding, String Catalogs ×4, accessibility audit, `SMAppService.mainApp`, in-app Uninstall, diagnostics bundle. (Sparkle moved to P2c.) | **M6: release candidate.** Parity checklist (§11.5) complete; VoiceOver pass; de/ko/ja reviewed; the security checklist (§15.6) passes; the update test passes on 15 and 27. |
 | **P5 Cutover** (5–10) | Go v1.2.0 Farewell (§13.3), cask transition (§13.4), zap audits, README and screenshots. | **M7: GA.** Native 2.0.0 is in the `lockplus` cask; Go helper removal verified on Alex's two Macs (pf anchors gone, DNS restored, `launchctl print` clean); no data loss in the migration report. |
 
-Total: 65–95 days, consistent with NR §5.
+Total: 77–106 days. That is above NR §5's 65–95, by the realistic spike estimate, the moved Sparkle work and the review's additions, partly offset by the §21 cuts.
 
 ---
 
@@ -1853,36 +2119,36 @@ Total: 65–95 days, consistent with NR §5.
 
 | Requirement | Satisfied by (section) | Test |
 |---|---|---|
-| L-LC-1 no zombie tunnels | §7.2 (`fatal` → `cancelTunnelWithError`), §11.2 (status only from NEVPNStatus + `fetchLastDisconnectError`) | §15.1 state machine "fatal → cancel"; §15.2 fault injection ≤ 5 s; LK-02 |
+| L-LC-1 no zombie tunnels | §7.2 (`fatal` → `cancelTunnelWithError`, or `holdBlocked` with status `.reasserting`), §11.2 (status only from NEVPNStatus + `fetchLastDisconnectError`) | §15.1 state machine "fatal → cancel/hold"; §15.2 fault injection ≤ 5 s (non-gating build); LK-02 (gating, shipped RC) |
 | L-LC-2 connected = data plane up | §7.2 completion rule, §9.3 handshake, §8.4/§7.3 OVPN CONNECTED + settings | §15.1 completion-once/order tests; §15.2 WG/OVPN connect timing |
 | L-LC-3 timeouts on every cross-process call | §5.4 per-method timeouts, liveness rule; §5.1 connect is not XPC | §15.1 XPC wire timeout tests; §15.2 slow-connect test (server delays 60 s; no "dead" UI) |
 | L-LC-4 one source of truth | §10.1 policy in the NE config; §11.2 stores | §15.1 store tests; LK-03 with connects from the menu bar, window and on-demand |
 | L-RC-1 path changes | §7.4 PathWatcher → reasserting | LK-05 |
 | L-RC-2 dead peer | §7.5 watchdog, OVPN keepalive floors | §15.1 watchdog tests; LK-03 |
 | L-RC-3 backoff | §7.6 `Backoff`, server pause honoured, no auth auto-retry | §15.1 backoff tests; lint rule |
-| L-RC-4 auth during reconnect | §7.2 deadline pause, §8.4 promptID | §15.1 auth-pause and stale-answer tests; §15.2 OTP reconnect |
+| L-RC-4 auth during reconnect | §7.2 deadline pause, §8.4 promptID, §8.4 OTP credential purge without `auth-token` | §15.1 auth-pause and stale-answer tests; §15.2 OTP reconnect with and without `auth-gen-token`; S8 |
 | L-RC-5 sleep/wake | §7.4 | §15.1; LK-04 |
-| L-KS-1 verify behaviour | §15.3 harness as a release gate (§12.4) | LK-01..13 |
+| L-KS-1 verify behaviour | §15.3 harness against the shipped RC as a release gate (§12.4); §10.1.1 S2-derived semantics and Go-parity design | LK-01..15; S2 |
 | L-KS-2 never toggle while connected | §10.1 `updatePolicy` throws `.mustBeDisconnected`; UI disables | §15.1 ProfileStore test; UI test |
-| L-KS-3 updates while blocked | §12.3 quiesce → replace → resume | LK-10; §15.5 |
+| L-KS-3 updates while blocked | §12.3 quiesce → replace → resume (Sparkle); §4.2 preflight quiesce before any activation request (brew, drag-replace); §10.4 pause for captive portals | LK-10, LK-15; §15.5; S10 |
 | L-KS-4 fragments and TCP | §9.3 MTU/MSS floors; harness cases | LK-06, LK-07 |
 | L-DNS-1 crash leaves no state | §10.2 (NE-owned DNS) | LK-11 |
 | L-DNS-2 every pushed form | §8.5 mapping table, openvpn3 pull-filter | §15.1 DNS table tests; §15.2 push server; S13 |
 | L-DNS-3 diagnostics fail closed | §10.2 `DNSVerifier` (`.unknown` ≠ safe) | §15.1 verifier tests with unreadable/mismatch fixtures |
 | L-MTU-1 MTU, endpoints, floors | §9.3, §8.1 floors | §15.2 MTU applied, endpoint failover; LK-06 |
-| L-OVPN-1 allowlist + identical parser | §8.1 pipeline (port + canonical + openvpn3 differential), §8.2 | §15.1 shared fixtures and differential; §15.4 fuzzing |
+| L-OVPN-1 allowlist + identical parser | §8.1 pipeline (port + canonical + openvpn3 differential + [7b] `ClientOptions` check, caps 256 KiB/512 B), §8.2 generated `EngineSupport` | §15.1 shared fixtures, differential, generated-table diff; §15.2 fatal-class import rejections; §15.4 fuzzing; S13 |
 | L-OVPN-2 2.7 traps | §8.6 legacy crypto, §8.7 no verb logging, OpenSSL legacy provider | §15.2 CBC-only and BF-CBC servers; log grep; S13 |
 | L-OVPN-3 auth flows | §8.4 | §15.2 password/SC/CRV1/AUTH_FAILED/WEB_AUTH; S8 |
 | L-OVPN-4 errors reach the user | §5.5 codes, §11.7 | §15.6 last item; S12 |
-| L-CRED-1 keychain location | §6 (DP app store, System ext store, raw `Data`, UUID keys, no `passwordReference`) | §15.2 keychain tests; S4; §15.6 |
+| L-CRED-1 keychain location | §6 (DP app store; root-owned sealed container store for the extension, §6.3; raw `Data`, UUID keys, no `passwordReference`; app → XPC → extension hand-off) | §15.2 secret-store tests; S4; §15.6 |
 | L-MB-1 menu bar | §11.3 | §15.1 RateMeter; UI tests (menu rebuilt on open, item removed on quit, visibility banner) |
 | L-EXT-1 one dialog, no loops | §4.2 table | §15.2 activation outcomes |
 | L-EXT-2 activate every launch, bump both keys | §4.2, §2.6 | version-check CI; §15.5 |
-| L-EXT-3 replacement while connected | §4.3 per-version Mach name, §12.3 stop first | S5, S10; §15.5 |
-| L-EXT-4 uninstall | §4.4 | §15.2: after uninstall, `systemextensionsctl list` is empty and no keychain items or managers remain |
+| L-EXT-3 replacement while connected | §4.3 per-version Mach name; §4.2 preflight stops the tunnel before submitting; the replacement delegate is a pure compare | S5, S10; §15.1 preflight table; §15.5 |
+| L-EXT-4 uninstall | §4.4 (incl. `wipeAllSecrets` of the container store; cask `must_succeed: false`) | §15.2: after uninstall, `systemextensionsctl list` is empty, and no keychain items, container secret files or managers remain |
 | L-EXT-5 no AppKit in extension | §2.2 dependency rules | CI `otool -L` check |
 | L-EXT-6 Developer ID dev builds, debug loop | §2.4, §2.7, §4.2 debug menu, §14.1 first light | M2 |
-| L-UPD-1 updater | §12.1, §12.3, §4.2 downgrade refusal | §15.5; §15.6 Sparkle items |
+| L-UPD-1 updater | §12.1 (EdDSA key off CI, `rc` channel), §12.3, §4.2 downgrade refusal, §4.6 user-initiated reinstall | §15.5; §15.6 Sparkle items |
 | L-DIST-1 cask hygiene | §12.2 zip name, zap audit, absolute paths, `auto_updates` | CI zip-name assert; tap grep job |
 | L-DIST-2 notarization and export | §12.4 | S9; release workflow |
 | L-MIG-1 copy-only migration + Go uninstaller | §13 | §15.2 migration fixtures (a Go data dir snapshot) with a checksum showing the source is untouched; M7 verification |
@@ -1897,15 +2163,56 @@ NR §3 "Security posture to keep":
 
 NR §4 pitfalls 1–15 map to §12.4, §2.4, §2.2, §6, §4.3, §2.6, §4.4, §10.1, §12.3, §7.2, §7.4, §10.2, §10.4, §11.1/§13.1 and §9.2, respectively.
 
+Design-review findings (draft 2) → design → test:
+
+| Finding | Design | Test |
+|---|---|---|
+| C1 extension secret store | §6.3, §3.3, §1.3 A2 | S4; §15.2 secret store; §15.6 secret files |
+| H1 `includeAllNetworks` semantics | §10.1.1, §7.2 `blockMode` | S2; LK-02, LK-07, LK-14 |
+| H2 synchronous replacement delegate | §4.2 preflight, §4.3, §12.3 | §15.1 preflight table; S10; §15.5 brew/drag variants |
+| H3 openvpn3 option handling | §8.1 [7b] + caps + build rules, §8.2 generator, §8.4 `ProvideCreds`, §8.5 endpoint exclusion | §15.1 generated-table diff and caps; §15.2 fatal classes; CI `engine-support`; S13 |
+| M1 Sparkle trust anchor | §12.1, §1.3 A5 | §15.6 (no EdDSA key in CI) |
+| M2 rollback | §4.6 | §15.5; S5 |
+| M3 harness tests the shipped binary | §15.3, §15.2 `FaultInjection` | §15.6 symbol check |
+| M4 captive portals | §10.4, §11.3 | S1; §15.2 portal; LK-15 |
+| M5 IPv6 for v4-only full tunnels | §10.5 | LK-09 (on/off) |
+| M6 OTP lockout on reconnect | §8.4 | S8; §15.2 OTP reconnect |
+| M7 sequencing and infrastructure | §18, §15.7 | M1, M4 milestones |
+| M8 reveal gate limit | §1.3 A6 | §15.1 RevealGate |
+| LOW items | §5.3, §1.3 A1/§3.4, §6.8, §4.5/§13.3, §4.4, §21 | §15.6; §15.1 HMAC; §15.2 |
+
 ---
 
 ## 20. Open risks
 
 1. **OpenVPN-in-NE viability (S8/S13).** If openvpn3 can't do CRV1/SC, or the corporate servers need features openvpn3 lacks, the OpenVPN line stays on Go for longer.
-2. **System keychain from a sandboxed root extension (S4).** This is thinly documented. The fallback is weaker only against an admin user.
+2. **Extension secret store (S4).** Root ownership is the only guaranteed boundary; the Secure Enclave wrap from a sysex works per DTS but is not officially supported (forum 804612), and it fails before the first login after boot. Admins are out of scope. If a future macOS changes SE access for daemons, the store falls back to the plain root file key, with no data loss, because reconcile re-provisions from the app.
 3. **Per-version Mach names and launchd (S5).** Unknown accumulation behaviour across many dev builds. The mitigation is a periodic deactivate/activate in dev.
 4. **On-demand + interactive auth.** OTP profiles can't auto-connect. Users who expect this get a clear UI restriction, not a feature.
 5. **SSID rules without Location (S1).** If they need Location, auto-connect depends on the app running for SSID-specific behaviour.
-6. **`includeAllNetworks` side effects on 27 (S2).** Expect user reports about AirDrop, Continuity and Sidecar. The compatibility toggle exists for this.
-7. **Fork maintenance.** WireGuardKit and openvpn3/OpenSSL are three upstreams we must track. The monthly watch job and pinned toolchains mitigate this, but the bus factor is 1.
+6. **`includeAllNetworks` semantics (S2, §10.1.1).** Behaviour on provider death and on `cancelTunnelWithError` is unknown until S2. If provider death fails open, the native kill switch is weaker than the Go one by the measured restart gap, and this is documented to users. Expect user reports about AirDrop, Continuity and Sidecar; the compatibility toggle exists for this.
+7. **Fork maintenance.** WireGuardKit and openvpn3/OpenSSL are three upstreams we must track, plus one small openvpn3 patch (credential purge, §8.4). The monthly watch job, the `EngineSupport` regeneration diff and pinned toolchains mitigate this, but the bus factor is 1.
 8. **Memory hygiene limits.** XPC, SwiftUI and openvpn3 make copies we can't zero. This is accepted and documented, not solved.
+9. **The EdDSA key on the dev Mac (M1).** Keeping it off CI makes the dev Mac the single point of compromise and makes releases depend on that machine being available. The 1Password backup is the recovery path, and a dev-Mac compromise is already game over for signing identities.
+10. **Unprotected windows by design.** The §4.2 quiesce (updates by brew or drag-replace), "Pause protection" (§10.4), and the captive-portal Ignore rule all leave the Mac online without the tunnel for a bounded, user-visible time. A pause outlives the app if the app crashes (until the next launch).
+11. **IPv6 blackhole (§10.5).** Dual-stack sites can see Happy Eyeballs delays while a v4-only full tunnel is up; some IPv6-only services become unreachable. There is no opt-out in v2.0.
+12. **Device-bound profiles (§6.8).** A Time Machine restore to a new Mac loses every profile that wasn't exported. Users who ignore the export nudge will be surprised.
+
+---
+
+## 21. Later (cut from v2.0)
+
+Cut to fit one developer's capacity. None of these items is a security control the v2.0 design depends on.
+
+| Item | Was in draft 1 | Why cut / what replaces it |
+|---|---|---|
+| Linux fuzz build and the C++ differential fuzz harness | §2.2, §15.4, §12.4 | macOS `-sanitize=fuzzer` covers memory safety of every parser. The differential is covered by unit fixtures and the runtime check [6] |
+| Tart VMs with MDM-scripted extension approval | §12.4, §15.5 | Manual update test on UTM snapshots or a spare Mac (§15.5) |
+| DoH/DoT in tunnel settings (spike S3) | §10.3, §8.5 | Plain DNS inside the tunnel |
+| `ssidProfileMap` (SSID → specific profile) | §3.2, §10.4, §13.1 | One auto profile; the Go map is reported, not migrated |
+| ICMP latency from the root extension | §11.5 | WG handshake RTT; OVPN TCP connect when disconnected |
+| Per-connection XPC token bucket | §5.4 | Size caps and deadlines; peers are team-pinned |
+| Launch/environment constraints | §1.3 A1 (claimed, never configured) | Hardened runtime + team-scoped keychain access |
+| OS-enforced reveal/export gate (HPKE copy sealed to an SE key with `.userPresence`) | — (review M8) | The app-enforced `RevealGate` with its stated limit (§1.3 A6) |
+| Passphrase-encrypted export-all | — (review LOW) | Plain export-all with a warning and the §6.8 nudge |
+| System keychain as the extension store | §6.3 | Container files; may return if S4 shows a supported path |
