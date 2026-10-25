@@ -97,7 +97,10 @@ type Monitor struct {
 	fwSuspendFn   FirewallSuspendFunc
 	fwResumeFn    FirewallResumeFunc
 	stopCh        chan struct{}
-	wg            sync.WaitGroup
+	// wg is replaced on every Start() so a Stop() still waiting on the
+	// previous run's goroutines never shares a WaitGroup with a new run
+	// (WaitGroup reuse while Wait is pending is a data race).
+	wg            *sync.WaitGroup
 	running       bool
 	sleepDetector SleepDetector
 
@@ -134,6 +137,7 @@ func NewMonitor(manager TunnelManager, reconnectFn ReconnectFunc, statusFn Statu
 		reconnectFn:        reconnectFn,
 		statusFn:           statusFn,
 		stopCh:             make(chan struct{}),
+		wg:                 &sync.WaitGroup{},
 		sleepDetector:      NewSleepDetector(),
 		healthCheckEnabled: false, // default OFF — enable in Settings
 	}
@@ -177,11 +181,13 @@ func (m *Monitor) Start() {
 	m.running = true
 	// Recreate stopCh so Start() works after a previous Stop().
 	m.stopCh = make(chan struct{})
+	wg := &sync.WaitGroup{}
+	m.wg = wg
+	wg.Add(2)
 	m.mu.Unlock()
 
-	m.wg.Add(2)
 	go func() {
-		defer m.wg.Done()
+		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("monitorLoop panic (recovered)",
@@ -192,7 +198,7 @@ func (m *Monitor) Start() {
 		m.monitorLoop()
 	}()
 	go func() {
-		defer m.wg.Done()
+		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("sleepWakeLoop panic (recovered)",
@@ -221,13 +227,14 @@ func (m *Monitor) Stop() {
 	if m.sleepDetector != nil {
 		m.sleepDetector.Stop()
 	}
+	wg := m.wg
 	m.mu.Unlock()
 
 	// Wait for goroutines to exit outside the lock to avoid deadlock.
 	// Use a timeout so a stuck goroutine doesn't block helper cleanup forever.
 	waitDone := make(chan struct{})
 	go func() {
-		m.wg.Wait()
+		wg.Wait()
 		close(waitDone)
 	}()
 	select {
@@ -360,6 +367,8 @@ func (m *Monitor) triggerReconnectTunnel(tunnelName string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rs := &retryState{cancel: cancel, done: make(chan struct{})}
 	m.retries[tunnelName] = rs
+	wg := m.wg
+	wg.Add(1)
 	m.mu.Unlock()
 
 	// Cancel the OLD retry goroutine for this SAME tunnel name outside the
@@ -379,9 +388,8 @@ func (m *Monitor) triggerReconnectTunnel(tunnelName string) {
 	// on its way out. Without this, Stop() could return — and helper
 	// cleanup proceed to tear down firewall/manager state — while this
 	// goroutine was still mid-resume, racing the teardown.
-	m.wg.Add(1)
 	go func() {
-		defer m.wg.Done()
+		defer wg.Done()
 		defer close(rs.done)
 		defer func() {
 			if r := recover(); r != nil {
