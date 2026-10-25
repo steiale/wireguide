@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/steiale/wireguide/internal/storage"
 )
 
 // MaxSessions caps the rolling history. Hard cap (not configurable) to keep
@@ -212,35 +214,7 @@ func (s *Store) saveLocked(sessions []Session) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".history-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0600); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
+	return storage.WriteFileAtomic(s.path, data)
 }
 
 // trim keeps the last MaxSessions entries (oldest first → drop from the front).

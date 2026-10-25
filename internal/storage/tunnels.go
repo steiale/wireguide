@@ -32,39 +32,7 @@ func (s *TunnelStore) Save(cfg *config.WireGuardConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	content := config.Serialize(cfg)
-	path := s.path(cfg.Name)
-
-	// Atomic write: temp file + rename (prevents partial writes on crash).
-	// Use os.CreateTemp to avoid predictable temp file names (symlink attacks).
-	tmpFile, err := os.CreateTemp(filepath.Dir(path), ".wireguide-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmpFile.Name()
-	if _, err := tmpFile.Write([]byte(content)); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmpFile.Sync(); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0600); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := atomicRename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return WriteFileAtomic(s.path(cfg.Name), []byte(config.Serialize(cfg)))
 }
 
 // Load reads a tunnel config from disk by name.
@@ -115,17 +83,9 @@ func (s *TunnelStore) Delete(name string) error {
 	return err
 }
 
-// Rename renames a tunnel from oldName to newName.
-//
-// Only `newName` is validated — `oldName` must already correspond to an
-// existing file on disk, and filesystem escaping is handled by s.path().
-// Validating oldName would strand users who have legacy files with
-// characters the current ValidateTunnelName rejects (e.g. dots from the
-// pre-Phase-0 era: `work.vpn.conf`), with no way to rename them out.
-//
-// Note: there is an intentional TOCTOU between exists() and Rename() — this
-// is a single-user desktop app and the window is microseconds. If this ever
-// becomes a multi-user service, switch to os.Link + os.Remove.
+// Rename renames a tunnel. Only newName is validated so legacy names the
+// current rules reject (e.g. "work.vpn") can still be renamed out; oldName
+// is confined to the tunnels directory instead.
 func (s *TunnelStore) Rename(oldName, newName string) error {
 	if err := ValidateTunnelName(newName); err != nil {
 		return err
@@ -137,43 +97,22 @@ func (s *TunnelStore) Rename(oldName, newName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Validate that oldName resolves to a path within the tunnels directory
-	// to prevent path traversal (e.g., oldName = "../../etc/shadow").
-	oldPath := s.path(oldName)
-	absOld, err := filepath.Abs(oldPath)
-	if err != nil {
-		return fmt.Errorf("invalid old name: %w", err)
-	}
-	absDir, err := filepath.Abs(s.dir)
-	if err != nil {
-		return fmt.Errorf("invalid directory: %w", err)
-	}
-	// Resolve symlinks so that a symlinked tunnels directory (or symlinked
-	// path components in oldName) cannot bypass the HasPrefix check.
-	if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
-		absDir = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(absOld); err == nil {
-		absOld = resolved
-	}
-	if !strings.HasPrefix(absOld, absDir+string(filepath.Separator)) {
+	// A name without path separators can't leave the tunnels directory.
+	if oldName == "" || oldName == "." || oldName == ".." || strings.ContainsAny(oldName, "/\x00") {
 		return fmt.Errorf("tunnel name %q escapes tunnels directory", oldName)
 	}
+	oldPath := s.path(oldName)
 
 	if !s.exists(oldName) {
 		return fmt.Errorf("tunnel %q does not exist", oldName)
 	}
-	if s.exists(newName) {
+	// On case-insensitive APFS a case-only rename finds the old file under
+	// the new name; that is not a conflict.
+	if s.exists(newName) && !s.sameTunnel(oldName, newName) {
 		return fmt.Errorf("tunnel %q already exists", newName)
 	}
 
-	// Rename the config file — .ovpn for OpenVPN tunnels, .conf for
-	// WireGuard. A tunnel is normally only ever one or the other, but if
-	// both somehow coexist (the same "legacy/weird coexistence" case
-	// Delete's comment already acknowledges and cleans up best-effort),
-	// renaming only whichever one Stat happened to find first stranded the
-	// other under the OLD name — a ghost/duplicate entry that List() would
-	// then surface twice. Rename every config file that actually exists.
+	// Rename every config file present (.conf and .ovpn can coexist).
 	_, ovpnErr := os.Stat(s.ovpnPath(oldName))
 	ovpnExists := ovpnErr == nil
 	_, confErr := os.Stat(oldPath)
@@ -189,10 +128,6 @@ func (s *TunnelStore) Rename(oldName, newName string) error {
 	}
 	if confExists {
 		if err := os.Rename(oldPath, s.path(newName)); err != nil {
-			// If the .ovpn rename above already succeeded, the tunnel
-			// exists under newName now — surface the error but don't try
-			// to roll the .ovpn rename back (matches this function's
-			// existing no-rollback posture on other partial-failure paths).
 			return err
 		}
 	}
@@ -255,6 +190,22 @@ func (s *TunnelStore) Exists(name string) bool {
 	return s.exists(name)
 }
 
+// sameTunnel reports whether both names resolve to the same file (a
+// case-only rename on a case-insensitive filesystem).
+func (s *TunnelStore) sameTunnel(a, b string) bool {
+	if !strings.EqualFold(a, b) {
+		return false
+	}
+	for _, p := range []func(string) string{s.path, s.ovpnPath} {
+		fa, errA := os.Stat(p(a))
+		fb, errB := os.Stat(p(b))
+		if errA == nil && errB == nil && os.SameFile(fa, fb) {
+			return true
+		}
+	}
+	return false
+}
+
 // exists is the internal lock-free version for use within already-locked methods.
 // A tunnel exists if either its .conf (WireGuard) or .ovpn (OpenVPN) file is present.
 func (s *TunnelStore) exists(name string) bool {
@@ -295,8 +246,7 @@ func (s *TunnelStore) ovpnPath(name string) string {
 	return filepath.Join(s.dir, name+".ovpn")
 }
 
-// SaveOVPN writes raw OpenVPN config content to disk with 0600 permissions,
-// using the same atomic temp-file + rename pattern as Save().
+// SaveOVPN writes raw OpenVPN config content to disk with 0600 permissions.
 func (s *TunnelStore) SaveOVPN(name, content string) error {
 	if err := ValidateTunnelName(name); err != nil {
 		return err
@@ -305,35 +255,7 @@ func (s *TunnelStore) SaveOVPN(name, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	path := s.ovpnPath(name)
-	tmpFile, err := os.CreateTemp(filepath.Dir(path), ".wireguide-ovpn-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmpFile.Name()
-	if _, err := tmpFile.Write([]byte(content)); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmpFile.Sync(); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0600); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := atomicRename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return WriteFileAtomic(s.ovpnPath(name), []byte(content))
 }
 
 // LoadOVPN reads a tunnel's raw .ovpn content from disk.
@@ -371,33 +293,28 @@ func (s *TunnelStore) metaPath(name string) string {
 	return filepath.Join(s.dir, name+".meta.json")
 }
 
-// LoadMeta reads per-tunnel metadata. Returns empty defaults if not found.
+// LoadMeta reads per-tunnel metadata, defaulting when missing or corrupt.
+// Protocol is OpenVPN whenever an .ovpn file exists (authoritative over the
+// meta, which may be missing for migrated tunnels), else WireGuard.
 func (s *TunnelStore) LoadMeta(name string) (*TunnelMeta, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	m := &TunnelMeta{}
 	data, err := os.ReadFile(s.metaPath(name))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &TunnelMeta{Protocol: domain.ProtocolWireGuard}, nil
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	var m TunnelMeta
-	if err := json.Unmarshal(data, &m); err != nil {
-		return &TunnelMeta{Protocol: domain.ProtocolWireGuard}, nil
+	if err == nil && json.Unmarshal(data, m) != nil {
+		m = &TunnelMeta{}
 	}
-	// Backward compat: meta files written before the protocol field existed have
-	// an empty value — treat those as WireGuard.
 	m.Protocol = domain.NormalizeProtocol(m.Protocol)
-	return &m, nil
+	if _, err := os.Stat(s.ovpnPath(name)); err == nil {
+		m.Protocol = domain.ProtocolOpenVPN
+	}
+	return m, nil
 }
 
 // SaveMeta writes per-tunnel metadata atomically.
-//
-// Uses os.CreateTemp + Sync + Rename — the same pattern as Save() — instead of
-// a predictable "<name>.tmp" suffix. The predictable suffix race-clobbered
-// concurrent saves of the same tunnel and skipped fsync, so a crash during
-// the rename window could leave a half-written meta file.
 func (s *TunnelStore) SaveMeta(name string, meta *TunnelMeta) error {
 	if err := ValidateTunnelName(name); err != nil {
 		return err
@@ -407,52 +324,9 @@ func (s *TunnelStore) SaveMeta(name string, meta *TunnelMeta) error {
 		return err
 	}
 
-	// Rename() also moves this file and holds s.mu for the duration —
-	// without taking the same lock here, a SaveMeta racing a Rename of the
-	// same tunnel could write to the OLD path just after Rename already
-	// moved it away, silently orphaning the update as a stray sidecar file.
+	// Same lock as Rename, which moves this file.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dst := s.metaPath(name)
-	dir := filepath.Dir(dst)
-
-	// CreateTemp gives us a unique randomized name so concurrent SaveMeta
-	// calls for the same tunnel can't clobber each other's temp file.
-	f, err := os.CreateTemp(dir, "."+name+".meta.*")
-	if err != nil {
-		return err
-	}
-	tmpPath := f.Name()
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := atomicRename(tmpPath, dst); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	// Tighten perms after rename — CreateTemp uses 0600 already on most
-	// platforms but we set it explicitly to match Save()'s contract.
-	if err := os.Chmod(dst, 0600); err != nil {
-		return err
-	}
-	return nil
-}
-
-// DeleteMeta removes the metadata sidecar file (called when tunnel is deleted).
-func (s *TunnelStore) DeleteMeta(name string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	os.Remove(s.metaPath(name))
+	return WriteFileAtomic(s.metaPath(name), data)
 }

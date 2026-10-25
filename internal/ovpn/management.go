@@ -2,6 +2,7 @@ package ovpn
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,70 +13,67 @@ import (
 	"time"
 )
 
-// ChallengeKind identifies which OpenVPN challenge/response variant (if any)
-// accompanies an auth prompt. See doc/management-notes.txt in the OpenVPN
-// source (https://github.com/OpenVPN/openvpn/blob/master/doc/management-notes.txt)
-// for the underlying CRV1/SCRV1 wire protocol this implements — used by
-// RADIUS/LDAP-backed 2FA (e.g. a TOTP token requested as a separate step
-// after the base password already succeeded).
+// ChallengeKind identifies which challenge/response variant (if any)
+// accompanies an auth prompt (doc/management-notes.txt, CRV1/SCRV1).
 type ChallengeKind string
 
 const (
 	ChallengeNone    ChallengeKind = ""        // plain username/password prompt
-	ChallengeStatic  ChallengeKind = "static"  // SCRV1 — response collected alongside the password, in the same prompt
-	ChallengeDynamic ChallengeKind = "dynamic" // CRV1 — response collected in a SEPARATE prompt, after the base password already succeeded
+	ChallengeStatic  ChallengeKind = "static"  // SCRV1: response collected alongside the password
+	ChallengeDynamic ChallengeKind = "dynamic" // CRV1: response collected after the base password succeeded
 )
 
 // AuthChallenge describes a challenge/response prompt the server is asking
 // the client to answer.
 type AuthChallenge struct {
 	Kind ChallengeKind
-	Text string // human-readable challenge/prompt text to show the user
-	Echo bool   // true if the response should be shown as typed, not masked
+	Text string // challenge text to show the user
+	Echo bool   // show the response as typed instead of masked
 
-	// StateID is CRV1 (dynamic)-only: an opaque token the server issued with
-	// the challenge, which must be echoed back verbatim in the response.
+	// StateID (CRV1 only) must be echoed back verbatim in the response.
 	StateID string
 
-	// Concat is SCRV1 (static)-only: true if the response should be
-	// concatenated directly with the password as plain text (FORMAT=1); if
-	// false, password and response are base64-encoded and combined with the
-	// "SCRV1:" wire prefix (FORMAT=0, the more common case).
+	// Concat (SCRV1 only): append the response to the password as plain text
+	// (FORMAT=1) instead of the base64 "SCRV1:" form.
 	Concat bool
+
+	// username (CRV1 only) is the username the server put in the challenge;
+	// the response must be sent under it.
+	username string
 }
 
-// dynamicChallengeRe matches the CRV1 payload embedded in a
-// ">PASSWORD:Verification Failed: 'Auth' ['CRV1:<flags>:<state_id>:<username_base64>:<challenge_text>']"
-// line. The challenge text (last field) is free text and is not restricted
-// from containing colons, so it's captured greedily up to the closing "']".
+// User-facing messages for prompts LockPlus can't answer.
+const (
+	msgWebAuth       = "This server requires web/SSO authentication, which LockPlus doesn't support yet"
+	msgPrivateKeyPw  = "This profile's private key is password-protected, which LockPlus doesn't support yet"
+	msgProxyAuth     = "The HTTP proxy requires credentials; embed them in the profile as an inline <http-proxy-user-pass> block"
+	msgUnknownPrompt = "OpenVPN asked for input LockPlus doesn't support"
+)
+
+// CRV1:<flags>:<state_id>:<username_base64>:<challenge_text>, text may
+// contain colons.
 var dynamicChallengeRe = regexp.MustCompile(`CRV1:([^:]*):([^:]*):([^:]*):(.*)'\]`)
 
-// staticChallengeRe matches the "SC:<flag>,<text>" suffix OpenVPN appends to
-// a ">PASSWORD:Need 'Auth' username/password" line when the server config
-// has "static-challenge" enabled.
+// "SC:<flag>,<text>" suffix of a Need 'Auth' prompt (static-challenge).
 var staticChallengeRe = regexp.MustCompile(`SC:(\d+),(.*)$`)
 
-// parseDynamicChallenge extracts a CRV1 challenge from a "Verification
-// Failed" payload (the part of the line after ">PASSWORD:"). Returns nil if
-// the payload doesn't contain a CRV1 block (e.g. a plain wrong-password
-// failure with no 2FA involved).
 func parseDynamicChallenge(payload string) *AuthChallenge {
 	m := dynamicChallengeRe.FindStringSubmatch(payload)
 	if m == nil {
 		return nil
 	}
-	flags, stateID, challengeText := m[1], m[2], m[4]
-	return &AuthChallenge{
+	ch := &AuthChallenge{
 		Kind:    ChallengeDynamic,
-		Text:    challengeText,
-		Echo:    strings.Contains(flags, "E"),
-		StateID: stateID,
+		Text:    m[4],
+		Echo:    strings.Contains(m[1], "E"),
+		StateID: m[2],
 	}
+	if u, err := base64.StdEncoding.DecodeString(m[3]); err == nil {
+		ch.username = string(u)
+	}
+	return ch
 }
 
-// parseStaticChallenge extracts an SCRV1 challenge from a "Need 'Auth'"
-// payload. Returns nil if the payload has no "SC:" suffix (the common case
-// — most servers don't use static-challenge).
 func parseStaticChallenge(payload string) *AuthChallenge {
 	m := staticChallengeRe.FindStringSubmatch(payload)
 	if m == nil {
@@ -93,34 +91,49 @@ func parseStaticChallenge(payload string) *AuthChallenge {
 	}
 }
 
-// mgmtClient is a thin client for the OpenVPN management interface over a Unix
-// domain socket. OpenVPN, started with `management <sock> unix`, accepts
-// newline-terminated commands and emits asynchronous notifications prefixed
-// with ">" (e.g. >STATE:, >BYTECOUNT:, >PASSWORD:).
-//
-// See: https://openvpn.net/community-resources/management-interface/
+// mgmtHandler receives the notifications readLoop decodes.
+type mgmtHandler interface {
+	// state: localIP and remoteAddr ("ip:port") are only set on CONNECTED and
+	// reflect the remote openvpn is actually using now.
+	state(state, localIP, remoteAddr string)
+	bytes(rx, tx int64)
+	// authPrompt: sc is non-nil for a static-challenge prompt. May block
+	// until the user answers.
+	authPrompt(sc *AuthChallenge)
+	// dynamicChallenge: the server answered the base credentials with CRV1.
+	dynamicChallenge(ch *AuthChallenge)
+	// failure: something the user must see. terminate means openvpn would
+	// otherwise wait forever for input we can't give.
+	failure(msg string, terminate bool)
+}
+
+// mgmtClient talks to openvpn's management interface over a unix socket.
 type mgmtClient struct {
 	conn net.Conn
 	r    *bufio.Reader
 
-	// mu serializes writes. sendCredentials writes two lines that must
-	// reach openvpn back-to-back (the management protocol has no way to
-	// associate them otherwise) — without this, a concurrent send() from
-	// another goroutine (e.g. signalTerm from the reconnect monitor, or
-	// holdRelease from readLoop) could land between the username and
-	// password lines and corrupt the auth handshake.
+	// mu serializes writes: the username and password lines of
+	// sendCredentials must not interleave with another command.
 	mu sync.Mutex
+
+	timerMu   sync.Mutex
+	holdTimer *time.Timer
+	closed    bool
 }
 
-// dialManagement connects to the OpenVPN management socket, retrying for up to
-// 8 seconds while openvpn starts up and creates the socket.
+func newMgmtClient(conn net.Conn) *mgmtClient {
+	return &mgmtClient{conn: conn, r: bufio.NewReader(conn)}
+}
+
+// dialManagement connects to the management socket, retrying for up to 8s
+// while openvpn starts up.
 func dialManagement(sockPath string) (*mgmtClient, error) {
 	deadline := time.Now().Add(8 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		conn, err := net.Dial("unix", sockPath)
 		if err == nil {
-			return &mgmtClient{conn: conn, r: bufio.NewReader(conn)}, nil
+			return newMgmtClient(conn), nil
 		}
 		lastErr = err
 		time.Sleep(150 * time.Millisecond)
@@ -128,24 +141,14 @@ func dialManagement(sockPath string) (*mgmtClient, error) {
 	return nil, fmt.Errorf("dial management socket %q: %w", sockPath, lastErr)
 }
 
-// send writes a single command followed by a newline. Safe for concurrent
-// use — serialized against other send/sendCredentials calls via mu.
 func (c *mgmtClient) send(cmd string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.writeLocked(cmd)
 }
 
-// writeLocked writes a single command followed by a newline. Caller must
-// hold mu.
-//
-// A write deadline is set on every call because, without one, a wedged
-// openvpn process that stops draining its management-socket input can fill
-// the socket send buffer and block this Write forever — while holding mu,
-// which then blocks EVERY other caller (signalTerm from Disconnect,
-// holdRelease from readLoop, sendCredentials) indefinitely too. Timing out
-// converts that hang into an error the caller can react to (e.g. Disconnect
-// falling back to Process.Kill()).
+// writeLocked has a deadline so a wedged openvpn that stops draining the
+// socket can't block every other writer (Disconnect's SIGTERM) forever.
 func (c *mgmtClient) writeLocked(cmd string) error {
 	if err := c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return err
@@ -154,100 +157,72 @@ func (c *mgmtClient) writeLocked(cmd string) error {
 	return err
 }
 
-// sendCredentials answers a >PASSWORD:Need 'Auth' prompt. OpenVPN expects the
-// username first, then the password, each addressed to the "Auth" realm. Values
-// are wrapped in double quotes; embedded quotes/backslashes are escaped per the
-// management protocol.
+// sendCredentials answers a Need 'Auth' prompt.
 func (c *mgmtClient) sendCredentials(username, password string) error {
-	// Reject newlines — the management protocol is line-oriented and a \n inside
-	// a quoted value terminates the command early, allowing injection.
+	// The protocol is line-oriented; a newline would inject a command.
 	if strings.ContainsAny(username, "\r\n") || strings.ContainsAny(password, "\r\n") {
 		return fmt.Errorf("credentials contain illegal newline characters")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Hold mu across both writes — see the mu field comment for why.
-	if err := c.writeLocked(fmt.Sprintf("username \"Auth\" %s", mgmtQuote(username))); err != nil {
+	if err := c.writeLocked("username \"Auth\" " + mgmtQuote(username)); err != nil {
 		return err
 	}
-	return c.writeLocked(fmt.Sprintf("password \"Auth\" %s", mgmtQuote(password)))
+	return c.writeLocked("password \"Auth\" " + mgmtQuote(password))
 }
 
-// mgmtQuote wraps s in double quotes and escapes backslashes and double quotes,
-// as required by the OpenVPN management interface for values containing spaces.
 func mgmtQuote(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
 	return "\"" + s + "\""
 }
 
-// holdRelease tells a management-hold'd openvpn to proceed with connecting. We
-// start openvpn with `management-hold` so it waits for us to attach before
-// doing anything (avoids missing the first state/password notifications).
-func (c *mgmtClient) holdRelease() error {
-	return c.send("hold release")
-}
-
-// signalTerm asks openvpn to shut down cleanly (SIGTERM equivalent).
 func (c *mgmtClient) signalTerm() error {
 	return c.send("signal SIGTERM")
 }
 
-// readLoop reads management notifications until the connection closes, invoking
-// the supplied callbacks. It enables real-time state and bytecount reporting on
-// entry. onDone is always called exactly once when the loop exits.
-//
-//   - onState(state, localIP, remoteAddr string) — connection state, e.g.
-//     "CONNECTING", "WAIT", "AUTH", "GET_CONFIG", "ASSIGN_IP", "CONNECTED",
-//     "RECONNECTING", "EXITING". localIP is the tunnel-assigned client
-//     address, populated only on CONNECTED. remoteAddr is "ip:port" of the
-//     actual remote server OpenVPN is connected to right now (per
-//     management-notes.txt: "(e) optional address of remote server, (f)
-//     optional port of remote server" — shown for CONNECTED), also
-//     populated only on CONNECTED. This is the CURRENT remote as OpenVPN
-//     itself sees it — including after OpenVPN's own internal reconnect to
-//     a different `remote` directive or a different round-robin DNS
-//     answer — unlike a value resolved once up front at Connect time.
-//   - onBytes(rx, tx int64)       — periodic byte counters.
-//   - onAuthPrompt(sc *AuthChallenge) — the server is asking for username/
-//     password. sc is non-nil if this specific prompt carries a static
-//     (SCRV1) challenge suffix; nil for a plain prompt.
-//   - onDynamicChallenge(ch *AuthChallenge) — the server rejected the
-//     previous credentials with a CRV1 dynamic-challenge payload attached
-//     (2FA required). ch is never nil when this is called. A plain
-//     credential rejection with no CRV1 payload does NOT call this — it's
-//     only logged.
-//   - onDone()                    — the management connection ended.
-func (c *mgmtClient) readLoop(
-	onState func(state, localIP, remoteAddr string),
-	onBytes func(rx, tx int64),
-	onAuthPrompt func(sc *AuthChallenge),
-	onDynamicChallenge func(ch *AuthChallenge),
-	onDone func(),
-) {
-	defer onDone()
+// releaseHold answers ">HOLD:Waiting for hold release:N". openvpn skips its
+// own restart pause (socket_restart_pause sets sec=0) when a management hold
+// was entered, so N is the connect-retry backoff we must honour ourselves;
+// releasing at once turns a dead server or rejected inline password into a
+// tight reconnect loop.
+func (c *mgmtClient) releaseHold(wait time.Duration) {
+	release := func() {
+		if err := c.send("hold release"); err != nil {
+			slog.Warn("ovpn: hold release failed", "error", err)
+		}
+	}
+	if wait <= 0 {
+		release()
+		return
+	}
+	c.timerMu.Lock()
+	defer c.timerMu.Unlock()
+	if c.closed {
+		return
+	}
+	if c.holdTimer != nil {
+		c.holdTimer.Stop()
+	}
+	slog.Info("ovpn: restart pause before hold release", "seconds", wait.Seconds())
+	c.holdTimer = time.AfterFunc(wait, release)
+}
 
-	// Ask openvpn to push state changes and a bytecount every second.
+// Read deadlines. Before CONNECTED openvpn can be silent for up to its
+// connect-timeout (120s default); once CONNECTED "bytecount 1" guarantees a
+// line per second, so silence means a wedged process.
+const (
+	preConnectDeadline = 150 * time.Second
+	connectedDeadline  = 30 * time.Second
+)
+
+// readLoop processes notifications until the connection closes or a read
+// deadline expires.
+func (c *mgmtClient) readLoop(h mgmtHandler) {
 	_ = c.send("state on")
 	_ = c.send("bytecount 1")
 
-	// A read deadline turns a wedged-but-not-exited openvpn (or a stuck
-	// management socket) into a detected failure instead of an indefinite
-	// hang. "bytecount 1" above only guarantees a line every second once
-	// the tunnel has actually reached CONNECTED — before that (TCP
-	// connect, DNS retry, TLS handshake), openvpn can go completely silent
-	// on the management socket for as long as its own --connect-timeout
-	// (120s by default) while a legitimate attempt is still in progress.
-	// So: a generous bound pre-CONNECTED that's comfortably above that
-	// default, tightened to the aggressive 30s bound only once CONNECTED
-	// actually guarantees per-second traffic. Any deadline-exceeded error
-	// falls through to the `return` below, which runs onDone() via the
-	// deferred call at the top of this function — the same path a closed
-	// connection already takes.
-	const preConnectDeadline = 150 * time.Second
-	const connectedDeadline = 30 * time.Second
 	readDeadline := preConnectDeadline
-
 	for {
 		if err := c.conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
 			return
@@ -257,98 +232,90 @@ func (c *mgmtClient) readLoop(
 			return
 		}
 		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			continue
-		}
 
 		switch {
 		case strings.HasPrefix(line, ">STATE:"):
-			// >STATE:<time>,<state>,<desc>,<localip>,<remoteip>,<remoteport>,<localaddr>,<localport>,<localipv6>
-			payload := strings.TrimPrefix(line, ">STATE:")
-			parts := strings.Split(payload, ",")
-			if len(parts) >= 2 && onState != nil {
-				localIP := ""
-				if len(parts) >= 4 {
-					localIP = parts[3]
-				}
-				remoteAddr := ""
-				if len(parts) >= 6 && parts[4] != "" && parts[5] != "" {
-					remoteAddr = net.JoinHostPort(parts[4], parts[5])
-				}
-				onState(parts[1], localIP, remoteAddr)
+			// >STATE:<time>,<state>,<desc>,<localip>,<remoteip>,<remoteport>,...
+			parts := strings.Split(strings.TrimPrefix(line, ">STATE:"), ",")
+			if len(parts) < 2 {
+				continue
 			}
-			// Tighten the read deadline once actually CONNECTED (bytecount
-			// now guarantees per-second traffic), and relax it again for
-			// any other state — RECONNECTING/TCP_CONNECT/WAIT/etc. can all
-			// go quiet for a while during a legitimate in-progress
-			// (re)connect, exactly like the initial connect above.
-			if len(parts) >= 2 {
-				if parts[1] == "CONNECTED" {
-					readDeadline = connectedDeadline
-				} else {
-					readDeadline = preConnectDeadline
-				}
+			localIP, remoteAddr := "", ""
+			if len(parts) >= 4 {
+				localIP = parts[3]
+			}
+			if len(parts) >= 6 && parts[4] != "" && parts[5] != "" {
+				remoteAddr = net.JoinHostPort(parts[4], parts[5])
+			}
+			h.state(parts[1], localIP, remoteAddr)
+			if parts[1] == "CONNECTED" {
+				readDeadline = connectedDeadline
+			} else {
+				readDeadline = preConnectDeadline
 			}
 
 		case strings.HasPrefix(line, ">BYTECOUNT:"):
-			// >BYTECOUNT:<rx>,<tx>
-			payload := strings.TrimPrefix(line, ">BYTECOUNT:")
-			parts := strings.Split(payload, ",")
-			if len(parts) >= 2 && onBytes != nil {
+			parts := strings.Split(strings.TrimPrefix(line, ">BYTECOUNT:"), ",")
+			if len(parts) >= 2 {
 				rx, _ := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
 				tx, _ := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-				onBytes(rx, tx)
+				h.bytes(rx, tx)
 			}
 
 		case strings.HasPrefix(line, ">PASSWORD:"):
-			// The auth-user-pass prompt:
-			//   >PASSWORD:Need 'Auth' username/password
-			//   >PASSWORD:Need 'Auth' username/password SC:<flag>,<text>   (static challenge)
-			// Verification failures arrive as:
-			//   >PASSWORD:Verification Failed: 'Auth'
-			//   >PASSWORD:Verification Failed: 'Auth' ['CRV1:...']         (dynamic challenge)
 			payload := strings.TrimPrefix(line, ">PASSWORD:")
 			switch {
 			case strings.HasPrefix(payload, "Need 'Auth'"):
-				if onAuthPrompt != nil {
-					onAuthPrompt(parseStaticChallenge(payload))
-				}
+				h.authPrompt(parseStaticChallenge(payload))
+			case strings.HasPrefix(payload, "Need 'Private Key'"):
+				h.failure(msgPrivateKeyPw, true)
+			case strings.HasPrefix(payload, "Need 'HTTP Proxy'"):
+				h.failure(msgProxyAuth, true)
+			case strings.HasPrefix(payload, "Need "):
+				h.failure(msgUnknownPrompt, true)
 			case strings.HasPrefix(payload, "Verification Failed"):
 				if ch := parseDynamicChallenge(payload); ch != nil {
-					if onDynamicChallenge != nil {
-						onDynamicChallenge(ch)
-					}
+					h.dynamicChallenge(ch)
 				} else {
-					slog.Warn("ovpn: server rejected credentials", "detail", payload)
+					h.failure(payload, false)
 				}
 			}
 
-		case strings.HasPrefix(line, ">HOLD:"):
-			// >HOLD:Waiting for hold release:<n> — sent whenever OpenVPN is
-			// hibernating pending a "hold release" command. We start
-			// openvpn with --management-hold so it waits for us to attach
-			// before doing anything the FIRST time (avoids missing the
-			// initial state/password notifications) — Connect() sends the
-			// one-time initial release for that. But per management-notes.txt,
-			// "the hold flag setting is persistent and will NOT be reset by
-			// restarts" — so OpenVPN re-enters this exact hold state on
-			// EVERY subsequent internal restart too (ping-restart, a
-			// `remote` failover, the CRV1 auth-retry reconnect), and hangs
-			// there forever unless something sends "hold release" again.
-			// Without this case, the entire class of "OpenVPN reconnects
-			// internally" scenarios this client relies on (CRV1's
-			// auth-retry restart, the kill switch's remote-address
-			// tracking across a `remote` failover) would silently stall on
-			// every restart after the first.
-			if err := c.holdRelease(); err != nil {
-				slog.Warn("ovpn: hold release failed", "detail", line, "error", err)
+		case strings.HasPrefix(line, ">NEED-OK:"), strings.HasPrefix(line, ">NEED-STR:"):
+			h.failure(msgUnknownPrompt, true)
+
+		case strings.HasPrefix(line, ">INFOMSG:"):
+			msg := strings.TrimPrefix(line, ">INFOMSG:")
+			if strings.HasPrefix(msg, "WEB_AUTH:") || strings.HasPrefix(msg, "OPEN_URL:") || strings.HasPrefix(msg, "CR_TEXT:") {
+				h.failure(msgWebAuth, true)
 			}
+
+		case strings.HasPrefix(line, ">FATAL:"):
+			h.failure(strings.TrimPrefix(line, ">FATAL:"), false)
+
+		case strings.HasPrefix(line, ">HOLD:"):
+			// The hold flag persists across restarts, so this arrives on the
+			// initial start (N=0) and before every internal restart.
+			n := 0
+			if i := strings.LastIndexByte(line, ':'); i >= 0 {
+				n, _ = strconv.Atoi(strings.TrimSpace(line[i+1:]))
+			}
+			wait := time.Duration(n) * time.Second
+			c.releaseHold(wait)
+			// openvpn is silent while held; don't mistake that for a wedge.
+			readDeadline = preConnectDeadline + wait
 		}
 	}
 }
 
-// close tears down the management connection.
+// close tears down the connection and cancels a pending hold release.
 func (c *mgmtClient) close() error {
+	c.timerMu.Lock()
+	c.closed = true
+	if c.holdTimer != nil {
+		c.holdTimer.Stop()
+	}
+	c.timerMu.Unlock()
 	if c.conn == nil {
 		return nil
 	}

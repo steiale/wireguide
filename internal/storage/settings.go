@@ -90,32 +90,5 @@ func (s *SettingsStore) Save(settings *Settings) error {
 	if err != nil {
 		return err
 	}
-	tmpFile, err := os.CreateTemp(filepath.Dir(s.path), ".wireguide-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmpFile.Name()
-	if _, err := tmpFile.Write(data); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmpFile.Sync(); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0600); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := atomicRename(tmpPath, s.path); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return WriteFileAtomic(s.path, data)
 }

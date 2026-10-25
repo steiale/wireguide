@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"log/slog"
+	"net"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -22,10 +24,13 @@ func Parse(content string) (*WireGuardConfig, error) {
 
 	for scanner.Scan() {
 		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+		// wg-quick strips everything from the first '#' (${line%%\#*}).
+		line := scanner.Text()
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
 			continue
 		}
 
@@ -91,7 +96,7 @@ func parseInterfaceKey(iface *InterfaceConfig, key, value string, lineNum int) e
 	case "privatekey":
 		iface.PrivateKey = value
 	case "address":
-		iface.Address = append(iface.Address, splitAndTrim(value)...)
+		iface.Address = append(iface.Address, splitPrefixes(value)...)
 	case "dns":
 		iface.DNS = append(iface.DNS, splitAndTrim(value)...)
 	case "mtu":
@@ -120,10 +125,7 @@ func parseInterfaceKey(iface *InterfaceConfig, key, value string, lineNum int) e
 		iface.PostDown = appendScriptLine(iface.PostDown, value)
 	default:
 		slog.Warn("ignoring unknown [Interface] key", "line", lineNum, "key", key)
-		if iface.ExtraKeys == nil {
-			iface.ExtraKeys = make(map[string]string)
-		}
-		iface.ExtraKeys[key] = value
+		iface.ExtraKeys = addExtraKey(iface.ExtraKeys, key, value)
 	}
 	return nil
 }
@@ -137,7 +139,7 @@ func parsePeerKey(peer *PeerConfig, key, value string, lineNum int) error {
 	case "endpoint":
 		peer.Endpoint = value
 	case "allowedips":
-		peer.AllowedIPs = append(peer.AllowedIPs, splitAndTrim(value)...)
+		peer.AllowedIPs = append(peer.AllowedIPs, splitPrefixes(value)...)
 	case "persistentkeepalive":
 		n, err := strconv.Atoi(value)
 		if err != nil {
@@ -146,10 +148,7 @@ func parsePeerKey(peer *PeerConfig, key, value string, lineNum int) error {
 		peer.PersistentKeepalive = n
 	default:
 		slog.Warn("ignoring unknown [Peer] key", "line", lineNum, "key", key)
-		if peer.ExtraKeys == nil {
-			peer.ExtraKeys = make(map[string]string)
-		}
-		peer.ExtraKeys[key] = value
+		peer.ExtraKeys = addExtraKey(peer.ExtraKeys, key, value)
 	}
 	return nil
 }
@@ -184,9 +183,7 @@ func Serialize(cfg *WireGuardConfig) string {
 	writeScriptLines(&b, "PostUp", cfg.Interface.PostUp)
 	writeScriptLines(&b, "PreDown", cfg.Interface.PreDown)
 	writeScriptLines(&b, "PostDown", cfg.Interface.PostDown)
-	for k, v := range cfg.Interface.ExtraKeys {
-		b.WriteString(k + " = " + v + "\n")
-	}
+	writeExtraKeys(&b, cfg.Interface.ExtraKeys)
 
 	for _, peer := range cfg.Peers {
 		b.WriteString("\n[Peer]\n")
@@ -203,9 +200,7 @@ func Serialize(cfg *WireGuardConfig) string {
 		if peer.PersistentKeepalive > 0 {
 			b.WriteString("PersistentKeepalive = " + strconv.Itoa(peer.PersistentKeepalive) + "\n")
 		}
-		for k, v := range peer.ExtraKeys {
-			b.WriteString(k + " = " + v + "\n")
-		}
+		writeExtraKeys(&b, peer.ExtraKeys)
 	}
 
 	return b.String()
@@ -235,6 +230,49 @@ func writeScriptLines(b *strings.Builder, key, value string) {
 	for _, part := range strings.Split(value, scriptSeparator) {
 		b.WriteString(key + " = " + part + "\n")
 	}
+}
+
+// addExtraKey keeps unknown keys for round-tripping; a repeated key is
+// joined with scriptSeparator like the script hooks.
+func addExtraKey(m map[string]string, key, value string) map[string]string {
+	if m == nil {
+		m = make(map[string]string)
+	}
+	if old, ok := m[key]; ok {
+		value = old + scriptSeparator + value
+	}
+	m[key] = value
+	return m
+}
+
+// writeExtraKeys writes unknown keys sorted by name, one line per value.
+func writeExtraKeys(b *strings.Builder, m map[string]string) {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		writeScriptLines(b, k, m[k])
+	}
+}
+
+// splitPrefixes splits a CIDR list; bare IPs get /32 or /128 as wg-quick
+// and wg accept them.
+func splitPrefixes(s string) []string {
+	out := splitAndTrim(s)
+	for i, v := range out {
+		if !strings.Contains(v, "/") {
+			if ip := net.ParseIP(v); ip != nil {
+				if ip.To4() != nil {
+					out[i] = v + "/32"
+				} else {
+					out[i] = v + "/128"
+				}
+			}
+		}
+	}
+	return out
 }
 
 func splitAndTrim(s string) []string {

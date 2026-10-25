@@ -20,171 +20,60 @@ import (
 	"github.com/steiale/wireguide/internal/storage"
 )
 
-// cipherLogRe matches OpenVPN's own startup log line announcing the
-// negotiated data-channel cipher, e.g.:
-//
-//	Data Channel: cipher 'AES-256-GCM'
-//	Data Channel: cipher 'AES-256-GCM', auth 'SHA256'
-//
-// See src/openvpn/init.c in the OpenVPN 2.7 source (unchanged since 2.6).
-var cipherLogRe = regexp.MustCompile(`Data Channel: cipher '([^']+)'`)
-
-// dhcpOptionRe matches server-pushed DNS server / search domain options out
-// of OpenVPN's own log line announcing the PUSH_REPLY, e.g.:
-//
-//	PUSH: Received control message: 'PUSH_REPLY,...,dhcp-option DNS 192.168.1.11,dhcp-option DNS 192.168.1.14,dhcp-option DOMAIN all-service.local,ifconfig ...'
-//
-// OpenVPN's core applies routes/ifconfig from PUSH_REPLY itself but never
-// touches the OS resolver — that's normally the job of an --up/--route-up
-// script reading the foreign_option_N env vars OpenVPN sets, which we don't
-// have (and OpenVPN's own built-in dns-updown helper isn't present in our
-// static build either). So we parse the pushed options directly from this
-// log line instead and apply them the same way WireGuard's `DNS = ...`
-// directive does, via network.NetworkManager/networksetup.
-//
-// Values are terminated by a comma, not whitespace — the whole PUSH_REPLY
-// options list is comma-separated with no spaces around the commas. Also
-// exclude the closing quote: OpenVPN logs the whole PUSH_REPLY wrapped in
-// single quotes, and when a dhcp-option is the LAST option in the (possibly
-// fragmented, if the option list is long) logged line, [^,]+ alone would
-// swallow that trailing quote into the captured value.
-//
-// DNS6 and DOMAIN-SEARCH are matched too (OpenVPN 2.7 folds both into its
-// DNS config the same way it does DNS/DOMAIN).
-var dhcpOptionRe = regexp.MustCompile(`dhcp-option (DNS6?|DOMAIN(?:-SEARCH)?) ([^,']+)`)
-
-// dnsServerRe / dnsSearchRe match the newer `--dns` style options a 2.6+/2.7
-// server may push instead of (or alongside) dhcp-option, e.g.
-//
-//	PUSH_REPLY,dns server 0 address 10.8.0.1 [fd00::1]:53,dns search-domains corp.example,...
-//
-// When any `dns server` address is pushed, OpenVPN ignores pushed
-// dhcp-option DNS entirely; extractPushedDNS mirrors that precedence.
+// Log lines scraped from openvpn's stdout; the management interface never
+// reports the cipher or the utun name, and pushed DNS is applied by us (no
+// up-script / dns-updown runs as root).
 var (
-	dnsServerRe = regexp.MustCompile(`(?:^|[,'])dns server -?\d+ address ([^,']+)`)
-	dnsSearchRe = regexp.MustCompile(`(?:^|[,'])dns search-domains ([^,']+)`)
+	cipherLogRe = regexp.MustCompile(`Data Channel: cipher '([^']+)'`)
+	ifaceLogRe  = regexp.MustCompile(`(?i)opened \S+ device (\S+)`)
 )
 
-// stripDNSPort turns an `--dns server N address` value ("1.2.3.4",
-// "1.2.3.4:5353", "fd00::1", "[fd00::1]:53") into a bare IP. Returns "" for
-// anything that isn't an IP literal.
-func stripDNSPort(s string) string {
-	if ip := net.ParseIP(s); ip != nil {
-		return s
-	}
-	if host, _, err := net.SplitHostPort(s); err == nil && net.ParseIP(host) != nil {
-		return host
-	}
-	return ""
-}
-
-// extractPushedDNS returns the DNS server IPs and search domains carried by a
-// PUSH_REPLY / PUSH_UPDATE log line, in the mixed form network.SetDNS takes.
-func extractPushedDNS(line string) []string {
-	var entries []string
-	for _, mm := range dnsServerRe.FindAllStringSubmatch(line, -1) {
-		for _, a := range strings.Fields(mm[1]) {
-			if ip := stripDNSPort(a); ip != "" {
-				entries = append(entries, ip)
-			}
-		}
-	}
-	if len(entries) > 0 {
-		for _, mm := range dnsSearchRe.FindAllStringSubmatch(line, -1) {
-			entries = append(entries, strings.Fields(mm[1])...)
-		}
-		return entries
-	}
-	for _, mm := range dhcpOptionRe.FindAllStringSubmatch(line, -1) {
-		if v := strings.TrimSpace(mm[2]); v != "" {
-			entries = append(entries, v)
-		}
-	}
-	return entries
-}
-
-// ifaceLogRe matches OpenVPN's own log line announcing the tun/utun device
-// it just opened, e.g. "Opened utun device utun5" on macOS. Unlike
-// WireGuard, OpenVPN's management interface never reports the OS interface
-// name via >STATE: or any other structured notification — this stdout line
-// is the only place it appears — so DNS protection (and any other feature
-// needing to reference the OVPN tunnel's interface, e.g. a future kill
-// switch pass-rule) has to scrape it the same way cipherLogRe/dhcpOptionRe
-// already do for other openvpn-log-only information.
-var ifaceLogRe = regexp.MustCompile(`(?i)opened \S+ device (\S+)`)
-
-// authReply carries the credentials FeedCredentials passes back to a connect
-// goroutine that is blocked waiting on a >PASSWORD: prompt.
+// authReply carries what FeedCredentials passes to a blocked auth prompt.
 type authReply struct {
 	username string
-	password string // full password = basePassword + totpCode, already combined
-
-	// response is the user's answer to a challenge/response prompt (dynamic
-	// CRV1: the ENTIRE reply, password is unused; static SCRV1: paired with
-	// password, combined per the challenge's Concat flag). Empty/unused for
-	// a plain prompt.
-	response string
+	password string // basePassword + totpCode, already combined
+	response string // challenge answer (CRV1: the whole reply; SCRV1: paired with password)
 }
 
-// entry is one running OpenVPN tunnel.
+// entry is one running OpenVPN tunnel. Fields are guarded by Manager.mu.
 type entry struct {
-	cmd        *exec.Cmd
-	mgmt       *mgmtClient
-	status     domain.ConnectionStatus
-	authCh     chan authReply // buffered(1); FeedCredentials sends here
-	dnsApplied bool           // true once applyPushedDNS has set DNS for this tunnel
+	cmd      *exec.Cmd
+	mgmt     *mgmtClient
+	status   domain.ConnectionStatus
+	prof     *profile
+	authCh   chan authReply // buffered(1)
+	scanDone chan struct{}  // closed when scanOutput has drained stdout
 
-	// awaitingCredentials is true while onMgmtAuthPrompt is blocked waiting
-	// for the user to answer an auth prompt (up to its own 10-minute
-	// timeout). Checked by IsAwaitingCredentials so a caller with a much
-	// shorter bound of its own — helper.reconnectOVPN's connect-timeout
-	// poll — can tell "still waiting on a human to type something" apart
-	// from "actually stuck", instead of tearing the attempt down out from
-	// under an in-progress credential prompt.
-	awaitingCredentials bool
+	// active is set once onActiveChange(true) fired and stays set through
+	// RECONNECTING, so teardown always revokes the kill-switch pass and a
+	// crash mid-reconnect still counts as an unexpected death.
+	active bool
 
-	// lastUsername is the username most recently sent to the management
-	// socket. Reused when responding to a CRV1 dynamic challenge, whose
-	// prompt carries no username field of its own (the frontend shows a
-	// response-only form at that point — see onMgmtAuthPrompt).
-	lastUsername string
+	// errMsg is sticky until CONNECTED or new credentials, so later state
+	// lines and the final cleanup snapshot don't hide it.
+	errMsg string
 
-	// pendingChallenge is set when a dynamic (CRV1) challenge has been
-	// issued (a "Verification Failed" line with a CRV1 payload) but not yet
-	// answered — the response is collected now, then actually sent once
-	// OpenVPN's auth-retry brings a fresh "Need 'Auth'" prompt. nil
-	// otherwise. See onMgmtDynamicChallenge/onMgmtAuthPrompt.
-	pendingChallenge *AuthChallenge
+	dnsApplied bool
+	pushDNS    *dnsConfig // pushed DNS accumulated across push-continuation
+	pushMore   bool
 
-	// closeCh is closed by Disconnect to unblock onMgmtAuthPrompt if it's
-	// currently blocked waiting for the user to answer a prompt. Without
-	// this, disconnecting a tunnel mid-prompt (e.g. the user cancels the
-	// auth modal) has no way to reach the read-loop goroutine — it's
-	// blocked on a channel receive, not on the management socket, so the
-	// process dying doesn't wake it — leaving the tunnel showing
-	// "connecting" for up to the full 10-minute credential timeout even
-	// though the user already asked to disconnect.
+	awaitingCredentials bool           // lets reconnect polling tell "waiting on a human" from "stuck"
+	lastUsername        string         // fallback for CRV1 when the challenge carries none
+	pendingChallenge    *AuthChallenge // CRV1 answered on the auth-retry's next Need 'Auth'
+
+	// closeCh unblocks a pending auth prompt on Disconnect.
 	closeCh   chan struct{}
 	closeOnce sync.Once
 
-	// remoteAddr/remoteProto are the tunnel's resolved remote server ("ip:port")
-	// and normalized protocol ("udp" or "tcp"), resolved once at Connect time —
-	// see resolveRemoteForKillSwitch. Used by the kill switch to build a
-	// pass-rule for this tunnel's traffic. Empty if the config had no usable
-	// remote directive or DNS resolution failed.
+	// remoteAddr ("ip:port") seeds the kill-switch pass before CONNECTED;
+	// CONNECTED overwrites it with the remote openvpn actually uses.
 	remoteAddr  string
-	remoteProto string
+	remoteProto string // "udp" | "tcp"
 
-	// userInitiated is set by Disconnect before it signals openvpn to shut
-	// down. cleanup reads it to tell an intentional disconnect apart from
-	// the process dying/wedging on its own (crash, or the management
-	// socket going silent — see management.go's read deadline) —
-	// only the latter should invoke onDied and offer to reconnect.
-	userInitiated bool
+	userInitiated bool // set by Disconnect: not a death worth reconnecting
 }
 
-// RemoteEndpoint describes one connected OpenVPN tunnel's resolved remote
-// server, for the kill switch to whitelist alongside WireGuard's endpoints.
+// RemoteEndpoint is one connected tunnel's remote, for the kill switch.
 type RemoteEndpoint struct {
 	TunnelName    string
 	InterfaceName string
@@ -192,59 +81,26 @@ type RemoteEndpoint struct {
 	Addr          string // "ip:port"
 }
 
-// resolveRemoteForKillSwitch resolves an .ovpn config's "remote" directive to
-// a literal IP:port and normalizes its protocol, for building a kill-switch
-// pass-rule. Resolution happens once, here, before the openvpn subprocess
-// starts — resolving later (e.g. on-demand when the user toggles the kill
-// switch after the tunnel is already up and possibly routing all traffic)
-// would risk the DNS query looping back through the tunnel itself, exactly
-// the reason WireGuard's endpoints are resolved before its routes are
-// installed too. Best-effort: returns empty strings (never an error) since a
-// failure here should not block the tunnel from connecting — it just means
-// the kill switch won't be able to whitelist this tunnel until reconnected.
-//
-// This resolved address is only a best-effort SEED for entry.remoteAddr,
-// used before the tunnel has ever reached CONNECTED (e.g. while the kill
-// switch's ActiveRemotes is consulted mid-connect). Once CONNECTED,
-// onMgmtState overwrites entry.remoteAddr with the LIVE remote OpenVPN's
-// own >STATE: line reports (see readLoop's doc comment) — which correctly
-// reflects OpenVPN's own internal reconnects to a different `remote`
-// directive or a different round-robin DNS answer, since that's OpenVPN
-// itself telling us what it's actually using right now, not a value we
-// resolved once ourselves.
+// resolveRemoteForKillSwitch resolves the first remote before openvpn
+// starts; resolving later could loop the query through the tunnel.
+// Best-effort: empty on failure.
 func resolveRemoteForKillSwitch(cfg *OVPNConfig) (addr, proto string) {
 	if cfg.Remote == "" {
 		return "", ""
 	}
 	host, port, err := net.SplitHostPort(cfg.Remote)
 	if err != nil {
-		// ParseOVPN brackets IPv6 hosts before appending a port
-		// ("[2001:db8::1]:1194"), so SplitHostPort failing here should only
-		// mean "no port at all" (a bare hostname or IPv6 literal). If the
-		// string still has 2+ colons and isn't bracketed, treat it as
-		// unparseable rather than guessing — an unbracketed
-		// "ipv6host:port"-shaped string is itself a syntactically valid but
-		// WRONG IPv6 literal (the port digits get absorbed as the address's
-		// last hextet), which would resolve "successfully" to the wrong
-		// address and let the kill switch whitelist it instead of the real
-		// remote. But a BARE IPv6 host with no port at all (e.g. plain
-		// "remote 2001:db8::1", never bracketed by ParseOVPN since there's
-		// no port to append) is itself a valid, unambiguous IP literal —
-		// net.ParseIP distinguishes that legitimate case from the
-		// ambiguous "host:port glued together" shape, which never parses
-		// as a literal IP on its own.
+		// No port. An unbracketed "v6:port" would parse as a wrong IPv6
+		// literal, so only a real bare IP or hostname is accepted.
 		if strings.Count(cfg.Remote, ":") >= 2 && !strings.HasPrefix(cfg.Remote, "[") && net.ParseIP(cfg.Remote) == nil {
-			slog.Warn("resolveRemoteForKillSwitch: ambiguous unbracketed IPv6 remote, refusing to guess — kill switch will not whitelist this tunnel",
-				"remote", cfg.Remote)
+			slog.Warn("resolveRemoteForKillSwitch: ambiguous unbracketed IPv6 remote", "remote", cfg.Remote)
 			return "", ""
 		}
-		host = cfg.Remote
-		port = "1194" // OpenVPN's default port when unspecified
+		host, port = cfg.Remote, "1194"
 	}
 	ips, err := net.LookupHost(host)
 	if err != nil || len(ips) == 0 {
-		slog.Warn("resolveRemoteForKillSwitch: DNS resolution failed, kill switch cannot whitelist this tunnel yet",
-			"host", host, "error", err)
+		slog.Warn("resolveRemoteForKillSwitch: DNS resolution failed", "host", host, "error", err)
 		return "", ""
 	}
 	proto = "udp"
@@ -254,56 +110,34 @@ func resolveRemoteForKillSwitch(cfg *OVPNConfig) (addr, proto string) {
 	return net.JoinHostPort(ips[0], port), proto
 }
 
-// Manager supervises OpenVPN subprocesses, one per active tunnel. It mirrors
-// the responsibilities of tunnel.Manager (WireGuard) but for the openvpn
-// binary driven over its management interface.
+// Manager supervises one openvpn process per tunnel.
 type Manager struct {
 	mu         sync.Mutex
-	tunnels    map[string]*entry // name → running tunnel
+	tunnels    map[string]*entry
 	binaryPath string
-	runtimeDir string // e.g. "/var/run/wireguide"
+	runtimeDir string
 
-	// netMgr applies server-pushed DNS (see dhcpOptionRe/applyPushedDNS). A
-	// dedicated instance, separate from WireGuard's tunnel.Manager's own
-	// network.NetworkManager — simplest way to avoid the two protocols
-	// racing on shared save/restore state. Fine as long as OVPN and a
-	// DNS-pushing WireGuard tunnel are never both active at once; revisit if
-	// that changes.
+	// netMgr applies DNS. Separate from WireGuard's instance; fine while
+	// both protocols never push DNS at the same time.
 	netMgr network.NetworkManager
 
-	// onStatus is called whenever a tunnel's status changes (state or bytes).
-	onStatus func(domain.ConnectionStatus)
-	// onAuthNeeded signals the GUI that a tunnel is waiting for credentials.
-	// challenge is non-nil if this prompt carries a static (SCRV1) or
-	// dynamic (CRV1) challenge/response requirement; nil for a plain
-	// username/password prompt.
+	onStatus     func(domain.ConnectionStatus)
 	onAuthNeeded func(tunnelName string, challenge *AuthChallenge)
-	// onActiveChange fires exactly on the transitions that matter for the
-	// kill switch's OpenVPN whitelist — a tunnel reaching CONNECTED (active
-	// true, its interface/remote are now known and ActiveRemotes will
-	// include it) or being torn down (active false). Deliberately NOT
-	// fired on every status update — onStatus/emitStatus also fires once a
-	// second for bytecount, which would rebuild pf rules needlessly often.
+	// onActiveChange fires on each transition into CONNECTED and once on
+	// teardown of a tunnel that was active; not on bytecount updates.
 	onActiveChange func(tunnelName string, active bool)
-
-	// onDied is called after cleanup for a tunnel that was StateConnected
-	// and died on its own — process crash, or supervise's management-socket
-	// read deadline expiring (see management.go) — rather than via a
-	// user-initiated Disconnect. Set via SetOnDied; the helper wires it to
-	// the reconnect monitor so auto-reconnect-enabled tunnels recover.
+	// onDied fires after cleanup of an active tunnel that died without
+	// Disconnect (crash or wedged management socket).
 	onDied func(name string)
 }
 
-// SetOnDied registers a callback invoked when a connected OpenVPN tunnel
-// dies unexpectedly. Call once during helper startup, before any tunnel
-// connects — not safe to call concurrently with Connect.
+// SetOnDied registers the unexpected-death callback. Call before Connect.
 func (m *Manager) SetOnDied(fn func(name string)) {
 	m.onDied = fn
 }
 
-// NewManager constructs an OpenVPN Manager. binaryPath is the absolute path to
-// the bundled openvpn executable; runtimeDir is a writable directory for
-// per-tunnel runtime config, management sockets, and logs.
+// NewManager constructs a Manager. runtimeDir holds per-tunnel config and
+// management sockets.
 func NewManager(binaryPath, runtimeDir string, onStatus func(domain.ConnectionStatus), onAuthNeeded func(tunnelName string, challenge *AuthChallenge), onActiveChange func(tunnelName string, active bool)) *Manager {
 	return &Manager{
 		tunnels:        make(map[string]*entry),
@@ -316,37 +150,21 @@ func NewManager(binaryPath, runtimeDir string, onStatus func(domain.ConnectionSt
 	}
 }
 
-// runtime file paths for a tunnel.
 func (m *Manager) configPath(name string) string { return filepath.Join(m.runtimeDir, name+".ovpn") }
 func (m *Manager) sockPath(name string) string   { return filepath.Join(m.runtimeDir, name+".mgmt.sock") }
 
-// Connect starts an OpenVPN tunnel from the given raw .ovpn content. It returns
-// once the subprocess has been started and supervision goroutines are running —
-// the actual CONNECTED transition (and any auth prompt) happens asynchronously
-// and is reported via onStatus / onAuthNeeded.
+// Connect starts a tunnel from raw .ovpn content and returns once openvpn is
+// running; CONNECTED and auth prompts arrive via the callbacks.
 func (m *Manager) Connect(name string, ovpnContent []byte) error {
-	// name is interpolated directly into configPath/sockPath below
-	// with no further sanitization — reject anything unsafe for filesystem
-	// use here too, not just at the IPC handler layer, so this manager is
-	// safe to call directly (e.g. from cmd/test) without relying on every
-	// caller to have already validated the name.
+	// Validated here (not only at IPC) because name becomes a path and the
+	// profile runs as root, whoever the caller is.
 	if err := storage.ValidateTunnelName(name); err != nil {
 		return fmt.Errorf("invalid tunnel name: %w", err)
 	}
-	// Validate at the last point before root writes and executes the
-	// profile, so every caller (IPC connect, auto-reconnect, cmd/test) is
-	// covered regardless of what it checked earlier.
-	if err := ValidateOVPN(ovpnContent); err != nil {
+	prof, err := inspectProfile(ovpnContent)
+	if err != nil {
 		return err
 	}
-
-	m.mu.Lock()
-	if _, ok := m.tunnels[name]; ok {
-		m.mu.Unlock()
-		return fmt.Errorf("openvpn tunnel %q already active", name)
-	}
-	m.mu.Unlock()
-
 	if m.binaryPath == "" {
 		return fmt.Errorf("openvpn binary path not configured")
 	}
@@ -354,79 +172,87 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 		return fmt.Errorf("openvpn binary not found at %q: %w", m.binaryPath, err)
 	}
 
-	// 1. Ensure runtime dir exists (0700 — sockets and logs may be sensitive).
+	e := &entry{
+		prof:     prof,
+		authCh:   make(chan authReply, 1),
+		closeCh:  make(chan struct{}),
+		scanDone: make(chan struct{}),
+		status: domain.ConnectionStatus{
+			State:      domain.StateConnecting,
+			TunnelName: name,
+			Protocol:   domain.ProtocolOpenVPN,
+		},
+	}
+	// Reserve the name before any slow work so two Connects can't both start.
+	m.mu.Lock()
+	if _, ok := m.tunnels[name]; ok {
+		m.mu.Unlock()
+		return fmt.Errorf("openvpn tunnel %q already active", name)
+	}
+	m.tunnels[name] = e
+	m.mu.Unlock()
+
+	cmd, err := m.start(name, e, ovpnContent)
+	if err != nil {
+		m.mu.Lock()
+		delete(m.tunnels, name)
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Lock()
+	e.cmd = cmd
+	cancelled := e.userInitiated
+	m.mu.Unlock()
+	if cancelled {
+		_ = cmd.Process.Kill()
+	}
+	m.emitStatus(name)
+	go m.supervise(name, e)
+	return nil
+}
+
+// start writes the runtime config and launches openvpn.
+func (m *Manager) start(name string, e *entry, ovpnContent []byte) (*exec.Cmd, error) {
 	if err := os.MkdirAll(m.runtimeDir, 0700); err != nil {
-		return fmt.Errorf("creating runtime dir: %w", err)
+		return nil, fmt.Errorf("creating runtime dir: %w", err)
 	}
-
-	sockPath := m.sockPath(name)
-	cfgPath := m.configPath(name)
-
-	// 2. Remove any stale socket left by a previous crashed run.
+	sockPath, cfgPath := m.sockPath(name), m.configPath(name)
 	_ = os.Remove(sockPath)
-
-	// 3. Write the user's .ovpn verbatim (no appended directives). Management
-	// parameters are passed as CLI flags below so they cannot be overridden by
-	// a malicious directive in the config file.
-	if err := os.WriteFile(cfgPath, ovpnContent, 0600); err != nil {
-		return fmt.Errorf("writing runtime config: %w", err)
+	if err := os.WriteFile(cfgPath, e.prof.runtimeConfig(ovpnContent), 0600); err != nil {
+		return nil, fmt.Errorf("writing runtime config: %w", err)
 	}
+	addr, proto := resolveRemoteForKillSwitch(&e.prof.cfg)
+	m.mu.Lock()
+	e.remoteAddr, e.remoteProto = addr, proto
+	m.mu.Unlock()
 
-	// Resolve the remote server now, before the subprocess starts (see
-	// resolveRemoteForKillSwitch), so the kill switch can whitelist this
-	// tunnel's traffic once it's connected.
-	remoteAddr, remoteProto := "", ""
-	if cfg, perr := ParseOVPN(ovpnContent); perr == nil {
-		remoteAddr, remoteProto = resolveRemoteForKillSwitch(cfg)
+	cmd := exec.Command(m.binaryPath, m.args(cfgPath, sockPath, e.prof)...)
+	cmd.Dir = m.runtimeDir
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("attaching openvpn stdout: %w", err)
 	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting openvpn: %w", err)
+	}
+	go m.scanOutput(name, e, stdout)
+	return cmd, nil
+}
 
-	// 4. Start the openvpn subprocess. Management flags as CLI args take
-	// precedence over any conflicting directives in the config file.
-	//
-	// --script-security 1 (not 2): level 0 blocks openvpn's OWN internal use
-	// of /sbin/ifconfig and /sbin/route to configure the tun interface and
-	// routes on macOS (that's what broke in v1.0.53), but level 1 permits
-	// exactly those built-in system calls while still refusing to execute
-	// ANY user-defined script (--up/--down/--route-up/etc). Since
-	// ValidateOVPN's allowlist (allowlist.go) never admits those
-	// directives, level 1 costs us nothing functionally and closes off the
-	// whole class of "script directive slipped past the validator" bugs as
-	// a second, independent line of defense — level 2 would happily run a
-	// user-defined script if one ever got past ValidateOVPN (as one
-	// previously did via a "--up" prefix). These flags come AFTER --config
-	// so they override the profile (the allowlist accepts a profile's own
-	// script-security/auth-retry/dns-updown disable on that basis).
-	//
-	// --setenv IV_SSO webauth,crtext declares to the server that this client
-	// can handle a text-based challenge-response or web-SSO redirect during
-	// auth-user-pass. Some enterprise gateways gate their RADIUS/LDAP auth
-	// plugin on this peer-info flag: without it, they fail auth outright
-	// (AUTH_FAILED, no challenge ever offered) instead of attempting one.
-	// Official clients (OpenVPN Connect, Tunnelblick) always set this
-	// regardless of whether the server ends up using it.
-	//
-	// --auth-retry interact: without it, OpenVPN's core exits the process
-	// outright on ANY auth failure — including the intermediate
-	// "Verification Failed" that CARRIES a CRV1 dynamic challenge. The
-	// management-notes.txt spec is explicit that this flag "must be in
-	// effect so that the connection is restarted and credentials are
-	// requested again" — that restart-and-reprompt is what lets us collect
-	// the challenge response and feed it back via a fresh "Need 'Auth'"
-	// prompt (see onMgmtDynamicChallenge/onMgmtAuthPrompt). As a side
-	// effect this also makes a plain wrong-password re-prompt via the GUI
-	// instead of silently killing the tunnel — a strictly better default
-	// for a GUI-driven client (our own 10-minute per-prompt timeout in
-	// onMgmtAuthPrompt still bounds how long any single retry can hang).
-	//
-	// --dns-updown disable: OpenVPN 2.7 converts pushed DNS (both
-	// `dhcp-option DNS` and `dns server`) into a run of its default
-	// dns-updown command, and runs it as a BUILT-IN command — which
-	// --script-security 1 permits — from a compiled-in path under
-	// /usr/local/libexec. As root. We apply pushed DNS ourselves
-	// (applyPushedDNS), so the script would only fight networksetup at best,
-	// or exec a planted file at worst. build.sh also configures with
-	// --disable-dns-updown-by-default; this flag (after --config, so it wins
-	// over a profile's `dns-updown force`) is the second line of defense.
+// args builds the openvpn command line. Everything after --config overrides
+// the profile:
+//   - --script-security 1 allows openvpn's own ifconfig/route calls but no
+//     user scripts, a second line behind the allowlist.
+//   - --dns-updown disable: 2.7 would otherwise run its built-in DNS script
+//     as root; we apply DNS ourselves.
+//   - --auth-retry interact: re-prompt on auth failure instead of exiting;
+//     required for CRV1 (the challenge arrives as a failure).
+//   - --persist-tun keeps the same utun across restarts so the kill-switch
+//     rule stays valid.
+//   - keepalive/mssfix floors only when the profile sets none, so a
+//     provider's tuned values win.
+func (m *Manager) args(cfgPath, sockPath string, p *profile) []string {
 	args := []string{
 		"--config", cfgPath,
 		"--management", sockPath, "unix",
@@ -434,231 +260,174 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 		"--management-query-passwords",
 		"--script-security", "1",
 		"--dns-updown", "disable",
-		"--setenv", "IV_SSO", "webauth,crtext",
 		"--auth-retry", "interact",
+		"--persist-tun",
+		"--verb", p.runtimeVerb(),
 	}
-	// --persist-tun keeps the SAME utun interface across ANY internal
-	// restart — our own --ping-restart floor below, a server-pushed
-	// `keepalive`, or a `remote` failover. Unconditional (not just when we
-	// inject the floor): without it, every internal restart tears down and
-	// recreates the utun under a new name/index, silently invalidating the
-	// kill switch's `pass quick on utunN` rule for the old one.
-	args = append(args, "--persist-tun")
-	// Floor for dead-peer detection: without ping/ping-restart (directly, or
-	// via a pushed `keepalive`), a peer that silently drops off the network
-	// (sleep/wake, Wi-Fi roam, a wedged remote) is never noticed by openvpn
-	// itself — the tunnel just sits there forever showing "Connected" while
-	// passing no traffic. Only inject this when the profile doesn't already
-	// set one: --config is args[0], parsed before these later CLI flags, and
-	// OpenVPN applies later occurrences of the same directive last — so
-	// unconditionally adding this would silently override a provider's own
-	// deliberately-tuned value.
-	if !HasKeepaliveDirective(ovpnContent) {
+	if !p.hasKeepalive {
 		args = append(args, "--ping", "10", "--ping-restart", "60")
 	}
-	// Clamp TCP MSS so segments (e.g. RDP screen updates) fit under the
-	// tunnel's path MTU instead of routinely IP-fragmenting — see
-	// HasMTUDirective's doc comment. Client-local and one-sided: no server
-	// agreement needed, unlike --fragment (which must match on both ends
-	// and is deliberately NOT set here for that reason).
-	if !HasMTUDirective(ovpnContent) {
+	if !p.hasMTU {
 		args = append(args, "--mssfix", "1300")
 	}
-	if dc := LegacyDataCiphers(ovpnContent); dc != "" {
-		args = append(args, "--data-ciphers", dc)
+	if p.legacyCiphers != "" {
+		args = append(args, "--data-ciphers", p.legacyCiphers)
 	}
-	cmd := exec.Command(m.binaryPath, args...)
-	cmd.Dir = m.runtimeDir
-	// Stdout is scanned for the negotiated cipher (see scanOutput) and
-	// forwarded through slog at Debug level. Stderr is piped straight to
-	// os.Stderr since openvpn's own diagnostics go through stdout — stderr
-	// only ever carries the rare fatal-before-fork message.
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("attaching openvpn stdout: %w", err)
-	}
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting openvpn: %w", err)
-	}
-	go m.scanOutput(name, stdout)
-
-	e := &entry{
-		cmd:     cmd,
-		authCh:  make(chan authReply, 1),
-		closeCh: make(chan struct{}),
-		status: domain.ConnectionStatus{
-			State:      domain.StateConnecting,
-			TunnelName: name,
-			Protocol:   domain.ProtocolOpenVPN,
-		},
-		remoteAddr:  remoteAddr,
-		remoteProto: remoteProto,
-	}
-	m.mu.Lock()
-	m.tunnels[name] = e
-	m.mu.Unlock()
-
-	m.emitStatus(name)
-
-	// 5. Supervise in a goroutine: attach to management, release hold, read loop.
-	go m.supervise(name, e)
-
-	return nil
+	return args
 }
 
-// supervise attaches to the management interface and runs the read loop until
-// the tunnel exits. It also reaps the subprocess.
+// supervise attaches to management, runs the read loop, then reaps.
 func (m *Manager) supervise(name string, e *entry) {
 	mgmt, err := dialManagement(m.sockPath(name))
 	if err != nil {
-		slog.Error("ovpn: failed to attach to management interface", "tunnel", name, "error", err)
-		m.setError(name, fmt.Sprintf("management attach failed: %v", err))
-		_ = e.cmd.Process.Kill()
-		_ = e.cmd.Wait()
-		m.cleanup(name)
-		return
+		m.mu.Lock()
+		cancelled := e.userInitiated
+		m.mu.Unlock()
+		if !cancelled {
+			slog.Error("ovpn: failed to attach to management interface", "tunnel", name, "error", err)
+			m.fail(name, fmt.Sprintf("management attach failed: %v", err), false)
+		}
+	} else {
+		m.mu.Lock()
+		e.mgmt = mgmt
+		m.mu.Unlock()
+		mgmt.readLoop(&tunnelEvents{m: m, name: name, e: e})
 	}
-
-	m.mu.Lock()
-	e.mgmt = mgmt
-	m.mu.Unlock()
-
-	if err := mgmt.holdRelease(); err != nil {
-		slog.Warn("ovpn: hold release failed", "tunnel", name, "error", err)
-	}
-
-	// The read loop blocks until the management connection closes.
-	mgmt.readLoop(
-		func(state, localIP, remoteAddr string) { m.onMgmtState(name, state, localIP, remoteAddr) },
-		func(rx, tx int64) { m.onMgmtBytes(name, rx, tx) },
-		func(sc *AuthChallenge) { m.onMgmtAuthPrompt(name, e, sc) },
-		func(ch *AuthChallenge) { m.onMgmtDynamicChallenge(name, e, ch) },
-		func() { /* readLoop done — handled below */ },
-	)
-
-	// The read loop returns either because openvpn's management connection
-	// closed cleanly (process already exiting) or because a read deadline
-	// expired — the socket went silent for longer than management.go's
-	// current bound (30s once CONNECTED, more generous before that) while
-	// the process itself never exited (wedged event loop, stuck syscall).
-	// Kill() before Wait()
-	// so the latter case is actually reaped instead of blocking Wait()
-	// forever on a hung-but-alive process; Kill() on an already-exited
-	// process is a harmless, ignored error.
+	// The loop ends on close or on a read deadline (wedged process): Kill so
+	// Wait can't hang, and drain stdout before Wait closes the pipe.
 	_ = e.cmd.Process.Kill()
+	<-e.scanDone
 	_ = e.cmd.Wait()
 	slog.Info("ovpn: tunnel process exited", "tunnel", name)
 	m.cleanup(name)
 }
 
-// scanOutput reads openvpn's stdout line by line, routing everything through
-// slog at Debug level (so it only reaches disk/the log viewer when the user
-// has actually turned on debug logging — the imported .ovpn profile's own
-// `verb` setting is honored verbatim, and at higher verbosities OpenVPN logs
-// per-packet diagnostics that scale with traffic, not a fixed interval)
-// while also watching for the "Data Channel: cipher '...'" line that reveals
-// the negotiated cipher, and the PUSH_REPLY line that carries server-pushed
-// DNS — information the management interface itself never exposes.
-func (m *Manager) scanOutput(name string, r io.Reader) {
+// tunnelEvents adapts management notifications to one tunnel.
+type tunnelEvents struct {
+	m    *Manager
+	name string
+	e    *entry
+}
+
+func (t *tunnelEvents) state(s, localIP, remote string) { t.m.onMgmtState(t.name, s, localIP, remote) }
+func (t *tunnelEvents) bytes(rx, tx int64)              { t.m.onMgmtBytes(t.name, rx, tx) }
+func (t *tunnelEvents) authPrompt(sc *AuthChallenge)    { t.m.onMgmtAuthPrompt(t.name, t.e, sc) }
+func (t *tunnelEvents) dynamicChallenge(ch *AuthChallenge) {
+	t.m.onMgmtDynamicChallenge(t.name, t.e, ch)
+}
+func (t *tunnelEvents) failure(msg string, terminate bool) {
+	slog.Warn("ovpn: tunnel error", "tunnel", t.name, "error", msg)
+	t.m.fail(t.name, msg, terminate)
+}
+
+// scanOutput forwards openvpn's stdout to slog (Debug) and scrapes the
+// cipher, utun name and pushed DNS.
+func (m *Manager) scanOutput(name string, e *entry, r io.Reader) {
+	defer close(e.scanDone)
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
 		slog.Debug("ovpn: "+line, "tunnel", name)
-		if match := cipherLogRe.FindStringSubmatch(line); match != nil {
-			m.setCipher(name, match[1])
-		}
-		// PUSH_UPDATE (new in 2.7) can replace DNS mid-session; same log
-		// line shape as PUSH_REPLY.
-		if strings.Contains(line, "PUSH_REPLY") || strings.Contains(line, "PUSH_UPDATE") {
-			m.applyPushedDNS(name, line)
-		}
-		if match := ifaceLogRe.FindStringSubmatch(line); match != nil {
-			m.setInterfaceName(name, match[1])
+		switch {
+		case strings.Contains(line, "Data Channel: cipher"):
+			if mm := cipherLogRe.FindStringSubmatch(line); mm != nil {
+				m.update(name, func(e *entry) { e.status.Cipher = mm[1] })
+			}
+		case strings.Contains(line, "Received control message: 'PUSH_"):
+			if msg, ok := parsePushLine(line, e.prof.pullFilters); ok {
+				m.onPush(name, e, msg)
+			}
+		case strings.Contains(line, "Initialization Sequence Completed"):
+			// Profile-defined DNS with nothing pushed (or no pull at all).
+			m.mu.Lock()
+			need := !e.dnsApplied
+			m.mu.Unlock()
+			if need {
+				m.applyDNS(name, e.prof.dns.entries())
+			}
+		default:
+			if mm := ifaceLogRe.FindStringSubmatch(line); mm != nil {
+				m.update(name, func(e *entry) { e.status.InterfaceName = mm[1] })
+			}
 		}
 	}
 }
 
-// setInterfaceName records the OS tun/utun device name OpenVPN opened for
-// this tunnel and emits the status. See ifaceLogRe for why this has to be
-// scraped from a log line instead of read structurally.
-func (m *Manager) setInterfaceName(name, ifaceName string) {
+// onPush merges pushed DNS with the profile's and applies it.
+func (m *Manager) onPush(name string, e *entry, msg pushMessage) {
+	if msg.rejected {
+		return // openvpn discards the push and restarts
+	}
 	m.mu.Lock()
-	e, ok := m.tunnels[name]
-	if ok {
-		e.status.InterfaceName = ifaceName
+	switch {
+	case msg.update:
+		// PUSH_UPDATE replaces DNS only if it carries DNS options.
+		if !msg.dns.touched {
+			m.mu.Unlock()
+			return
+		}
+		d := msg.dns
+		e.pushDNS = &d
+	case e.pushDNS == nil || !e.pushMore:
+		d := msg.dns
+		e.pushDNS = &d
+	default:
+		e.pushDNS = mergePtr(e.pushDNS, msg.dns)
 	}
+	e.pushMore = msg.more
+	merged := e.prof.dns.merge(*e.pushDNS)
 	m.mu.Unlock()
-	if ok {
-		m.emitStatus(name)
-	}
+	m.applyDNS(name, merged.entries())
 }
 
-// applyPushedDNS extracts pushed DNS (see extractPushedDNS) from a PUSH_REPLY/PUSH_UPDATE
-// log line and applies them via netMgr, mirroring how WireGuard's `DNS = ...`
-// directive is applied. No-op if the line carries no dhcp-option entries.
-func (m *Manager) applyPushedDNS(name, pushReplyLine string) {
-	entries := extractPushedDNS(pushReplyLine)
+func mergePtr(a *dnsConfig, b dnsConfig) *dnsConfig {
+	d := a.merge(b)
+	d.touched = a.touched || b.touched
+	return &d
+}
+
+// applyDNS sets the tunnel's resolvers via netMgr (like WireGuard's DNS =).
+func (m *Manager) applyDNS(name string, entries []string) {
 	if len(entries) == 0 || m.netMgr == nil {
 		return
 	}
 	if err := m.netMgr.SetDNS(name, entries); err != nil {
-		slog.Warn("ovpn: failed to apply server-pushed DNS", "tunnel", name, "entries", entries, "error", err)
+		slog.Warn("ovpn: failed to apply DNS", "tunnel", name, "entries", entries, "error", err)
 		return
 	}
-	// Keep only actual server IPs for status reporting — entries also
-	// contains DOMAIN search-suffix values (e.g. "all-service.local"),
-	// which SetDNS legitimately needs but aren't DNS servers themselves and
-	// would corrupt an "is this resolver one of ours" comparison (like the
-	// DNS leak test) if included.
-	var dnsIPs []string
-	for _, e := range entries {
-		if net.ParseIP(e) != nil {
-			dnsIPs = append(dnsIPs, e)
+	// Status reports only server IPs, not search domains.
+	var ips []string
+	for _, v := range entries {
+		if net.ParseIP(v) != nil {
+			ips = append(ips, v)
 		}
 	}
-
-	m.mu.Lock()
-	e, ok := m.tunnels[name]
-	if ok {
-		e.dnsApplied = true
-		e.status.DNSServers = dnsIPs
-	}
-	m.mu.Unlock()
-	if !ok {
-		// The tunnel died (cleanup already ran, dnsApplied never got set)
-		// while SetDNS — a slow, multi-second networksetup fan-out — was
-		// still in flight. Nobody will ever call RestoreDNS for this
-		// tunnel now, so do it ourselves or the pushed DNS is stuck
-		// overriding the system resolver permanently.
+	if !m.update(name, func(e *entry) { e.dnsApplied = true; e.status.DNSServers = ips }) {
+		// Tunnel cleaned up while SetDNS ran; nobody else will restore.
 		_ = m.netMgr.RestoreDNS(name)
 		return
 	}
-	slog.Info("ovpn: applied server-pushed DNS", "tunnel", name, "entries", entries)
+	slog.Info("ovpn: applied DNS", "tunnel", name, "entries", entries)
 }
 
-// setCipher records the negotiated data-channel cipher and emits the status.
-func (m *Manager) setCipher(name, cipher string) {
+// update applies fn to the tunnel's entry under the lock and emits the
+// status. Returns false if the tunnel is gone.
+func (m *Manager) update(name string, fn func(e *entry)) bool {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
 	if ok {
-		e.status.Cipher = cipher
+		fn(e)
 	}
 	m.mu.Unlock()
 	if ok {
 		m.emitStatus(name)
 	}
+	return ok
 }
 
-// onMgmtState maps an OpenVPN management state string to a domain state.
-// localIP is the tunnel-assigned client address; only non-empty on
-// CONNECTED. remoteAddr is the actual remote server OpenVPN is CURRENTLY
-// connected to (also only non-empty on CONNECTED) — see readLoop's doc
-// comment. Updating entry.remoteAddr from this LIVE value (rather than only
-// ever trusting the one resolved once at Connect time) is what lets the
-// kill switch's whitelist survive OpenVPN's own internal reconnect to a
-// different remote/round-robin IP; see resolveRemoteForKillSwitch's doc
-// comment for the gap this closes.
+// onMgmtState maps a management state to a domain state. The CONNECTED
+// remote replaces the Connect-time guess so the kill switch follows
+// openvpn's own failover.
 func (m *Manager) onMgmtState(name, state, localIP, remoteAddr string) {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
@@ -670,6 +439,7 @@ func (m *Manager) onMgmtState(name, state, localIP, remoteAddr string) {
 	switch state {
 	case "CONNECTED":
 		e.status.State = domain.StateConnected
+		e.errMsg, e.status.ErrorMessage = "", ""
 		if e.status.ConnectedAt.IsZero() {
 			e.status.ConnectedAt = time.Now()
 		}
@@ -683,82 +453,62 @@ func (m *Manager) onMgmtState(name, state, localIP, remoteAddr string) {
 		}
 	case "EXITING":
 		e.status.State = domain.StateDisconnected
-	case "RECONNECTING":
-		e.status.State = domain.StateConnecting
 	default:
-		// CONNECTING, WAIT, AUTH, GET_CONFIG, ASSIGN_IP, ADD_ROUTES, etc.
-		if e.status.State != domain.StateConnected {
+		// RECONNECTING, WAIT, AUTH, GET_CONFIG, ... (CONNECTED is only left
+		// via RECONNECTING/EXITING).
+		if state == "RECONNECTING" || e.status.State != domain.StateConnected {
 			e.status.State = domain.StateConnecting
 		}
 	}
+	if e.errMsg != "" && e.status.State != domain.StateConnected {
+		e.status.State = domain.StateError
+	}
 	nowConnected := e.status.State == domain.StateConnected
+	becameActive := nowConnected && !wasConnected
+	if becameActive {
+		e.active = true
+	}
 	m.mu.Unlock()
 	slog.Debug("ovpn: state change", "tunnel", name, "state", state)
 	m.emitStatus(name)
-	// Fire only on the actual CONNECTED transition (not every status
-	// update — bytecount alone would otherwise trigger this every second
-	// via emitStatus) so the kill switch can pick up this tunnel's
-	// now-known interface/remote. See onActiveChange's doc comment.
-	if nowConnected && !wasConnected && m.onActiveChange != nil {
+	if becameActive && m.onActiveChange != nil {
 		m.onActiveChange(name, true)
 	}
 }
 
-// onMgmtBytes records the latest byte counters and refreshes the duration.
 func (m *Manager) onMgmtBytes(name string, rx, tx int64) {
-	m.mu.Lock()
-	e, ok := m.tunnels[name]
-	if !ok {
-		m.mu.Unlock()
-		return
-	}
-	e.status.RxBytes = rx
-	e.status.TxBytes = tx
-	if !e.status.ConnectedAt.IsZero() {
-		e.status.Duration = domain.FormatDuration(time.Since(e.status.ConnectedAt))
-	}
-	if !e.status.LastHandshakeTime.IsZero() {
-		e.status.LastHandshake = domain.FormatDuration(time.Since(e.status.LastHandshakeTime))
-	}
-	m.mu.Unlock()
-	m.emitStatus(name)
+	m.update(name, func(e *entry) {
+		e.status.RxBytes, e.status.TxBytes = rx, tx
+		if !e.status.ConnectedAt.IsZero() {
+			e.status.Duration = domain.FormatDuration(time.Since(e.status.ConnectedAt))
+		}
+		if !e.status.LastHandshakeTime.IsZero() {
+			e.status.LastHandshake = domain.FormatDuration(time.Since(e.status.LastHandshakeTime))
+		}
+	})
 }
 
-// onMgmtAuthPrompt is invoked when the server requests credentials via a
-// "Need 'Auth'" prompt. sc is non-nil if THIS prompt carries a static
-// (SCRV1) challenge suffix. It signals the GUI and blocks (in this
-// goroutine — the management read loop) until FeedCredentials supplies a
-// reply or a timeout elapses.
-//
-// If a dynamic (CRV1) challenge is already pending for this tunnel (see
-// onMgmtDynamicChallenge), this prompt is the auth-retry reconnect it
-// triggered — the GUI was already notified when the challenge first
-// arrived, so it is NOT notified again here (that would pop a second,
-// resetting prompt on top of one the user may already be filling in).
+// onMgmtAuthPrompt handles Need 'Auth': notify the GUI and block the read
+// loop until FeedCredentials, Disconnect or a timeout. A pending CRV1
+// challenge means this is the auth-retry it triggered; the GUI already has
+// that prompt open, so it isn't re-notified.
 func (m *Manager) onMgmtAuthPrompt(name string, e *entry, sc *AuthChallenge) {
 	slog.Info("ovpn: server requesting credentials", "tunnel", name)
 
 	m.mu.Lock()
-	pending := e.pendingChallenge
+	challenge, notifyGUI := sc, true
+	if challenge == nil && e.pendingChallenge != nil {
+		challenge, notifyGUI = e.pendingChallenge, false
+	}
+	e.awaitingCredentials = true
 	m.mu.Unlock()
 
-	challenge := sc
-	notifyGUI := true
-	if challenge == nil && pending != nil {
-		challenge = pending
-		notifyGUI = false
-	}
-
 	if notifyGUI {
-		// Drain any stale credential left by a previous timed-out prompt. A
-		// TOTP code from an earlier attempt would be expired anyway, and
-		// silently reusing it would fail auth without showing the GUI
-		// prompt. Skipped for a CRV1 retry (notifyGUI false): the user may
-		// have already answered the challenge before this reconnect's
-		// prompt even arrived, and draining here would discard that reply.
+		// A stale reply (e.g. an expired TOTP from a timed-out prompt) would
+		// silently fail auth. Not drained for a CRV1 retry: the user may
+		// have answered already.
 		select {
 		case <-e.authCh:
-			slog.Debug("ovpn: drained stale credential from previous prompt", "tunnel", name)
 		default:
 		}
 		if m.onAuthNeeded != nil {
@@ -766,75 +516,53 @@ func (m *Manager) onMgmtAuthPrompt(name string, e *entry, sc *AuthChallenge) {
 		}
 	}
 
-	m.mu.Lock()
-	e.awaitingCredentials = true
-	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		e.awaitingCredentials = false
+		m.mu.Unlock()
+	}()
 	select {
 	case reply := <-e.authCh:
 		m.mu.Lock()
 		mgmt := e.mgmt
 		e.pendingChallenge = nil
-		e.awaitingCredentials = false
-		lastUsername := e.lastUsername
-		m.mu.Unlock()
-		if mgmt == nil {
-			slog.Warn("ovpn: management gone before credentials arrived", "tunnel", name)
-			return
-		}
-
 		username, password := reply.username, reply.password
 		switch {
 		case challenge != nil && challenge.Kind == ChallengeDynamic:
-			// The frontend showed a response-only form (no username field)
-			// — reuse the username that was already accepted at the base
-			// login, and wrap the response per the CRV1 wire format.
-			username = lastUsername
+			username = challenge.username
+			if username == "" {
+				username = e.lastUsername
+			}
 			password = fmt.Sprintf("CRV1::%s::%s", challenge.StateID, reply.response)
 		case challenge != nil && challenge.Kind == ChallengeStatic:
 			password = combineStaticChallenge(challenge, reply.password, reply.response)
 		}
 		if username != "" {
-			m.mu.Lock()
 			e.lastUsername = username
-			m.mu.Unlock()
 		}
-
-		// Username at Debug, not Info — it's credential-adjacent PII that
-		// would otherwise land in the default-level log stream (and
-		// Console.app, since the helper's log level defaults to Info) on
-		// every single auth attempt. The password is correctly never logged.
-		slog.Debug("ovpn: sending credentials to management socket", "tunnel", name, "username", username, "challenge_kind", challengeKindOf(challenge))
+		// New credentials clear a previous auth failure.
+		e.errMsg, e.status.ErrorMessage = "", ""
+		if e.status.State == domain.StateError {
+			e.status.State = domain.StateConnecting
+		}
+		m.mu.Unlock()
+		m.emitStatus(name)
+		if mgmt == nil {
+			return
+		}
+		slog.Debug("ovpn: sending credentials", "tunnel", name, "username", username, "challenge_kind", challengeKindOf(challenge))
 		if err := mgmt.sendCredentials(username, password); err != nil {
-			slog.Error("ovpn: sending credentials failed", "tunnel", name, "error", err)
-			m.setError(name, fmt.Sprintf("sending credentials failed: %v", err))
+			m.fail(name, fmt.Sprintf("sending credentials failed: %v", err), false)
 		}
 	case <-e.closeCh:
-		// Disconnect was called while we were waiting — e.g. the user
-		// cancelled the auth modal. Return without sending anything; the
-		// process is already being torn down (see Disconnect), and
-		// supervise's cmd.Wait() will reap it and run cleanup() once the
-		// management connection actually closes. Without this case, this
-		// goroutine (and thus readLoop) would stay blocked here for up to
-		// the full 10-minute timeout below even though nothing is left to
-		// wait for, leaving the tunnel showing "connecting" the whole time.
-		m.mu.Lock()
-		e.awaitingCredentials = false
-		m.mu.Unlock()
 		slog.Info("ovpn: tunnel disconnected while awaiting credentials", "tunnel", name)
-		return
 	case <-time.After(10 * time.Minute):
-		m.mu.Lock()
-		e.awaitingCredentials = false
-		m.mu.Unlock()
-		slog.Warn("ovpn: timed out waiting for credentials", "tunnel", name)
-		m.setError(name, "timed out waiting for credentials")
-		m.Disconnect(name)
+		m.fail(name, "timed out waiting for credentials", true)
 	}
 }
 
-// IsAwaitingCredentials reports whether the named tunnel is currently
-// blocked waiting for the user to answer an OpenVPN auth prompt (see
-// onMgmtAuthPrompt). Returns false for an unknown tunnel.
+// IsAwaitingCredentials reports whether the tunnel is blocked on an auth
+// prompt.
 func (m *Manager) IsAwaitingCredentials(name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -842,20 +570,13 @@ func (m *Manager) IsAwaitingCredentials(name string) bool {
 	return ok && e.awaitingCredentials
 }
 
-// onMgmtDynamicChallenge is invoked when the server rejects the base
-// credentials with a CRV1 dynamic-challenge payload (2FA required). It
-// notifies the GUI and stores the challenge for onMgmtAuthPrompt to answer
-// once OpenVPN's auth-retry brings a fresh "Need 'Auth'" prompt — it does
-// NOT block here, unlike onMgmtAuthPrompt, so the read loop keeps
-// processing state/bytecount lines (and the eventual retry prompt) while
-// the user is entering their response.
+// onMgmtDynamicChallenge stores a CRV1 challenge for the next Need 'Auth'
+// and notifies the GUI without blocking the read loop.
 func (m *Manager) onMgmtDynamicChallenge(name string, e *entry, ch *AuthChallenge) {
-	slog.Info("ovpn: server issued a dynamic challenge, awaiting response", "tunnel", name)
+	slog.Info("ovpn: server issued a dynamic challenge", "tunnel", name)
 	m.mu.Lock()
 	e.pendingChallenge = ch
 	m.mu.Unlock()
-	// Drain any stale reply left over from an earlier, already-resolved
-	// prompt before waiting for a fresh one.
 	select {
 	case <-e.authCh:
 	default:
@@ -865,8 +586,7 @@ func (m *Manager) onMgmtDynamicChallenge(name string, e *entry, ch *AuthChalleng
 	}
 }
 
-// combineStaticChallenge formats a password + challenge response per the
-// SCRV1 wire protocol's Concat flag (see AuthChallenge.Concat / FORMAT bit).
+// combineStaticChallenge formats password+response per SCRV1's Concat flag.
 func combineStaticChallenge(ch *AuthChallenge, password, response string) string {
 	if ch.Concat {
 		return password + response
@@ -876,7 +596,6 @@ func combineStaticChallenge(ch *AuthChallenge, password, response string) string
 		base64.StdEncoding.EncodeToString([]byte(response)))
 }
 
-// challengeKindOf returns a log-safe label for a possibly-nil challenge.
 func challengeKindOf(ch *AuthChallenge) ChallengeKind {
 	if ch == nil {
 		return ChallengeNone
@@ -884,12 +603,9 @@ func challengeKindOf(ch *AuthChallenge) ChallengeKind {
 	return ch.Kind
 }
 
-// FeedCredentials delivers a reply for a tunnel waiting on an auth prompt.
-// fullPassword must already be basePassword + totpCode (combined by the
-// caller) for a plain prompt. response carries the user's answer to a
-// challenge/response prompt: for a dynamic (CRV1) prompt it's the ENTIRE
-// reply (fullPassword is ignored); for a static (SCRV1) prompt it's paired
-// with fullPassword. Ignored for a plain prompt.
+// FeedCredentials delivers a reply to a tunnel waiting on an auth prompt.
+// fullPassword is basePassword+TOTP; response answers a challenge (CRV1: the
+// whole reply, SCRV1: paired with fullPassword).
 func (m *Manager) FeedCredentials(name, username, fullPassword, response string) error {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
@@ -905,41 +621,35 @@ func (m *Manager) FeedCredentials(name, username, fullPassword, response string)
 	}
 }
 
-// Disconnect asks an OpenVPN tunnel to shut down cleanly. The actual teardown
-// (process reap + cleanup) happens in supervise() once the management
-// connection closes.
+// Disconnect asks openvpn to exit; supervise reaps and cleans up.
 func (m *Manager) Disconnect(name string) error {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
-	mgmt := (*mgmtClient)(nil)
+	var mgmt *mgmtClient
+	var cmd *exec.Cmd
 	if ok {
-		mgmt = e.mgmt
+		e.userInitiated = true
+		mgmt, cmd = e.mgmt, e.cmd
 	}
 	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("openvpn tunnel %q is not active", name)
 	}
-
-	m.mu.Lock()
-	e.userInitiated = true
-	m.mu.Unlock()
-
-	// Unblock onMgmtAuthPrompt if it's currently waiting on user input —
-	// see closeCh's doc comment on entry.
 	e.closeOnce.Do(func() { close(e.closeCh) })
 
-	if mgmt != nil {
+	switch {
+	case mgmt != nil:
 		if err := mgmt.signalTerm(); err != nil {
 			slog.Warn("ovpn: SIGTERM via management failed, killing process", "tunnel", name, "error", err)
-			_ = e.cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
-	} else if e.cmd != nil && e.cmd.Process != nil {
-		_ = e.cmd.Process.Kill()
+	case cmd != nil && cmd.Process != nil:
+		_ = cmd.Process.Kill()
 	}
 	return nil
 }
 
-// GetStatus returns a copy of the status for the named tunnel, or nil.
+// GetStatus returns a copy of the tunnel's status, or nil.
 func (m *Manager) GetStatus(name string) *domain.ConnectionStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -951,7 +661,7 @@ func (m *Manager) GetStatus(name string) *domain.ConnectionStatus {
 	return &s
 }
 
-// ActiveTunnelNames returns the names of all currently active OpenVPN tunnels.
+// ActiveTunnelNames returns the names of all running tunnels.
 func (m *Manager) ActiveTunnelNames() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -962,7 +672,7 @@ func (m *Manager) ActiveTunnelNames() []string {
 	return names
 }
 
-// AllStatuses returns a snapshot copy of every active tunnel's status.
+// AllStatuses returns a copy of every running tunnel's status.
 func (m *Manager) AllStatuses() []domain.ConnectionStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -973,17 +683,14 @@ func (m *Manager) AllStatuses() []domain.ConnectionStatus {
 	return out
 }
 
-// ActiveRemotes returns the resolved remote endpoint for every connected
-// tunnel that has one — i.e. DNS resolution at Connect time succeeded (see
-// resolveRemoteForKillSwitch) and the tunnel has reached CONNECTED so its
-// interface name is known (see setInterfaceName). Used by the kill switch to
-// whitelist OpenVPN traffic alongside WireGuard's.
+// ActiveRemotes returns the remote of every active tunnel (including one
+// reconnecting after a ping-restart) whose remote and utun are known.
 func (m *Manager) ActiveRemotes() []RemoteEndpoint {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []RemoteEndpoint
 	for name, e := range m.tunnels {
-		if e.status.State != domain.StateConnected || e.remoteAddr == "" || e.status.InterfaceName == "" {
+		if !e.active || e.remoteAddr == "" || e.status.InterfaceName == "" {
 			continue
 		}
 		out = append(out, RemoteEndpoint{
@@ -996,28 +703,26 @@ func (m *Manager) ActiveRemotes() []RemoteEndpoint {
 	return out
 }
 
-// Stop disconnects every active OpenVPN tunnel. Used on helper shutdown.
+// Stop disconnects every tunnel (helper shutdown).
 func (m *Manager) Stop() {
 	for _, name := range m.ActiveTunnelNames() {
 		_ = m.Disconnect(name)
 	}
 }
 
-// setError marks a tunnel as errored and emits the status.
-func (m *Manager) setError(name, msg string) {
-	m.mu.Lock()
-	e, ok := m.tunnels[name]
-	if ok {
+// fail records a user-visible error; terminate also stops openvpn, which
+// would otherwise wait for input we can't provide.
+func (m *Manager) fail(name, msg string, terminate bool) {
+	m.update(name, func(e *entry) {
+		e.errMsg = msg
 		e.status.State = domain.StateError
 		e.status.ErrorMessage = msg
-	}
-	m.mu.Unlock()
-	if ok {
-		m.emitStatus(name)
+	})
+	if terminate {
+		_ = m.Disconnect(name)
 	}
 }
 
-// emitStatus invokes the onStatus callback with a copy of the tunnel's status.
 func (m *Manager) emitStatus(name string) {
 	if m.onStatus == nil {
 		return
@@ -1033,27 +738,22 @@ func (m *Manager) emitStatus(name string) {
 	m.onStatus(s)
 }
 
-// cleanup removes a tunnel's in-memory entry and its runtime files.
+// cleanup removes the tunnel's entry and runtime files.
 func (m *Manager) cleanup(name string) {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
-	wasConnected := ok && e.status.State == domain.StateConnected
-	diedUnexpectedly := wasConnected && ok && !e.userInitiated
 	delete(m.tunnels, name)
 	m.mu.Unlock()
-
-	// Only worth a kill-switch rebuild if this tunnel was actually
-	// CONNECTED (and therefore possibly included in its whitelist) before
-	// being torn down — e.g. a tunnel that failed during the auth prompt
-	// never got that far, so there's nothing to remove.
-	if wasConnected && m.onActiveChange != nil {
+	if !ok {
+		return
+	}
+	if e.active && m.onActiveChange != nil {
 		m.onActiveChange(name, false)
 	}
-
-	if ok && e.mgmt != nil {
+	if e.mgmt != nil {
 		_ = e.mgmt.close()
 	}
-	if ok && e.dnsApplied && m.netMgr != nil {
+	if e.dnsApplied && m.netMgr != nil {
 		if err := m.netMgr.RestoreDNS(name); err != nil {
 			slog.Warn("ovpn: failed to restore DNS", "tunnel", name, "error", err)
 		}
@@ -1061,21 +761,16 @@ func (m *Manager) cleanup(name string) {
 	_ = os.Remove(m.sockPath(name))
 	_ = os.Remove(m.configPath(name))
 
-	// Emit a final disconnected status so the GUI clears the tunnel.
-	if m.onStatus != nil {
-		m.onStatus(domain.ConnectionStatus{
-			State:      domain.StateDisconnected,
-			TunnelName: name,
-			Protocol:   domain.ProtocolOpenVPN,
-		})
+	final := domain.ConnectionStatus{State: domain.StateDisconnected, TunnelName: name, Protocol: domain.ProtocolOpenVPN}
+	if e.errMsg != "" {
+		final.State, final.ErrorMessage = domain.StateError, e.errMsg
 	}
-
-	// Last: onDied can reach a synchronous reconnect (helper.reconnectOVPN
-	// polls up to 90s) that reuses this same tunnel name — the socket/config
-	// files above must already be gone and DNS already restored before that
-	// can happen, or a fast-enough reconnect could collide with cleanup
-	// still in flight for the OLD instance.
-	if diedUnexpectedly && m.onDied != nil {
+	if m.onStatus != nil {
+		m.onStatus(final)
+	}
+	// Last: onDied may synchronously reconnect under the same name, so files
+	// and DNS of this instance must already be gone.
+	if e.active && !e.userInitiated && m.onDied != nil {
 		slog.Warn("ovpn: tunnel died unexpectedly", "tunnel", name)
 		m.onDied(name)
 	}

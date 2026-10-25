@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const appName = "lockplus"
@@ -31,7 +32,7 @@ func canWriteDir(dir string) bool {
 	return true
 }
 
-// Paths holds all OS-specific directory paths for the application.
+// Paths holds the application's directories.
 type Paths struct {
 	ConfigDir  string // App settings (config.json)
 	TunnelsDir string // .conf files
@@ -39,7 +40,7 @@ type Paths struct {
 	DataDir    string // Daemon state / recovery journal (system-level)
 }
 
-// GetPaths returns OS-specific paths for the application.
+// GetPaths returns the application's paths.
 func GetPaths() (*Paths, error) {
 	var p Paths
 
@@ -60,11 +61,8 @@ func GetPaths() (*Paths, error) {
 // ConfigDir and TunnelsDir use 0700 to prevent other users from listing
 // config filenames on multi-user systems. LogsDir and DataDir use 0700 as well.
 //
-// DataDir may require root permissions (e.g. /var/lib/wireguide on Linux,
-// /Library/Application Support/wireguide on macOS). If creation fails due
-// to insufficient privileges, the error is logged as a warning instead of
-// failing the entire startup — the helper process will create it when running
-// as root.
+// DataDir (/Library/Application Support/lockplus) needs root; failing to
+// create it is only a warning, the helper creates it.
 func (p *Paths) EnsureDirs() error {
 	userDirs := []string{p.ConfigDir, p.TunnelsDir, p.LogsDir}
 	for _, dir := range userDirs {
@@ -98,47 +96,70 @@ func (p *Paths) EnsureDirs() error {
 	return nil
 }
 
-// MigrateLegacyTunnels copies tunnel configs from the pre-rename
-// ~/Library/Application Support/wireguide-plus/tunnels directory into the
-// current TunnelsDir, if TunnelsDir is empty and the legacy directory has
-// files. It only ever copies — never deletes or moves the legacy directory —
-// so a failed or partial migration can always be retried or inspected by
-// hand. Call this once at startup, after EnsureDirs and before the
-// TunnelStore is constructed.
-//
-// Why this exists: upgrading from WireGuide+ to LockPlus (Homebrew cask
-// rename, v1.0.57) silently orphaned every tunnel a user had configured,
-// since the macOS Application Support directory name changed. This bit
-// real users on real machines with no way to recover except manual shell
-// surgery — this migration makes the upgrade path self-healing.
+// MigrateLegacyTunnels copies tunnel files from the pre-rename
+// ~/Library/Application Support/wireguide-plus/tunnels (the v1.0.57 rename
+// orphaned them) into TunnelsDir. It never deletes or overwrites, skips temp
+// files, and copies whatever is still missing, so an interrupted migration
+// resumes on the next start; a marker written after a clean pass stops it
+// from resurrecting tunnels the user later deleted. Call after EnsureDirs.
 func (p *Paths) MigrateLegacyTunnels() {
-	if entries, err := os.ReadDir(p.TunnelsDir); err == nil && len(entries) > 0 {
-		return // already has tunnels — never overwrite existing data
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}
-	legacyDir := filepath.Join(home, "Library", "Application Support", legacyAppName, "tunnels")
-	legacyEntries, err := os.ReadDir(legacyDir)
-	if err != nil || len(legacyEntries) == 0 {
+	migrateTunnels(filepath.Join(home, "Library", "Application Support", legacyAppName, "tunnels"), p.TunnelsDir)
+}
+
+// migratedMarker in TunnelsDir records a completed legacy migration.
+const migratedMarker = ".legacy-migrated"
+
+func migrateTunnels(legacyDir, dstDir string) {
+	marker := filepath.Join(dstDir, migratedMarker)
+	if _, err := os.Stat(marker); err == nil {
 		return
 	}
-	slog.Info("migrating tunnels from legacy wireguide-plus data dir",
-		"from", legacyDir, "to", p.TunnelsDir, "count", len(legacyEntries))
-	for _, e := range legacyEntries {
-		if e.IsDir() {
+	entries, err := os.ReadDir(legacyDir)
+	if err != nil {
+		return
+	}
+	clean := true
+	defer func() {
+		if clean {
+			_ = os.WriteFile(marker, nil, 0600)
+		}
+	}()
+	for _, e := range entries {
+		name := e.Name()
+		if !e.Type().IsRegular() || strings.HasSuffix(name, ".tmp") || strings.HasPrefix(name, ".") {
 			continue
 		}
-		src := filepath.Join(legacyDir, e.Name())
-		dst := filepath.Join(p.TunnelsDir, e.Name())
-		data, err := os.ReadFile(src)
+		dst := filepath.Join(dstDir, name)
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(legacyDir, name))
 		if err != nil {
-			slog.Warn("legacy tunnel migration: read failed", "file", src, "error", err)
+			slog.Warn("legacy tunnel migration: read failed", "file", name, "error", err)
+			clean = false
 			continue
 		}
-		if err := os.WriteFile(dst, data, 0600); err != nil {
-			slog.Warn("legacy tunnel migration: write failed", "file", dst, "error", err)
+		// O_EXCL: never clobber a file that appeared meanwhile.
+		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			slog.Warn("legacy tunnel migration: create failed", "file", name, "error", err)
+			clean = false
+			continue
 		}
+		_, werr := f.Write(data)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			_ = os.Remove(dst)
+			slog.Warn("legacy tunnel migration: write failed", "file", name, "error", werr)
+			clean = false
+			continue
+		}
+		slog.Info("migrated legacy tunnel file", "file", name)
 	}
 }

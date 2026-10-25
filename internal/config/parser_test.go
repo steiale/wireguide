@@ -99,15 +99,8 @@ AllowedIPs = 0.0.0.0/0
 	if !cfg.HasScripts() {
 		t.Error("expected HasScripts() to return true")
 	}
-	scripts := cfg.Scripts()
-	if len(scripts) != 2 {
-		t.Fatalf("expected 2 scripts, got %d", len(scripts))
-	}
-	if scripts[0].Hook != "PostUp" {
-		t.Errorf("expected PostUp, got %s", scripts[0].Hook)
-	}
-	if scripts[1].Hook != "PreDown" {
-		t.Errorf("expected PreDown, got %s", scripts[1].Hook)
+	if cfg.Interface.PostUp == "" || cfg.Interface.PreDown == "" || cfg.Interface.PreUp != "" {
+		t.Errorf("hooks = %+v", cfg.Interface)
 	}
 }
 
@@ -369,5 +362,48 @@ func TestHasScriptsNoScripts(t *testing.T) {
 	cfg, _ := Parse(validConf)
 	if cfg.HasScripts() {
 		t.Error("expected HasScripts() to be false for config without scripts")
+	}
+}
+
+func TestParseWgQuickCompat(t *testing.T) {
+	conf := `[Interface] # trailing comment
+PrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk= # key comment
+Address = 10.0.0.2, fd00::2 # bare IPs
+Zeta = 1
+Alpha = a
+Zeta = 2
+
+[Peer]
+PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+AllowedIPs = 10.0.0.1, 10.1.0.0/16#no space
+`
+	cfg, err := Parse(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Interface.PrivateKey != "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=" {
+		t.Errorf("inline comment kept in key: %q", cfg.Interface.PrivateKey)
+	}
+	if got := strings.Join(cfg.Interface.Address, ","); got != "10.0.0.2/32,fd00::2/128" {
+		t.Errorf("Address = %s", got)
+	}
+	if got := strings.Join(cfg.Peers[0].AllowedIPs, ","); got != "10.0.0.1/32,10.1.0.0/16" {
+		t.Errorf("AllowedIPs = %s", got)
+	}
+	if r := Validate(cfg); !r.IsValid() {
+		t.Errorf("invalid: %v", r.ErrorMessages())
+	}
+	out := Serialize(cfg)
+	for i := 0; i < 5; i++ {
+		if Serialize(cfg) != out {
+			t.Fatal("Serialize not deterministic")
+		}
+	}
+	if !strings.Contains(out, "Alpha = a\nZeta = 1\nZeta = 2\n") {
+		t.Errorf("extra keys not sorted/preserved:\n%s", out)
+	}
+	again, err := Parse(out)
+	if err != nil || Serialize(again) != out {
+		t.Errorf("round trip changed output: %v", err)
 	}
 }

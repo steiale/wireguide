@@ -46,30 +46,6 @@ func (c *WireGuardConfig) HasScripts() bool {
 		c.Interface.PostDown != ""
 }
 
-// Script represents a Pre/PostUp/Down hook command.
-type Script struct {
-	Hook    string `json:"hook"`    // "PreUp" | "PostUp" | "PreDown" | "PostDown"
-	Command string `json:"command"` // Shell command to execute
-}
-
-// Scripts returns all defined script commands with their hook names.
-func (c *WireGuardConfig) Scripts() []Script {
-	var scripts []Script
-	if c.Interface.PreUp != "" {
-		scripts = append(scripts, Script{Hook: "PreUp", Command: c.Interface.PreUp})
-	}
-	if c.Interface.PostUp != "" {
-		scripts = append(scripts, Script{Hook: "PostUp", Command: c.Interface.PostUp})
-	}
-	if c.Interface.PreDown != "" {
-		scripts = append(scripts, Script{Hook: "PreDown", Command: c.Interface.PreDown})
-	}
-	if c.Interface.PostDown != "" {
-		scripts = append(scripts, Script{Hook: "PostDown", Command: c.Interface.PostDown})
-	}
-	return scripts
-}
-
 // IsFullTunnel returns true if any peer routes all traffic (0.0.0.0/0 or ::/0).
 func (c *WireGuardConfig) IsFullTunnel() bool {
 	for _, peer := range c.Peers {
@@ -85,17 +61,4 @@ func (c *WireGuardConfig) IsFullTunnel() bool {
 		}
 	}
 	return false
-}
-
-// Endpoints returns all non-empty peer endpoints. Used for bypass route setup
-// on full-tunnel mode — we need to add host routes for every peer endpoint,
-// not just the first one (multi-peer site-to-site configs).
-func (c *WireGuardConfig) Endpoints() []string {
-	var eps []string
-	for _, p := range c.Peers {
-		if p.Endpoint != "" {
-			eps = append(eps, p.Endpoint)
-		}
-	}
-	return eps
 }

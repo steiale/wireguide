@@ -9,5 +9,4 @@ type (
 	WireGuardConfig = domain.WireGuardConfig
 	InterfaceConfig = domain.InterfaceConfig
 	PeerConfig      = domain.PeerConfig
-	Script          = domain.Script
 )

@@ -47,6 +47,17 @@ func TestRealProfiles(t *testing.T) {
 		t.Logf("profile #%d: parseErr=%v validate=%v directives=[%s]", i+1, perr != nil, verr, strings.Join(names, " "))
 		if verr != nil {
 			t.Errorf("profile #%d rejected", i+1)
+			continue
+		}
+		// The runtime argv carries only flags and runtime paths, no secrets.
+		p, _ := inspectProfile(data)
+		args := (&Manager{}).args("/run/x.ovpn", "/run/x.sock", p)
+		t.Logf("profile #%d: argv=%q stripped=%d dnsEntries=%d pullFilters=%d", i+1, args, len(p.stripLines), len(p.dns.entries()), len(p.pullFilters))
+		if args[0] != "--config" || !strings.Contains(strings.Join(args, " "), "--verb ") {
+			t.Errorf("profile #%d: bad argv", i+1)
+		}
+		if rc := p.runtimeConfig(data); ValidateOVPN(rc) != nil {
+			t.Errorf("profile #%d: runtime config no longer validates", i+1)
 		}
 	}
 }

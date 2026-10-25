@@ -3,6 +3,7 @@ package ovpn
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -11,7 +12,7 @@ import (
 // blocklist of "script" directives is not enough: log/status/writepid write
 // arbitrary files, ca/cert/key/auth-user-pass/config read arbitrary files
 // (and some send the contents to the server), engine/providers/pkcs11
-// load shared libraries, user/group/chroot/cd/daemon change process state.
+// load shared libraries, chroot/cd/daemon change process state.
 //
 // So validation is an ALLOWLIST, built from OpenVPN 2.7.8's add_option
 // (src/openvpn/options.c): client-side options that neither take a local
@@ -64,7 +65,7 @@ func init() {
 	// Role / transport / remote selection.
 	plain("client", "tls-client", "pull", "proto", "proto-force", "remote",
 		"remote-random", "remote-random-hostname", "resolv-retry", "nobind",
-		"bind", "local", "lport", "port", "rport", "float", "connect-retry",
+		"bind", "port", "rport", "float", "connect-retry",
 		"connect-retry-max", "connect-timeout", "server-poll-timeout",
 		"explicit-exit-notify", "sndbuf", "rcvbuf", "socket-flags", "fast-io",
 		"http-proxy-option", "allow-pull-fqdn")
@@ -168,6 +169,33 @@ func init() {
 		}
 		return maxArgs(3)(d)
 	}}
+	// Root may not bind a privileged local port for the profile ("port" is
+	// checked profile-wide in inspectProfile, since it only binds locally
+	// together with bind/local or without pull).
+	r["lport"] = dirRule{validate: func(d *directive) error {
+		if len(d.Args) != 1 || !unprivilegedPort(d.Args[0]) {
+			return fmt.Errorf("local port must be 0 or 1024-65535")
+		}
+		return nil
+	}}
+	r["local"] = dirRule{validate: func(d *directive) error {
+		if len(d.Args) >= 2 && !unprivilegedPort(d.Args[1]) {
+			return fmt.Errorf("local port must be 0 or 1024-65535")
+		}
+		return nil
+	}}
+	// OpenSSL 3+ needs "providers legacy default" for BF-CBC; the build is
+	// no-module, so only the built-in provider names are meaningful.
+	r["providers"] = dirRule{validate: func(d *directive) error {
+		for _, a := range d.Args {
+			if a != "legacy" && a != "default" && a != "base" {
+				return fmt.Errorf("only the legacy, default and base providers are allowed")
+			}
+		}
+		return nil
+	}}
+	// Stripped from the runtime config (see stripOnly in config.go).
+	plain("user", "group")
 	r["setenv"] = dirRule{validate: validateSetenv}
 	r["setenv-safe"] = dirRule{validate: func(d *directive) error {
 		if len(d.Args) < 1 || len(d.Args) > 2 || !envNameRe.MatchString(d.Args[0]) {
@@ -201,6 +229,9 @@ func validateSetenv(d *directive) error {
 			return fmt.Errorf("'setenv opt' needs a directive")
 		}
 		inner := directive{Name: d.Args[1], Args: d.Args[2:], Line: d.Line}
+		if stripOnly[inner.Name] {
+			return fmt.Errorf("setenv opt: directive %q is not allowed", inner.Name)
+		}
 		if err := checkDirective(&inner); err != nil {
 			return fmt.Errorf("setenv opt: %w", err)
 		}
@@ -238,4 +269,11 @@ func checkDirective(d *directive) error {
 		}
 	}
 	return nil
+}
+
+// unprivilegedPort reports whether s is a numeric port that is 0 (ephemeral)
+// or >= 1024. Service names are refused: getaddrinfo would resolve them.
+func unprivilegedPort(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && (n == 0 || n >= 1024 && n <= 65535)
 }

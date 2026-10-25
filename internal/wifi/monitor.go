@@ -24,7 +24,6 @@ func NewMonitor(rules *Rules, onChanged SSIDChangedFunc) *Monitor {
 	return &Monitor{
 		rules:     rules,
 		onChanged: onChanged,
-		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -37,9 +36,10 @@ func (m *Monitor) Start() {
 		return
 	}
 	m.running = true
-	m.stopCh = make(chan struct{})
+	stop := make(chan struct{})
+	m.stopCh = stop
 	m.mu.Unlock()
-	go m.poll()
+	go m.poll(stop)
 	slog.Info("WiFi monitor started")
 }
 
@@ -61,16 +61,19 @@ func (m *Monitor) UpdateRules(rules *Rules) {
 	m.mu.Unlock()
 }
 
-func (m *Monitor) poll() {
+// poll owns stop, so a Stop+Start can never leave the old poller reading
+// the new channel.
+func (m *Monitor) poll(stop <-chan struct{}) {
+	initial := CurrentSSID()
 	m.mu.Lock()
-	m.lastSSID = CurrentSSID()
+	m.lastSSID = initial
 	m.mu.Unlock()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stop:
 			return
 		case <-ticker.C:
 			current := CurrentSSID()

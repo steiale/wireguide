@@ -1,4 +1,4 @@
-// Package wifi provides WiFi SSID detection and auto-connect rules.
+// Package wifi provides Wi-Fi SSID detection and auto-connect rules.
 package wifi
 
 import (
@@ -8,65 +8,60 @@ import (
 	"time"
 )
 
-// CurrentSSID returns the currently connected WiFi SSID, or "" if not connected.
+// CurrentSSID returns the current Wi-Fi SSID, or "" if not associated or
+// unknown. The airport tool is gone and `networksetup -getairportnetwork`
+// reports "not associated" on current macOS, so this reads
+// `ipconfig getsummary <wifi-if>`. macOS returns "<redacted>" there for
+// processes without Location Services access; that is treated as unknown.
 func CurrentSSID() string {
-	return detectDarwin()
-}
-
-func detectDarwin() string {
-	// macOS 14+: use system_profiler or airport
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport", "-I").CombinedOutput()
-	if err != nil {
-		// Fallback: discover the actual Wi-Fi interface dynamically instead
-		// of hardcoding "en0" (which may be Ethernet on some Macs).
-		wifiIface := discoverWiFiInterface()
-		if wifiIface == "" {
-			return ""
-		}
-		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel2()
-		out, err = exec.CommandContext(ctx2, "/usr/sbin/networksetup", "-getairportnetwork", wifiIface).CombinedOutput()
-		if err != nil {
-			return ""
-		}
-		// Output: "Current Wi-Fi Network: MySSID"
-		s := strings.TrimSpace(string(out))
-		if idx := strings.Index(s, ": "); idx >= 0 {
-			return s[idx+2:]
-		}
+	iface := wifiInterface(run("/usr/sbin/networksetup", "-listallhardwareports"))
+	if iface == "" {
 		return ""
 	}
-	// Parse airport -I output for SSID line
-	for _, line := range strings.Split(string(out), "\n") {
+	return parseSummarySSID(run("/usr/sbin/ipconfig", "getsummary", iface))
+}
+
+func run(name string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+// wifiInterface finds the device of the "Wi-Fi" hardware port in
+// `networksetup -listallhardwareports` output ("" if none).
+func wifiInterface(out string) string {
+	inWiFi := false
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "SSID:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "SSID:"))
+		if port, ok := strings.CutPrefix(line, "Hardware Port:"); ok {
+			port = strings.TrimSpace(port)
+			inWiFi = port == "Wi-Fi" || port == "AirPort"
+			continue
+		}
+		if dev, ok := strings.CutPrefix(line, "Device:"); ok && inWiFi {
+			return strings.TrimSpace(dev)
 		}
 	}
 	return ""
 }
 
-// discoverWiFiInterface finds the BSD interface name for the Wi-Fi hardware port.
-func discoverWiFiInterface() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "/usr/sbin/networksetup", "-listallhardwareports").CombinedOutput()
-	if err != nil {
-		return "en0" // fallback
-	}
-	lines := strings.Split(string(out), "\n")
-	for i, line := range lines {
-		if strings.Contains(line, "Wi-Fi") || strings.Contains(line, "AirPort") {
-			// Next line should be "Device: en0" or similar
-			if i+1 < len(lines) {
-				parts := strings.SplitN(lines[i+1], ":", 2)
-				if len(parts) == 2 {
-					return strings.TrimSpace(parts[1])
-				}
-			}
+// parseSummarySSID extracts the "SSID : <name>" line of
+// `ipconfig getsummary` output. Anything else (errors, not associated,
+// redacted) yields "".
+func parseSummarySSID(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), " : ")
+		if !ok || key != "SSID" {
+			continue
 		}
+		if val == "<redacted>" {
+			return ""
+		}
+		return val
 	}
-	return "en0" // fallback
+	return ""
 }

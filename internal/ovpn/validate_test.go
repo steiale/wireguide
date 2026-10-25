@@ -30,8 +30,14 @@ func TestValidateOVPNRejects(t *testing.T) {
 		"cd":                   "cd /\n",
 		"chroot":               "chroot /var/empty\n",
 		"tmp-dir":              "tmp-dir /Library\n",
-		"user":                 "user nobody\n",
-		"group":                "group nobody\n",
+		"setenv opt user":      "setenv opt user nobody\n",
+		"user in connection":   "<connection>\nremote h 1\ngroup nobody\n</connection>\n",
+		"lport privileged":     "lport 53\n",
+		"lport service":        "lport domain\n",
+		"local privileged":     "local 0.0.0.0 80\n",
+		"setenv opt lport":     "setenv opt lport 22\n",
+		"port with bind":       "port 53\nbind\n",
+		"port with local":      "port 53\nlocal 10.0.0.1\n",
 		"daemon":               "daemon\n",
 		"inetd":                "inetd\n",
 		"management":           "management 127.0.0.1 7505\n",
@@ -66,7 +72,8 @@ func TestValidateOVPNRejects(t *testing.T) {
 		"plugin":           "plugin /x.so\n",
 		"iproute":          "iproute /x\n",
 		"engine":           "engine dynamic\n",
-		"providers":        "providers legacy\n",
+		"providers module": "providers /x.so\n",
+		"providers fips":   "providers legacy fips\n",
 		"pkcs11-providers": "pkcs11-providers /x.so\n",
 		"dns-updown force": "dns-updown force\n",
 		"dns-updown path":  "dns-updown /x\n",
@@ -263,6 +270,10 @@ peer-fingerprint AB:CD
 		"bom":                         "\xEF\xBB\xBF" + vbase,
 		"long inline line":            vbase + "<ca>\n" + strings.Repeat("A", 600) + "\n</ca>\n",
 		"dev-type tun":                vbase + "dev tun0\ndev-type tun\n",
+		"linux user/group":            vbase + "user nobody\ngroup nogroup\n",
+		"providers":                   vbase + "providers legacy default\n",
+		"remote port below 1024":      vbase + "port 443\n",
+		"unprivileged local ports":    vbase + "lport 0\nlport 50000\nlocal 10.0.0.1 50000\nbind\nport 1194\n",
 	}
 	for name, body := range cases {
 		if err := ValidateOVPN([]byte(body)); err != nil {
@@ -306,14 +317,25 @@ func TestParseLine(t *testing.T) {
 
 func TestHelpersUseSameTokenizer(t *testing.T) {
 	// A keepalive hidden from the old scanner by a prefix close tag.
-	if !HasKeepaliveDirective([]byte("<ca>\nx\n</ca>junk\nkeepalive 10 60\n")) {
-		t.Error("HasKeepaliveDirective missed directive after prefix close tag")
+	inspect := func(body string) *profile {
+		t.Helper()
+		p, err := inspectProfile([]byte(vbase + body))
+		if err != nil {
+			t.Fatalf("inspectProfile(%q): %v", body, err)
+		}
+		return p
 	}
-	if !HasMTUDirective([]byte("\"mssfix\" 1400\n")) {
-		t.Error("HasMTUDirective missed quoted directive")
+	if !inspect("<ca>\nx\n</ca>junk\nkeepalive 10 60\n").hasKeepalive {
+		t.Error("missed keepalive after prefix close tag")
 	}
-	if HasMTUDirective([]byte("<ca>\nmssfix 1400\n</ca>\n")) {
-		t.Error("HasMTUDirective looked inside inline block")
+	if !inspect("\"mssfix\" 1400\n").hasMTU {
+		t.Error("missed quoted mssfix")
+	}
+	if inspect("<ca>\nmssfix 1400\n</ca>\n").hasMTU {
+		t.Error("looked inside inline block")
+	}
+	if !inspect("setenv opt keepalive 10 60\n").hasKeepalive {
+		t.Error("missed keepalive behind setenv opt")
 	}
 	cfg, err := ParseOVPN([]byte("<connection>\n'remote' h.example 443\n</connection>\nauth-user-pass\n"))
 	if err != nil || cfg.Remote != "h.example:443" || !cfg.AuthUserPass {
