@@ -4,5 +4,10 @@
 <dict>
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- Hardened Runtime resource access: Location Services. Needed to read
+         the Wi-Fi SSID via CoreWLAN for Wi-Fi rules (CWInterface.ssid is nil
+         without Location authorization). -->
+    <key>com.apple.security.personal-information.location</key>
+    <true/>
 </dict>
 </plist>

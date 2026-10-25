@@ -42,3 +42,14 @@ func (r *Rules) Action(ssid string) (action string, tunnelName string) {
 
 	return "none", ""
 }
+
+// HasActiveRules reports whether the feature is enabled and at least one
+// rule could fire — i.e. whether SSID access (Location authorization) is
+// actually needed.
+func (r *Rules) HasActiveRules() bool {
+	if r == nil || !r.Enabled {
+		return false
+	}
+	return len(r.TrustedSSIDs) > 0 || len(r.SSIDTunnelMap) > 0 ||
+		(r.AutoConnectUntrusted && r.DefaultTunnel != "")
+}

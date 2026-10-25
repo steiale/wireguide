@@ -183,6 +183,16 @@ export function GetCurrentSSID() {
 }
 
 /**
+ * GetLocationAuthStatus returns the Location Services authorization state
+ * SSID detection depends on: "notDetermined", "restricted", "denied" or
+ * "authorized". Non-blocking.
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetLocationAuthStatus() {
+    return $Call.ByID(836916661);
+}
+
+/**
  * GetRoutingTable returns the current OS routing table.
  * @returns {$CancellablePromise<$models.RouteEntry[]>}
  */
@@ -405,6 +415,15 @@ export function ListTunnels() {
 }
 
 /**
+ * OpenLocationSettings opens the Location Services privacy pane so the user
+ * can enable LockPlus after denying the prompt. Fixed URL, no input.
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenLocationSettings() {
+    return $Call.ByID(403715592);
+}
+
+/**
  * OpenURL opens a URL in the default browser. Only an explicit allowlist of
  * known-safe URLs is accepted to prevent a compromised frontend from
  * redirecting the user to an attacker-controlled GitHub page.
@@ -439,6 +458,16 @@ export function ReadFile(path) {
  */
 export function RenameTunnel(oldName, newName) {
     return $Call.ByID(2410860754, oldName, newName);
+}
+
+/**
+ * RequestLocationAuth shows the macOS Location prompt if the user has never
+ * been asked (no-op otherwise) and returns the state at call time. The
+ * outcome is asynchronous; poll GetLocationAuthStatus.
+ * @returns {$CancellablePromise<string>}
+ */
+export function RequestLocationAuth() {
+    return $Call.ByID(1269661778);
 }
 
 /**

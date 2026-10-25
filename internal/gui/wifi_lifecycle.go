@@ -24,6 +24,7 @@ import (
 type wifiLifecycle struct {
 	mu            sync.Mutex
 	monitor       *wifi.Monitor
+	unsubAuth     func()
 	tunnelService *wgapp.TunnelService
 	store         *storage.WifiRulesStore
 }
@@ -52,6 +53,23 @@ func startWifiLifecycle(tunnelService *wgapp.TunnelService, store *storage.WifiR
 	lc.monitor = wifi.NewMonitor(rules, lc.handleSSIDChange)
 	lc.monitor.Start()
 
+	// Reading the SSID needs Location Services authorization. Create the
+	// long-lived CLLocationManager (main thread, never prompts) so a grant
+	// made later in System Settings re-polls immediately — no restart. Only
+	// prompt at launch when rules would actually use the SSID and the user
+	// has never been asked; the prompt itself is dispatched to the main
+	// queue and appears once the AppKit loop runs.
+	mon := lc.monitor
+	lc.unsubAuth = wifi.OnLocationAuthChange(func(st wifi.AuthStatus) {
+		slog.Info("wifi: location authorization changed", "status", st)
+		mon.Recheck()
+	})
+	wifi.StartLocationObserver()
+	if rules.HasActiveRules() && wifi.LocationAuthStatus() == wifi.AuthNotDetermined {
+		slog.Info("wifi: rules active and location not determined, requesting authorization")
+		wifi.RequestLocationAuth()
+	}
+
 	// Register the runtime-update hook so the Wails service can hand new
 	// rules to the running monitor without restarting the app.
 	wgapp.SetWifiRulesNotifier(func(r *wifi.Rules) {
@@ -64,6 +82,8 @@ func startWifiLifecycle(tunnelService *wgapp.TunnelService, store *storage.WifiR
 				"trusted", len(r.TrustedSSIDs),
 				"mapped", len(r.SSIDTunnelMap))
 		}
+		// Prompting on rule add/enable is done by the Wi-Fi rules UI
+		// (TunnelService.RequestLocationAuth) so it fires once, in context.
 	})
 
 	return lc
@@ -75,6 +95,10 @@ func (lc *wifiLifecycle) stop() {
 	defer lc.mu.Unlock()
 	if lc.monitor != nil {
 		lc.monitor.Stop()
+	}
+	if lc.unsubAuth != nil {
+		lc.unsubAuth()
+		lc.unsubAuth = nil
 	}
 }
 

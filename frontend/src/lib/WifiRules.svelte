@@ -18,6 +18,11 @@
   let newSSIDTunnel = '';
   let currentSSID = '';
   let ssidTimer = null;
+  // Location Services authorization: macOS only reveals the SSID to apps
+  // the user has authorized. 'notDetermined' | 'restricted' | 'denied' |
+  // 'authorized'; '' until the first read.
+  let locStatus = '';
+  let authTimer = null;
 
   // Poll the current SSID every 10 s while the panel is mounted so the
   // "Currently on:" badge stays fresh as the user moves between networks
@@ -32,17 +37,56 @@
     }
   }
 
+  // Authorization is cheap to read (cached natively), so poll it every 2 s:
+  // the user may answer the prompt or flip the System Settings toggle at
+  // any time, and the panel should update without a restart.
+  async function refreshAuth() {
+    if (!TunnelService?.GetLocationAuthStatus) return;
+    try {
+      const next = await TunnelService.GetLocationAuthStatus();
+      if (next !== locStatus) {
+        const becameAuthorized = next === 'authorized' && locStatus !== 'authorized';
+        locStatus = next;
+        if (becameAuthorized) refreshSSID();
+      }
+    } catch (_) {
+      /* keep last known state */
+    }
+  }
+
+  async function requestLocation() {
+    try {
+      locStatus = await TunnelService.RequestLocationAuth();
+    } catch (_) {
+      /* status poll will pick up the result */
+    }
+  }
+
+  async function openLocationSettings() {
+    try {
+      await TunnelService.OpenLocationSettings();
+    } catch (_) {
+      /* nothing useful to show; the button stays available */
+    }
+  }
+
   onMount(() => {
+    refreshAuth();
     refreshSSID();
     ssidTimer = setInterval(refreshSSID, 10000);
+    authTimer = setInterval(refreshAuth, 2000);
   });
 
   onDestroy(() => {
     if (ssidTimer) clearInterval(ssidTimer);
+    if (authTimer) clearInterval(authTimer);
   });
 
   function emit() {
     dispatch('change', rules);
+    // Adding or enabling a rule is the moment the SSID becomes necessary:
+    // ask for Location now (no-op natively unless never asked).
+    if (rules.enabled && locStatus === 'notDetermined') requestLocation();
   }
 
   function addTrusted() {
@@ -89,6 +133,24 @@
 </script>
 
 <div class="wifi-rules">
+  {#if rules.enabled && locStatus && locStatus !== 'authorized'}
+    <div class="loc-panel" role="status">
+      <div class="loc-head">
+        <span class="loc-dot" class:warn={locStatus === 'notDetermined'}></span>
+        <span class="loc-title">{$t('wifi_rules.loc_label')}</span>
+      </div>
+      {#if locStatus === 'notDetermined'}
+        <p class="loc-text">{$t('wifi_rules.loc_needed')}</p>
+        <button class="btn-add" on:click={requestLocation}>{$t('wifi_rules.loc_allow')}</button>
+      {:else if locStatus === 'denied'}
+        <p class="loc-text">{$t('wifi_rules.loc_denied')}</p>
+        <button class="btn-add" on:click={openLocationSettings}>{$t('wifi_rules.loc_open_settings')}</button>
+      {:else}
+        <p class="loc-text">{$t('wifi_rules.loc_restricted')}</p>
+      {/if}
+    </div>
+  {/if}
+
   <div class="ssid-banner">
     {#if currentSSID}
       <span class="ssid-label">{$t('wifi_rules.current_ssid')}:</span>
@@ -96,8 +158,13 @@
       {#if rules.enabled && !currentTrusted}
         <button class="ssid-add-btn" on:click={addCurrentToTrusted}>+ {$t('wifi_rules.add_trusted')}</button>
       {/if}
-    {:else}
+    {:else if locStatus === 'authorized' || !locStatus}
       <span class="ssid-label muted">{$t('wifi_rules.no_ssid')}</span>
+    {:else}
+      <span class="ssid-label muted">{$t('wifi_rules.loc_label')}: —</span>
+    {/if}
+    {#if locStatus === 'authorized'}
+      <span class="loc-ok" title={$t('wifi_rules.loc_label')}>{$t('wifi_rules.loc_label')}: {$t('wifi_rules.loc_granted')}</span>
     {/if}
   </div>
 
@@ -192,6 +259,44 @@
     font-size: 12px;
   }
   .ssid-label {
+    color: var(--text-secondary);
+  }
+  .loc-ok {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  .ssid-add-btn + .loc-ok { margin-left: 0; }
+  .loc-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    background: var(--bg-card);
+    border: 0.5px solid var(--border);
+    border-radius: 6px;
+  }
+  .loc-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .loc-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red, #FF3B30);
+  }
+  .loc-dot.warn { background: var(--orange, #FF9500); }
+  .loc-title {
+    font: 600 12px/16px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    color: var(--text-primary);
+  }
+  .loc-text {
+    margin: 0;
+    font: 400 12px/16px var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     color: var(--text-secondary);
   }
   .ssid-label.muted {

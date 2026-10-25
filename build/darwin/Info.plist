@@ -22,6 +22,10 @@
 	<string>1.0.68</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<key>NSLocationUsageDescription</key>
+	<string>LockPlus reads the name of your current Wi-Fi network to apply your Wi-Fi rules. macOS requires Location Services access for this. LockPlus does not track or store your location.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>LockPlus reads the name of your current Wi-Fi network to apply your Wi-Fi rules. macOS requires Location Services access for this. LockPlus does not track or store your location.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>LockPlus checks connectivity and latency to your VPN servers and DNS resolvers, which can be on your local network.</string>
 	<key>NSHighResolutionCapable</key>

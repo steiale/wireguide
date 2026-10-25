@@ -16,7 +16,9 @@ type Monitor struct {
 	onChanged SSIDChangedFunc
 	lastSSID  string
 	stopCh    chan struct{}
+	recheck   chan struct{} // buffered(1): coalesced "poll now" requests
 	running   bool
+	readSSID  func() string // CurrentSSID; swapped in tests
 }
 
 // NewMonitor creates a WiFi monitor.
@@ -24,6 +26,18 @@ func NewMonitor(rules *Rules, onChanged SSIDChangedFunc) *Monitor {
 	return &Monitor{
 		rules:     rules,
 		onChanged: onChanged,
+		recheck:   make(chan struct{}, 1),
+		readSSID:  CurrentSSID,
+	}
+}
+
+// Recheck asks the running poller to read the SSID immediately instead of
+// waiting for the next tick — used when Location authorization changes, so
+// rules start firing the moment the user grants access. Non-blocking.
+func (m *Monitor) Recheck() {
+	select {
+	case m.recheck <- struct{}{}:
+	default:
 	}
 }
 
@@ -64,7 +78,7 @@ func (m *Monitor) UpdateRules(rules *Rules) {
 // poll owns stop, so a Stop+Start can never leave the old poller reading
 // the new channel.
 func (m *Monitor) poll(stop <-chan struct{}) {
-	initial := CurrentSSID()
+	initial := m.readSSID()
 	m.mu.Lock()
 	m.lastSSID = initial
 	m.mu.Unlock()
@@ -76,19 +90,26 @@ func (m *Monitor) poll(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			current := CurrentSSID()
-			m.mu.Lock()
-			if current != m.lastSSID {
-				slog.Info("WiFi SSID changed", "from", m.lastSSID, "to", current)
-				old := m.lastSSID
-				m.lastSSID = current
-				m.mu.Unlock()
-				if m.onChanged != nil {
-					m.onChanged(old, current)
-				}
-			} else {
-				m.mu.Unlock()
-			}
+			m.check()
+		case <-m.recheck:
+			m.check()
 		}
+	}
+}
+
+// check reads the SSID and fires onChanged when it differs from the last one.
+func (m *Monitor) check() {
+	current := m.readSSID()
+	m.mu.Lock()
+	if current == m.lastSSID {
+		m.mu.Unlock()
+		return
+	}
+	slog.Info("WiFi SSID changed", "from", m.lastSSID, "to", current)
+	old := m.lastSSID
+	m.lastSSID = current
+	m.mu.Unlock()
+	if m.onChanged != nil {
+		m.onChanged(old, current)
 	}
 }

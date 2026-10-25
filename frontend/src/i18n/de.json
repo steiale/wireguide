@@ -180,7 +180,14 @@
     "ssid_placeholder": "Netzwerkname (SSID)",
     "select_tunnel": "Tunnel auswählen...",
     "current_ssid": "Aktuell verbunden mit",
-    "no_ssid": "Kein WLAN verbunden"
+    "no_ssid": "Kein WLAN verbunden",
+    "loc_label": "Ortungsdienste",
+    "loc_needed": "WLAN-Regeln benötigen Zugriff auf die Ortungsdienste, da macOS den Netzwerknamen nur berechtigten Apps verrät. LockPlus speichert deinen Standort nie.",
+    "loc_allow": "Zugriff erlauben",
+    "loc_denied": "Die Ortungsdienste sind für LockPlus deaktiviert, daher erkennen WLAN-Regeln dein Netzwerk nicht. Aktiviere LockPlus unter Ortungsdienste.",
+    "loc_restricted": "Die Ortungsdienste sind auf diesem Mac eingeschränkt (z. B. durch ein Verwaltungsprofil), daher können WLAN-Regeln nicht ausgeführt werden.",
+    "loc_open_settings": "Ortungsdienste öffnen",
+    "loc_granted": "Erlaubt"
   },
   "auth": {
     "title": "OpenVPN-Authentifizierung",

@@ -180,7 +180,14 @@
     "ssid_placeholder": "Network name (SSID)",
     "select_tunnel": "Choose tunnel...",
     "current_ssid": "Currently on",
-    "no_ssid": "Not connected to Wi-Fi"
+    "no_ssid": "Not connected to Wi-Fi",
+    "loc_label": "Location access",
+    "loc_needed": "Wi-Fi rules need Location access because macOS only reveals the network name to authorized apps. LockPlus never stores your location.",
+    "loc_allow": "Allow Access",
+    "loc_denied": "Location access is turned off for LockPlus, so Wi-Fi rules can't see which network you're on. Turn on LockPlus in Location Services.",
+    "loc_restricted": "Location access is restricted on this Mac (for example by a management profile), so Wi-Fi rules can't run.",
+    "loc_open_settings": "Open Location Settings",
+    "loc_granted": "Allowed"
   },
   "auth": {
     "title": "OpenVPN Authentication",

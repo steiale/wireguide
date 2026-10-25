@@ -180,7 +180,14 @@
     "ssid_placeholder": "ネットワーク名 (SSID)",
     "select_tunnel": "トンネルを選択…",
     "current_ssid": "現在接続中",
-    "no_ssid": "Wi-Fi に接続されていません"
+    "no_ssid": "Wi-Fi に接続されていません",
+    "loc_label": "位置情報へのアクセス",
+    "loc_needed": "macOS は許可されたアプリにのみネットワーク名を公開するため、Wi-Fi ルールには位置情報へのアクセスが必要です。LockPlus が位置情報を保存することはありません。",
+    "loc_allow": "アクセスを許可",
+    "loc_denied": "LockPlus の位置情報アクセスがオフのため、Wi-Fi ルールは接続中のネットワークを判別できません。位置情報サービスで LockPlus をオンにしてください。",
+    "loc_restricted": "この Mac では位置情報へのアクセスが制限されているため（管理プロファイルなど）、Wi-Fi ルールを実行できません。",
+    "loc_open_settings": "位置情報サービスの設定を開く",
+    "loc_granted": "許可済み"
   },
   "auth": {
     "title": "OpenVPN 認証",

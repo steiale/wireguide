@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+	"os/exec"
 	"sync/atomic"
 
 	"github.com/steiale/wireguide/internal/wifi"
@@ -60,4 +62,32 @@ func (s *TunnelService) SaveWifiRules(rules wifi.Rules) error {
 // state. The Wi-Fi Rules UI uses this for a live "Currently on:" badge.
 func (s *TunnelService) GetCurrentSSID() string {
 	return wifi.CurrentSSID()
+}
+
+// GetLocationAuthStatus returns the Location Services authorization state
+// SSID detection depends on: "notDetermined", "restricted", "denied" or
+// "authorized". Non-blocking.
+func (s *TunnelService) GetLocationAuthStatus() string {
+	return string(wifi.LocationAuthStatus())
+}
+
+// RequestLocationAuth shows the macOS Location prompt if the user has never
+// been asked (no-op otherwise) and returns the state at call time. The
+// outcome is asynchronous; poll GetLocationAuthStatus.
+func (s *TunnelService) RequestLocationAuth() string {
+	wifi.RequestLocationAuth()
+	return string(wifi.LocationAuthStatus())
+}
+
+// locationSettingsURL opens System Settings › Privacy & Security › Location
+// Services (macOS 13+ System Settings honours the legacy pane identifier).
+const locationSettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"
+
+// OpenLocationSettings opens the Location Services privacy pane so the user
+// can enable LockPlus after denying the prompt. Fixed URL, no input.
+func (s *TunnelService) OpenLocationSettings() error {
+	if err := exec.Command("/usr/bin/open", locationSettingsURL).Run(); err != nil {
+		return fmt.Errorf("open Location Services settings: %w", err)
+	}
+	return nil
 }
