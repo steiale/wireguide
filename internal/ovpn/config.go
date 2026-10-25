@@ -8,8 +8,6 @@
 package ovpn
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"strings"
 )
@@ -24,18 +22,6 @@ type OVPNConfig struct {
 	AuthUserPass bool   // true if "auth-user-pass" is present (credentials required)
 }
 
-// normalizeDirective lowercases a config-file directive and strips an
-// optional leading "--". OpenVPN itself accepts config-file directives
-// either with or without the double-dash prefix normally only seen on the
-// command line (see options.c) — it strips the prefix internally before
-// matching, so a validator that only matches bare names (as this one
-// previously did) can be bypassed entirely by prefixing a blocked directive
-// with "--", e.g. "--up /tmp/evil.sh" instead of "up /tmp/evil.sh". Both
-// forms must be checked identically here.
-func normalizeDirective(field string) string {
-	return strings.ToLower(strings.TrimPrefix(field, "--"))
-}
-
 // HasKeepaliveDirective reports whether the raw .ovpn content already
 // configures OpenVPN's own dead-peer detection — directly via
 // `ping`/`ping-restart`, or via `keepalive N M` (the shorthand OpenVPN
@@ -48,7 +34,7 @@ func normalizeDirective(field string) string {
 func HasKeepaliveDirective(data []byte) bool {
 	found := false
 	forEachTopLevelDirective(data, func(fields []string) bool {
-		switch normalizeDirective(fields[0]) {
+		switch fields[0] {
 		case "ping", "ping-restart", "keepalive":
 			found = true
 		}
@@ -70,7 +56,7 @@ func HasKeepaliveDirective(data []byte) bool {
 func HasMTUDirective(data []byte) bool {
 	found := false
 	forEachTopLevelDirective(data, func(fields []string) bool {
-		switch normalizeDirective(fields[0]) {
+		switch fields[0] {
 		case "mssfix", "fragment", "tun-mtu", "link-mtu":
 			found = true
 		}
@@ -93,7 +79,7 @@ func LegacyDataCiphers(data []byte) string {
 	var cipher string
 	explicit := false
 	forEachTopLevelDirective(data, func(fields []string) bool {
-		switch normalizeDirective(fields[0]) {
+		switch fields[0] {
 		case "data-ciphers", "ncp-ciphers":
 			explicit = true
 			return false
@@ -131,80 +117,40 @@ func isCipherName(s string) bool {
 	return true
 }
 
-// forEachTopLevelDirective calls fn with the whitespace-split fields of every
-// directive line outside inline blocks (<ca>, <key>, ...; <connection> blocks
-// are scanned since they hold real directives). Stops when fn returns false.
+// forEachTopLevelDirective calls fn with [name, args...] of every
+// non-inline directive openvpn will apply, including those inside
+// <connection> blocks, using the same tokenizer openvpn uses (see
+// parse.go). Inline blobs (<ca>, <key>, ...) are skipped. Stops when fn
+// returns false. A file that fails to parse yields no directives; callers
+// run after ValidateOVPN, which reports the parse error.
 func forEachTopLevelDirective(data []byte, fn func(fields []string) bool) {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	inInlineBlock := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		if strings.HasPrefix(line, "<") && strings.HasSuffix(line, ">") {
-			if strings.HasPrefix(line, "</") {
-				inInlineBlock = false
-			} else if strings.ToLower(line) != "<connection>" {
-				inInlineBlock = true
-			}
-			continue
-		}
-		if inInlineBlock {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if !fn(fields) {
-			return
-		}
+	ds, err := parseConfig(data)
+	if err != nil {
+		return
 	}
+	walkDirectives(ds, func(d *directive) bool {
+		if d.Inline {
+			return true
+		}
+		return fn(append([]string{d.Name}, d.Args...))
+	})
 }
 
-// ParseOVPN scans the lines of an .ovpn file for the directives LockPlus
-// needs. It is intentionally lenient: unknown directives are ignored and the
-// raw bytes are what actually gets handed to openvpn.
+// ParseOVPN extracts the directives LockPlus needs for display and kill
+// switch setup. It does not enforce the allowlist (ValidateOVPN does), but
+// uses the same tokenizer, so it sees exactly what openvpn sees.
 func ParseOVPN(data []byte) (*OVPNConfig, error) {
+	ds, err := parseConfig(data)
+	if err != nil {
+		return nil, fmt.Errorf("reading ovpn config: %w", err)
+	}
 	cfg := &OVPNConfig{}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	// .ovpn files can carry large inline cert blobs; bump the line buffer so a
-	// long base64 line doesn't trip bufio.ErrTooLong.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-	inInlineBlock := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		// <connection>...</connection> blocks are valid OpenVPN constructs that
-		// hold remote/proto directives — parse their contents normally.
-		// All other <tag>...</tag> blocks are inline blob data (ca, cert, key,
-		// tls-auth, etc.) and must be skipped entirely.
-		if strings.HasPrefix(line, "<") && strings.HasSuffix(line, ">") {
-			if strings.HasPrefix(line, "</") {
-				inInlineBlock = false
-			} else if strings.ToLower(line) != "<connection>" {
-				inInlineBlock = true
-			}
-			continue
-		}
-		if inInlineBlock {
-			continue
-		}
-
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		switch normalizeDirective(fields[0]) {
+	walkDirectives(ds, func(d *directive) bool {
+		switch d.Name {
 		case "remote":
-			if cfg.Remote == "" && len(fields) >= 2 {
-				if len(fields) >= 3 {
-					host := fields[1]
+			if cfg.Remote == "" && len(d.Args) >= 1 {
+				if len(d.Args) >= 2 {
+					host := d.Args[0]
 					if strings.Contains(host, ":") {
 						// IPv6 literal host with an explicit port — must be
 						// bracketed, or "host:port" (e.g. "2001:db8::1:1194")
@@ -217,91 +163,62 @@ func ParseOVPN(data []byte) (*OVPNConfig, error) {
 						// this being unambiguous.
 						host = "[" + host + "]"
 					}
-					cfg.Remote = host + ":" + fields[2]
+					cfg.Remote = host + ":" + d.Args[1]
 				} else {
-					cfg.Remote = fields[1]
+					cfg.Remote = d.Args[0]
 				}
 			}
 		case "proto":
-			if len(fields) >= 2 {
-				cfg.Proto = strings.ToLower(fields[1])
+			if len(d.Args) >= 1 {
+				cfg.Proto = strings.ToLower(d.Args[0])
 			}
 		case "auth-user-pass":
-			cfg.AuthUserPass = true
+			// Inline credentials are used by openvpn directly; only the
+			// bare form prompts.
+			if !d.Inline {
+				cfg.AuthUserPass = true
+			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading ovpn config: %w", err)
-	}
+		return true
+	})
 	return cfg, nil
 }
 
-// ValidateOVPN performs a minimal sanity check on an .ovpn file: it must name a
-// remote and declare itself a client. Server configs (which lack these) are
-// rejected so users don't accidentally import the wrong half of a profile.
-func ValidateOVPN(data []byte) error {
-	hasRemote := false
-	hasClient := false
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+// maxOVPNSize bounds an imported profile. Real profiles are a few KB; even
+// one with an inline PKCS#12 bundle is well under this.
+const maxOVPNSize = 1 << 20
 
-	inInlineBlock := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
+// ValidateOVPN decides whether an untrusted .ovpn may be handed to the
+// root-run openvpn binary. It parses the file exactly as openvpn does
+// (parse.go) and requires every directive — including those inside
+// <connection> blocks and behind "setenv opt" — to be on the client-safe
+// allowlist (allowlist.go). It must also name a remote and declare itself a
+// client, so server configs are refused.
+func ValidateOVPN(data []byte) error {
+	if len(data) > maxOVPNSize {
+		return fmt.Errorf("invalid .ovpn: file is larger than %d bytes", maxOVPNSize)
+	}
+	ds, err := parseConfig(data)
+	if err != nil {
+		return fmt.Errorf("invalid .ovpn: %w", err)
+	}
+	hasRemote, hasClient := false, false
+	var verr error
+	walkDirectives(ds, func(d *directive) bool {
+		if err := checkDirective(d); err != nil {
+			verr = fmt.Errorf("invalid .ovpn: line %d: %w", d.Line, err)
+			return false
 		}
-		if strings.HasPrefix(line, "<") && strings.HasSuffix(line, ">") {
-			if strings.HasPrefix(line, "</") {
-				inInlineBlock = false
-			} else if strings.ToLower(line) != "<connection>" {
-				inInlineBlock = true
-			}
-			continue
-		}
-		if inInlineBlock {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		directive := normalizeDirective(fields[0])
-		switch directive {
+		switch d.Name {
 		case "remote":
 			hasRemote = true
 		case "client", "tls-client":
 			hasClient = true
-		// Reject script and plugin directives — the helper runs openvpn as root
-		// with --script-security 1 (built-in ifconfig/route calls only, no
-		// user-defined scripts — see manager.go), so these would be inert
-		// anyway, but we also reject at import time so users get a clear
-		// error rather than a silent no-op.
-		//
-		// "iproute" is included even though script-security 1 is meant to
-		// exempt "built-in" networking calls: on iproute2-enabled openvpn
-		// builds, --iproute substitutes an ARBITRARY binary in place of the
-		// real ip/route call, which script-security 1 would still permit
-		// since it can't tell the substitute apart from the real thing. Our
-		// bundled macOS build isn't compiled with iproute2 support, so this
-		// isn't currently exploitable, but blocking the directive at import
-		// costs nothing and closes the gap if that ever changes.
-		case "up", "down", "route-up", "route-pre-down",
-			"tls-verify", "client-connect", "client-disconnect",
-			"learn-address", "ipchange", "plugin", "iproute":
-			return fmt.Errorf("invalid .ovpn: directive %q is not allowed (script/plugin execution is disabled)", directive)
-		// OpenVPN 2.7's dns-updown takes a command path (or "force" to run the
-		// compiled-in default, which runs as a built-in that --script-security 1
-		// allows). Connect overrides it with --dns-updown disable anyway; only
-		// the explicit no-op "disable" is accepted here.
-		case "dns-updown":
-			if len(fields) < 2 || strings.ToLower(fields[1]) != "disable" {
-				return fmt.Errorf("invalid .ovpn: directive %q is not allowed (script/plugin execution is disabled)", directive)
-			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("reading ovpn config: %w", err)
+		return true
+	})
+	if verr != nil {
+		return verr
 	}
 	if !hasRemote {
 		return fmt.Errorf("invalid .ovpn: no 'remote' directive found")

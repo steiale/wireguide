@@ -333,6 +333,13 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 	if err := storage.ValidateTunnelName(name); err != nil {
 		return fmt.Errorf("invalid tunnel name: %w", err)
 	}
+	// Validate at the last point before root writes and executes the
+	// profile, so every caller (IPC connect, auto-reconnect, cmd/test) is
+	// covered regardless of what it checked earlier.
+	if err := ValidateOVPN(ovpnContent); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	if _, ok := m.tunnels[name]; ok {
 		m.mu.Unlock()
@@ -381,12 +388,14 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 	// routes on macOS (that's what broke in v1.0.53), but level 1 permits
 	// exactly those built-in system calls while still refusing to execute
 	// ANY user-defined script (--up/--down/--route-up/etc). Since
-	// ValidateOVPN already rejects configs containing those directives at
-	// import time, level 1 costs us nothing functionally and closes off the
+	// ValidateOVPN's allowlist (allowlist.go) never admits those
+	// directives, level 1 costs us nothing functionally and closes off the
 	// whole class of "script directive slipped past the validator" bugs as
 	// a second, independent line of defense — level 2 would happily run a
 	// user-defined script if one ever got past ValidateOVPN (as one
-	// recently did: see normalizeDirective in config.go).
+	// previously did via a "--up" prefix). These flags come AFTER --config
+	// so they override the profile (the allowlist accepts a profile's own
+	// script-security/auth-retry/dns-updown disable on that basis).
 	//
 	// --setenv IV_SSO webauth,crtext declares to the server that this client
 	// can handle a text-based challenge-response or web-SSO redirect during
