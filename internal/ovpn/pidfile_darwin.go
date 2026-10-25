@@ -120,13 +120,27 @@ func KillStaleProcesses(runtimeDir, binaryPath string) []string {
 			continue // gone, or the pid now belongs to something else
 		}
 		slog.Warn("ovpn: killing orphaned openvpn from a previous helper", "tunnel", name, "pid", pid)
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			slog.Warn("ovpn: signalling orphaned openvpn failed", "tunnel", name, "pid", pid, "error", err)
+			continue
+		}
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) && processAlive(pid) && ours() {
 			time.Sleep(100 * time.Millisecond)
 		}
-		if processAlive(pid) && ours() {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+		switch {
+		case !processAlive(pid):
+			slog.Info("ovpn: orphaned openvpn exited on SIGTERM", "tunnel", name, "pid", pid)
+		case !ours():
+			// Our image is gone (exiting/zombie, or the pid was reused after
+			// it exited): it terminated, and the pid is never signalled again.
+			slog.Info("ovpn: orphaned openvpn exited on SIGTERM; pid no longer ours, not signalled again", "tunnel", name, "pid", pid)
+		default:
+			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+				slog.Warn("ovpn: SIGKILL of orphaned openvpn failed", "tunnel", name, "pid", pid, "error", err)
+				continue
+			}
+			slog.Warn("ovpn: orphaned openvpn ignored SIGTERM, sent SIGKILL", "tunnel", name, "pid", pid)
 		}
 		killed = append(killed, name)
 	}

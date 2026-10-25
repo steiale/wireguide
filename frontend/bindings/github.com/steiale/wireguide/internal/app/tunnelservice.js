@@ -91,8 +91,12 @@ export function Connect(name) {
 }
 
 /**
- * DeleteTunnel removes a tunnel from local storage. Rejects deletion of the
- * currently connected tunnel (would orphan the interface).
+ * DeleteTunnel removes a tunnel from local storage. Rejects deletion of a
+ * running tunnel (would orphan the interface). Otherwise it first asks the
+ * helper to Disconnect the name, which is a no-op for an idle tunnel and
+ * releases a reconnecting or kill-switch-blocked one (holds, block, kept
+ * error, pending retries): deleting it behind the helper's back would leave
+ * an invisible block-all. Fails closed if the helper is unreachable.
  * @param {string} name
  * @returns {$CancellablePromise<void>}
  */
@@ -446,8 +450,9 @@ export function ReadFile(path) {
 }
 
 /**
- * RenameTunnel changes a tunnel's name. Rejects rename of the connected
- * tunnel since the interface name is derived from it. For OpenVPN tunnels,
+ * RenameTunnel changes a tunnel's name. Rejects rename of a tunnel the
+ * helper tracks (running, reconnecting or blocked): the interface name and
+ * the helper's holds are keyed by it. For OpenVPN tunnels,
  * also migrates any Keychain-stored credentials to the new name — otherwise
  * they're silently orphaned under the old name (GetSavedCredentials(newName)
  * comes back empty, forcing the user to re-enter them, while the stale
@@ -642,7 +647,8 @@ export function TunnelExists(name) {
 
 /**
  * UpdateConfig parses, validates, and overwrites an existing tunnel's config.
- * Rejects edits of the connected tunnel. Routes to the OpenVPN path for .ovpn
+ * Rejects edits of a tunnel the helper tracks (running, reconnecting or
+ * blocked). Routes to the OpenVPN path for .ovpn
  * tunnels so the raw config is saved without WireGuard parsing.
  * @param {string} name
  * @param {string} content

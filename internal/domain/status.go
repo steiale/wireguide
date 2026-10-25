@@ -48,6 +48,13 @@ type ConnectionStatus struct {
 	// user disconnects or reconnects it, or turns the kill switch off.
 	KillSwitchBlocked bool `json:"kill_switch_blocked,omitempty"`
 
+	// Terminal is set on a status the helper keeps after the tunnel's
+	// process is gone (an OpenVPN tunnel's final error, or a kill-switch
+	// block): nothing runs under this name any more. An error state WITHOUT
+	// it belongs to a live process that may still recover (e.g. a rejected
+	// password followed by a re-prompt).
+	Terminal bool `json:"terminal,omitempty"`
+
 	// Protocol identifies the VPN backend (WireGuard or OpenVPN). Empty for
 	// legacy/WireGuard statuses; the frontend treats empty as WireGuard.
 	Protocol Protocol `json:"protocol,omitempty"`

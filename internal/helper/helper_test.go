@@ -44,18 +44,22 @@ func (f *fakeFirewall) last() firewall.Ruleset {
 func newTestHelper(t *testing.T) (*Helper, *fakeFirewall) {
 	fw := &fakeFirewall{}
 	return &Helper{
-		manager:        tunnel.NewManager(t.TempDir()),
-		firewall:       fw,
-		activeCfgs:     map[string]*domain.WireGuardConfig{},
-		activeOVPNCfgs: map[string][]byte{},
-		autoReconnect:  map[string]bool{},
-		fwHeld:         map[string]int{},
-		fwPending:      map[string]bool{},
-		fwBlocked:      map[string]domain.Protocol{},
-		fwEndpoints:    map[string]cachedEndpoints{},
-		dnsLookups:     map[string][]string{},
-		ovpnErrors:     map[string]domain.ConnectionStatus{},
-		done:           make(chan struct{}),
+		manager:         tunnel.NewManager(t.TempDir()),
+		firewall:        fw,
+		activeCfgs:      map[string]*domain.WireGuardConfig{},
+		activeOVPNCfgs:  map[string][]byte{},
+		autoReconnect:   map[string]bool{},
+		fwHeld:          map[string]int{},
+		fwPending:       map[string]bool{},
+		fwBlocked:       map[string]domain.Protocol{},
+		fwThrough:       map[string]bool{},
+		fwEndpoints:     map[string]cachedEndpoints{},
+		dnsLookups:      map[string][]string{},
+		dnsLookupRefs:   map[string]int{},
+		ovpnErrors:      map[string]domain.ConnectionStatus{},
+		ovpnDying:       map[string]bool{},
+		disconnectEpoch: map[string]uint64{},
+		done:            make(chan struct{}),
 	}, fw
 }
 
@@ -153,8 +157,8 @@ func TestOVPNErrorKeptInStatus(t *testing.T) {
 	h.recordOVPNStatus(domain.ConnectionStatus{TunnelName: "work", State: domain.StateDisconnected})
 
 	st := h.statusDTO()
-	if st.State != domain.StateError || st.ErrorMessage != "AUTH_FAILED" ||
-		len(st.Tunnels) != 1 || st.Tunnels[0].ErrorMessage != "AUTH_FAILED" {
+	if st.State != domain.StateError || st.ErrorMessage != "AUTH_FAILED" || !st.Terminal ||
+		len(st.Tunnels) != 1 || st.Tunnels[0].ErrorMessage != "AUTH_FAILED" || !st.Tunnels[0].Terminal {
 		t.Fatalf("error not reported: %+v", st)
 	}
 	if len(st.ActiveTunnels) != 0 {
@@ -182,8 +186,15 @@ func TestActiveTunnelsSkipLiveError(t *testing.T) {
 		"b": {TunnelName: "b", State: domain.StateError, ErrorMessage: "boom"},
 	}}
 	h.ovpnManager = fo
-	if st := h.statusDTO(); !reflect.DeepEqual(st.ActiveTunnels, []string{"a"}) || len(st.Tunnels) != 2 {
+	st := h.statusDTO()
+	if !reflect.DeepEqual(st.ActiveTunnels, []string{"a"}) || len(st.Tunnels) != 2 {
 		t.Fatalf("status = %+v", st)
+	}
+	// A live error is not terminal: the process may still recover.
+	for _, ts := range st.Tunnels {
+		if ts.Terminal {
+			t.Fatalf("live tunnel marked terminal: %+v", ts)
+		}
 	}
 }
 
@@ -215,6 +226,7 @@ func (f *fakeOVPN) Recycle(name string) error {
 }
 func (f *fakeOVPN) FeedCredentials(_, _, _, _ string) error { return nil }
 func (f *fakeOVPN) SetOnDied(func(string))                  {}
+func (f *fakeOVPN) SetOnDying(func(string))                 {}
 func (f *fakeOVPN) Stop()                                   {}
 func (f *fakeOVPN) IsAwaitingCredentials(string) bool {
 	f.mu.Lock()
@@ -371,7 +383,7 @@ func TestDeadTunnelBlockedUntilUserActs(t *testing.T) {
 		t.Fatalf("dead tunnel not blocked: %+v", got)
 	}
 	st := h.statusDTO()
-	if len(st.Tunnels) != 1 || !st.Tunnels[0].KillSwitchBlocked || st.Tunnels[0].State != domain.StateError ||
+	if len(st.Tunnels) != 1 || !st.Tunnels[0].KillSwitchBlocked || !st.Tunnels[0].Terminal || st.Tunnels[0].State != domain.StateError ||
 		st.Tunnels[0].Protocol != domain.ProtocolWireGuard || len(st.ActiveTunnels) != 0 {
 		t.Fatalf("blocked state not surfaced: %+v", st)
 	}

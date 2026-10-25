@@ -21,7 +21,10 @@ import (
 // error kept after its process exited (State=error, ErrorMessage set) and
 // a tunnel kept blocked by the kill switch (State=error, KillSwitchBlocked
 // set; the GUI renders its localized text from that flag) appear in Tunnels
-// only, so the GUI never counts them as connected.
+// only, so the GUI never counts them as connected. Both carry Terminal (no
+// process behind them); a live entry in an error state does not, so the GUI
+// can tell a recoverable error (e.g. a rejected password before the
+// re-prompt) from a final one.
 func (h *Helper) statusDTO() ipc.ConnectionStatus {
 	s := h.manager.Status()
 
@@ -39,6 +42,7 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 	// error so the GUI can show it.
 	for name, st := range h.ovpnErrors {
 		if present(name) < 0 {
+			st.Terminal = true // its process exited
 			extra = append(extra, st)
 		}
 	}
@@ -56,6 +60,7 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 				TunnelName:        name,
 				Protocol:          proto,
 				KillSwitchBlocked: true,
+				Terminal:          true,
 			})
 		}
 	}
@@ -113,6 +118,7 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 			Protocol:          protocol,
 			DNSServers:        ts.DNSServers,
 			KillSwitchBlocked: ts.KillSwitchBlocked,
+			Terminal:          ts.Terminal,
 		})
 		isLive := slices.ContainsFunc(live, func(l domain.ConnectionStatus) bool { return l.TunnelName == ts.TunnelName })
 		if isLive && ts.State != domain.StateError {

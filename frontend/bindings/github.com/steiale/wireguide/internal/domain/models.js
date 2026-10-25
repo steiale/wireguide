@@ -110,6 +110,18 @@ export class ConnectionStatus {
         }
         if (/** @type {any} */(false)) {
             /**
+             * Terminal is set on a status the helper keeps after the tunnel's
+             * process is gone (an OpenVPN tunnel's final error, or a kill-switch
+             * block): nothing runs under this name any more. An error state WITHOUT
+             * it belongs to a live process that may still recover (e.g. a rejected
+             * password followed by a re-prompt).
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["terminal"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * Protocol identifies the VPN backend (WireGuard or OpenVPN). Empty for
              * legacy/WireGuard statuses; the frontend treats empty as WireGuard.
              * @member
@@ -180,18 +192,18 @@ export class ConnectionStatus {
      * @returns {ConnectionStatus}
      */
     static createFrom($$source = {}) {
-        const $$createField14_0 = $$createType0;
         const $$createField15_0 = $$createType0;
-        const $$createField16_0 = $$createType2;
+        const $$createField16_0 = $$createType0;
+        const $$createField17_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("dns_servers" in $$parsedSource) {
-            $$parsedSource["dns_servers"] = $$createField14_0($$parsedSource["dns_servers"]);
+            $$parsedSource["dns_servers"] = $$createField15_0($$parsedSource["dns_servers"]);
         }
         if ("active_tunnels" in $$parsedSource) {
-            $$parsedSource["active_tunnels"] = $$createField15_0($$parsedSource["active_tunnels"]);
+            $$parsedSource["active_tunnels"] = $$createField16_0($$parsedSource["active_tunnels"]);
         }
         if ("tunnels" in $$parsedSource) {
-            $$parsedSource["tunnels"] = $$createField16_0($$parsedSource["tunnels"]);
+            $$parsedSource["tunnels"] = $$createField17_0($$parsedSource["tunnels"]);
         }
         return new ConnectionStatus(/** @type {Partial<ConnectionStatus>} */($$parsedSource));
     }

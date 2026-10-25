@@ -151,9 +151,18 @@ type Manager struct {
 	// onActiveChange fires on each transition into CONNECTED and once on
 	// teardown of a tunnel that was active; not on bytecount updates.
 	onActiveChange func(tunnelName string, active bool)
+	// onDying fires for the same deaths as onDied, BEFORE the entry is
+	// removed (still listed, still active in ActiveRemotes), so the caller
+	// can mark the tunnel held or blocked before anything sees it gone.
+	onDying func(name string)
 	// onDied fires after cleanup of an active tunnel that died without
 	// Disconnect (crash or wedged management socket).
 	onDied func(name string)
+}
+
+// SetOnDying registers the pre-removal death hook. Call before Connect.
+func (m *Manager) SetOnDying(fn func(name string)) {
+	m.onDying = fn
 }
 
 // SetOnDied registers the unexpected-death callback. Call before Connect.
@@ -275,9 +284,11 @@ func (m *Manager) start(name string, e *entry, ovpnContent []byte) (*exec.Cmd, e
 //     <connection> expansion): keeps the last authenticated remote ip:port
 //     (and skips re-resolving) across SIGUSR1/ping-restart restarts, so the
 //     CONNECTED-time remote the kill switch passes is the one reused. A
-//     multi-remote profile goes without it (it would pin a dead remote); the
-//     helper then passes all of its remotes and recycles a process stuck in
-//     its own reconnect (see the helper's OpenVPN watchdog).
+//     multi-remote profile goes without it (it would pin a dead remote, so a
+//     persist-remote-ip of its own is stripped too, see inspectProfile); the
+//     helper then passes all of its remotes and, with auto-reconnect on,
+//     recycles a process stuck in its own reconnect (see the helper's
+//     OpenVPN watchdog).
 //   - keepalive/mssfix floors only when the profile sets none, so a
 //     provider's tuned values win.
 func (m *Manager) args(cfgPath, sockPath string, p *profile) []string {
@@ -697,9 +708,9 @@ func (m *Manager) FeedCredentials(name, username, fullPassword, response string)
 func (p *profile) persistRemoteIP() bool { return len(p.cfg.Remotes) == 1 }
 
 // Recycle stops a running tunnel's openvpn as an unexpected death (not a
-// user disconnect): an active tunnel is then reported through onDied, so
-// the helper holds it and the reconnect monitor starts a fresh process, or,
-// without auto-reconnect, the kill switch keeps it blocked.
+// user disconnect): an active tunnel is then reported through onDying and
+// onDied, so the helper holds it and the reconnect monitor starts a fresh
+// process (the helper only recycles auto-reconnect tunnels).
 func (m *Manager) Recycle(name string) error {
 	return m.stop(name, false)
 }
@@ -870,23 +881,33 @@ func (m *Manager) emitStatus(name string) {
 }
 
 // cleanup removes the tunnel's entry and runtime files. An active tunnel
-// that died on its own is reported through onDied only (not
-// onActiveChange(false)): the helper then holds or blocks it in the same
-// firewall apply, instead of first dropping its pass.
+// that died on its own is reported through onDying (before the entry goes,
+// while ActiveRemotes still passes it) and onDied (last), not
+// onActiveChange(false): the helper marks it held or blocked before any
+// firewall apply can see it neither live nor held, instead of first
+// dropping its pass (or flushing the kill switch if it was the only one).
+// The death decision is taken once, up front: a Disconnect racing the
+// teardown still gets onDied after onDying, which the helper ignores for
+// a tunnel the user no longer wants.
 func (m *Manager) cleanup(name string) {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
+	died := ok && e.active && !e.userInitiated && m.onDied != nil
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	if died && m.onDying != nil {
+		m.onDying(name)
+	}
+	m.mu.Lock()
 	delete(m.tunnels, name)
 	otherDNS := false
 	for _, o := range m.tunnels {
 		otherDNS = otherDNS || o.dnsApplied
 	}
 	m.mu.Unlock()
-	if !ok {
-		return
-	}
 	defer close(e.done)
-	died := e.active && !e.userInitiated && m.onDied != nil
 	if e.active && !died && m.onActiveChange != nil {
 		m.onActiveChange(name, false)
 	}

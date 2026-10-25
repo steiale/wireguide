@@ -81,11 +81,24 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
-	// DNS lookups happen before connectMu (see preResolveConnect).
+	// DNS lookups happen before connectMu (see preResolveConnect), so a
+	// Disconnect can complete meanwhile: the epoch tells this connect it was
+	// overtaken and must not bring the tunnel up after all.
+	name := connectName(&req)
+	h.mu.Lock()
+	epoch := h.disconnectEpoch[name]
+	h.mu.Unlock()
 	resolved := h.preResolveConnect(&req)
 
 	h.connectMu.Lock()
 	defer h.connectMu.Unlock()
+	h.mu.Lock()
+	cancelled := h.disconnectEpoch[name] != epoch
+	h.mu.Unlock()
+	if cancelled {
+		slog.Info("connect cancelled by a disconnect during its endpoint lookup", "tunnel", name)
+		return nil, fmt.Errorf("connecting %q was cancelled by disconnect", name)
+	}
 
 	// An empty protocol means WireGuard.
 	if domain.NormalizeProtocol(req.Protocol) == domain.ProtocolOpenVPN {
@@ -126,7 +139,6 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	}
 
 	// Already up: a typed no-op for the GUI, without touching the cache.
-	name := req.Config.Name
 	if slices.Contains(h.manager.ActiveTunnels(), name) {
 		return nil, &ipc.CodedError{
 			Code:    ipc.ErrCodeAlreadyConnected,
@@ -162,6 +174,7 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	}
 	h.mu.Lock()
 	delete(h.fwPending, name)
+	delete(h.fwThrough, name)
 	h.mu.Unlock()
 	_ = h.applyFirewall("wg-connect")
 	return ipc.Empty{}, nil
@@ -171,36 +184,49 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 // user now reconnects) into a pending hold: everything stays blocked except
 // the tunnel's own server endpoints (IP literals, plus the hostname
 // endpoints resolved by preResolveConnect before connectMu was taken), so
-// the connect can get out. It records resolved either way (a multi-remote
+// the connect can get out. The same pending hold lets a connect through
+// while ANOTHER tunnel's block is loaded (fwThrough: e.g. Wi-Fi
+// auto-connect brings up Y while X stays blocked until Y is up); that
+// other block stays. It records resolved either way (a multi-remote
 // OpenVPN tunnel passes them while active). No DNS lookup happens here:
-// the caller holds connectMu. Returns whether a block was lifted.
+// the caller holds connectMu. Returns whether a hold was set.
 func (h *Helper) liftBlockForConnect(name string, resolved []literalEndpoint) bool {
 	h.mu.Lock()
 	_, blocked := h.fwBlocked[name]
-	if blocked {
+	through := !blocked && h.policy.killSwitch && len(h.fwBlocked) > 0
+	if blocked || through {
 		delete(h.fwBlocked, name)
 		h.fwPending[name] = true
+		if through {
+			h.fwThrough[name] = true
+		} else {
+			delete(h.fwThrough, name)
+		}
 	}
 	if len(resolved) > 0 {
 		h.storeResolvedLocked(name, resolved)
-	} else if _, hosts := h.configuredEndpointsLocked(name); blocked && len(hosts) > 0 {
+	} else if _, hosts := h.configuredEndpointsLocked(name); (blocked || through) && len(hosts) > 0 {
 		// Blocked only after preResolveConnect looked (it died meanwhile):
 		// its hostname endpoints are passed if earlier resolved, else not.
 		slog.Warn("lifting kill-switch block without fresh hostname resolution", "tunnel", name)
 	}
 	h.mu.Unlock()
-	if !blocked {
+	if !blocked && !through {
 		return false
 	}
 	_ = h.applyFirewall("connect-lift-block")
 	return true
 }
 
-// restoreBlock puts a lifted block back after the connect failed.
+// restoreBlock ends a connect's pending hold after the connect failed: a
+// lifted block comes back (under the kill switch); a connect through
+// another tunnel's block just loses its pass.
 func (h *Helper) restoreBlock(name string, proto domain.Protocol) {
 	h.mu.Lock()
 	delete(h.fwPending, name)
-	if h.policy.killSwitch {
+	through := h.fwThrough[name]
+	delete(h.fwThrough, name)
+	if h.policy.killSwitch && !through {
 		h.fwBlocked[name] = proto
 	}
 	h.mu.Unlock()
@@ -228,12 +254,16 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 	}
 	// Also clears what a dead tunnel leaves behind: its kept error and a
 	// kill-switch block. Disconnect is always the way out of those.
+	// The epoch bump cancels a connect still in its pre-resolve (see
+	// handleConnect).
 	h.mu.Lock()
+	h.disconnectEpoch[name]++
 	delete(h.activeCfgs, name)
 	delete(h.activeOVPNCfgs, name)
 	delete(h.autoReconnect, name)
 	delete(h.fwHeld, name)
 	delete(h.fwPending, name)
+	delete(h.fwThrough, name)
 	delete(h.fwBlocked, name)
 	delete(h.ovpnErrors, name)
 	h.mu.Unlock()

@@ -31,8 +31,9 @@ import (
 //     A multi-remote OpenVPN profile (no --persist-remote-ip) passes every
 //     remote while active, since openvpn may fail over to any of them in its
 //     own reconnect: IP literals plus hostname remotes resolved at connect
-//     time (no DNS window during that internal reconnect; the watchdog in
-//     helper.go recycles a process stuck there).
+//     time (no DNS window during that internal reconnect; with
+//     auto-reconnect on, the watchdog in helper.go recycles a process stuck
+//     there).
 //   - a tunnel reconnecting (held by the reconnect monitor, or pending
 //     between its death and the monitor taking over): its server endpoints
 //     (cached and configured) stay passed on any interface. While a hostname
@@ -246,6 +247,7 @@ func (h *Helper) holdFirewall(tunnelName string) error {
 	h.mu.Lock()
 	h.fwHeld[tunnelName]++
 	delete(h.fwPending, tunnelName)
+	delete(h.fwThrough, tunnelName)
 	delete(h.fwBlocked, tunnelName) // reconnecting again: endpoints passed
 	h.mu.Unlock()
 	return h.applyFirewall("reconnect-hold")
@@ -360,14 +362,29 @@ func resolveEndpoints(name string, hosts []hostPort) []literalEndpoint {
 }
 
 // openLookupWindow passes port 53 to the system resolvers (only) while
-// name's endpoints are resolved; the caller deletes dnsLookups[name] and
-// re-applies when done.
+// name's endpoints are resolved; the caller ends it with
+// closeLookupWindowLocked and re-applies when done. Windows are counted
+// per name: a connect's pre-resolve and the monitor's
+// passResolvedHostnames can overlap, and the first to finish must not close
+// the other's port 53.
 func (h *Helper) openLookupWindow(name string) {
 	resolvers := systemResolvers()
 	h.mu.Lock()
+	h.dnsLookupRefs[name]++
 	h.dnsLookups[name] = resolvers
 	h.mu.Unlock()
 	_ = h.applyFirewall("endpoint-lookup")
+}
+
+// closeLookupWindowLocked ends one lookup window of name; port 53 stays
+// passed while another one is open. Caller holds h.mu and re-applies.
+func (h *Helper) closeLookupWindowLocked(name string) {
+	if h.dnsLookupRefs[name] > 1 {
+		h.dnsLookupRefs[name]--
+		return
+	}
+	delete(h.dnsLookupRefs, name)
+	delete(h.dnsLookups, name)
 }
 
 // storeResolvedLocked records name's resolved hostname endpoints (kept if
@@ -396,7 +413,7 @@ func (h *Helper) passResolvedHostnames(name string) {
 	h.openLookupWindow(name)
 	answers := resolveEndpoints(name, hosts)
 	h.mu.Lock()
-	delete(h.dnsLookups, name)
+	h.closeLookupWindowLocked(name)
 	h.storeResolvedLocked(name, answers)
 	h.mu.Unlock()
 	_ = h.applyFirewall("reconnect-resolve")
@@ -433,34 +450,53 @@ func connectHosts(req *ipc.ConnectRequest) (name string, hosts []hostPort, multi
 	return req.Config.Name, hosts, false
 }
 
+// connectName returns the tunnel name a connect request targets ("" if it
+// has none; the connect itself rejects that).
+func connectName(req *ipc.ConnectRequest) string {
+	if domain.NormalizeProtocol(req.Protocol) == domain.ProtocolOpenVPN {
+		return req.TunnelName
+	}
+	if req.Config == nil {
+		return ""
+	}
+	return req.Config.Name
+}
+
 // preResolveConnect resolves a connect request's hostname endpoints BEFORE
 // handleConnect takes connectMu (a lookup can take seconds, and Disconnect
-// must not wait for it). Needed when the tunnel is blocked (the lifted
-// block passes only its endpoints) or is a multi-remote OpenVPN profile
-// (every remote is passed while active). Under the kill switch port 53 to
-// the system resolvers is passed for the lookup only. The caller re-checks
-// the block under connectMu (liftBlockForConnect).
+// must not wait for it). Only the kill switch needs them: when a block is
+// loaded (the tunnel's own, lifted, or another tunnel's, which the connect
+// passes through; either way only its endpoints get out) or for a
+// multi-remote OpenVPN profile (every remote is passed while active). Port
+// 53 to the system resolvers is passed for the lookup only. Skipped when
+// the kill switch is off and for a tunnel already running or connecting
+// (that connect fails as already connected). The caller re-checks the
+// block under connectMu (liftBlockForConnect).
 func (h *Helper) preResolveConnect(req *ipc.ConnectRequest) []literalEndpoint {
 	name, hosts, multi := connectHosts(req)
-	if name == "" || len(hosts) == 0 {
+	if name == "" || len(hosts) == 0 || h.tunnelRunning(name) {
 		return nil
 	}
 	h.mu.Lock()
-	_, blocked := h.fwBlocked[name]
+	anyBlock := len(h.fwBlocked) > 0 // this tunnel's or another's
 	ks := h.policy.killSwitch
 	h.mu.Unlock()
-	if !blocked && !multi {
+	if !ks || (!anyBlock && !multi) {
 		return nil
 	}
-	if ks {
-		h.openLookupWindow(name)
-	}
+	h.openLookupWindow(name)
 	answers := resolveEndpoints(name, hosts)
-	if ks {
-		h.mu.Lock()
-		delete(h.dnsLookups, name)
-		h.mu.Unlock()
-		_ = h.applyFirewall("connect-resolve")
-	}
+	h.mu.Lock()
+	h.closeLookupWindowLocked(name)
+	h.mu.Unlock()
+	_ = h.applyFirewall("connect-resolve")
 	return answers
+}
+
+// tunnelRunning reports whether name is up or connecting in either manager.
+func (h *Helper) tunnelRunning(name string) bool {
+	if h.manager != nil && slices.Contains(h.manager.ActiveTunnels(), name) {
+		return true
+	}
+	return h.ovpnManager != nil && slices.Contains(h.ovpnManager.ActiveTunnelNames(), name)
 }

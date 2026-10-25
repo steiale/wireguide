@@ -13,9 +13,12 @@ package gui
 
 import (
 	"log/slog"
+	"slices"
 	"sync"
+	"time"
 
 	wgapp "github.com/steiale/wireguide/internal/app"
+	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/storage"
 	"github.com/steiale/wireguide/internal/wifi"
 )
@@ -27,6 +30,7 @@ type wifiLifecycle struct {
 	unsubAuth     func()
 	tunnelService *wgapp.TunnelService
 	store         *storage.WifiRulesStore
+	gen           uint64 // bumped per Wi-Fi action and on stop (see releaseAfterConnected)
 }
 
 // startWifiLifecycle loads persisted rules, starts the monitor, and registers
@@ -93,6 +97,7 @@ func startWifiLifecycle(tunnelService *wgapp.TunnelService, store *storage.WifiR
 func (lc *wifiLifecycle) stop() {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
+	lc.gen++ // ends a pending releaseAfterConnected
 	if lc.monitor != nil {
 		lc.monitor.Stop()
 	}
@@ -131,16 +136,22 @@ func (lc *wifiLifecycle) handleSSIDChange(_, newSSID string) {
 // connectTunnel asks the helper to bring up the named tunnel, dispatching by
 // protocol via tunnelService.Connect (WireGuard or OpenVPN — previously this
 // loaded only the .conf path directly, so mapping an SSID to an OpenVPN
-// tunnel silently did nothing). If any OTHER tunnel is already active we
-// tear all of them down first — running extra tunnels just because the user
-// moved between SSIDs is rarely what they want.
+// tunnel silently did nothing). Other tunnels are torn down — running extra
+// tunnels just because the user moved between SSIDs is rarely what they
+// want — but only RUNNING ones before the connect. A protected one
+// (reconnecting, or blocked by the kill switch) is released only once the
+// new tunnel reports connected: releasing a block first would drop the
+// kill switch and leak until the new tunnel is up. The helper passes the
+// new tunnel's endpoints through such a block while it connects. If the
+// new tunnel never connects, the protected ones stay (fail closed).
 func (lc *wifiLifecycle) connectTunnel(name string) {
-	active, err := wgapp.ActiveTunnelNames(lc.tunnelService)
+	gen := lc.nextGen()
+	running, protected, err := wgapp.RunningAndProtectedTunnels(lc.tunnelService)
 	if err != nil {
 		slog.Warn("wifi: cannot query active tunnels — helper may be unavailable", "tunnel", name, "error", err)
 		return
 	}
-	for _, n := range active {
+	for _, n := range running {
 		if n == name {
 			continue
 		}
@@ -154,6 +165,83 @@ func (lc *wifiLifecycle) connectTunnel(name string) {
 		return
 	}
 	slog.Info("wifi: auto-connected", "tunnel", name)
+
+	var release []string
+	for _, n := range protected {
+		if n != name {
+			release = append(release, n)
+		}
+	}
+	if len(release) > 0 {
+		go lc.releaseAfterConnected(gen, name, release)
+	}
+}
+
+// wifiReleaseWait bounds how long releaseAfterConnected waits for the new
+// tunnel (an OpenVPN connect may wait on a 2FA prompt).
+const wifiReleaseWait = 3 * time.Minute
+
+// releaseAfterConnected disconnects the protected tunnels in release once
+// name reports connected, so their kill-switch block or hold only ends
+// when the new tunnel protects the traffic. Gives up (leaving them) on
+// timeout or when a newer Wi-Fi action superseded this one (gen).
+func (lc *wifiLifecycle) releaseAfterConnected(gen uint64, name string, release []string) {
+	deadline := time.Now().Add(wifiReleaseWait)
+	for {
+		if lc.currentGen() != gen {
+			return
+		}
+		if st, err := lc.tunnelService.GetStatus(); err == nil && tunnelConnected(st, name) {
+			break
+		}
+		if time.Now().After(deadline) {
+			slog.Warn("wifi: auto-connected tunnel did not connect, other tunnels left protected", "tunnel", name, "kept", release)
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	running, protected, err := wgapp.RunningAndProtectedTunnels(lc.tunnelService)
+	if err != nil || lc.currentGen() != gen {
+		return
+	}
+	for _, n := range release {
+		if !slices.Contains(running, n) && !slices.Contains(protected, n) {
+			continue // already gone
+		}
+		if err := lc.tunnelService.DisconnectTunnel(n); err != nil {
+			slog.Warn("wifi: failed to release other tunnel after auto-connect", "tunnel", n, "error", err)
+		}
+	}
+}
+
+// tunnelConnected reports whether st shows name connected.
+func tunnelConnected(st *wgapp.ConnectionStatus, name string) bool {
+	if st == nil {
+		return false
+	}
+	if st.TunnelName == name && st.State == domain.StateConnected {
+		return true
+	}
+	for _, t := range st.Tunnels {
+		if t.TunnelName == name && t.State == domain.StateConnected {
+			return true
+		}
+	}
+	return false
+}
+
+// nextGen starts a new Wi-Fi action, superseding pending releases.
+func (lc *wifiLifecycle) nextGen() uint64 {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	lc.gen++
+	return lc.gen
+}
+
+func (lc *wifiLifecycle) currentGen() uint64 {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	return lc.gen
 }
 
 // disconnectAll tears down every currently active tunnel (WireGuard AND
@@ -161,6 +249,7 @@ func (lc *wifiLifecycle) connectTunnel(name string) {
 // helper resolves to only the FIRST active tunnel, silently leaving any
 // others running and mis-recording their history sessions as closed).
 func (lc *wifiLifecycle) disconnectAll() {
+	lc.nextGen()
 	active, err := wgapp.ActiveTunnelNames(lc.tunnelService)
 	if err != nil {
 		slog.Warn("wifi: cannot query active tunnels for auto-disconnect", "error", err)

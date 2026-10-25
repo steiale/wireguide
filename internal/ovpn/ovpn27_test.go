@@ -240,3 +240,24 @@ func TestArgsAcceptedByOpenVPN(t *testing.T) {
 		t.Errorf("options error:\n%s", out)
 	}
 }
+
+// A multi-remote profile's own persist-remote-ip is blanked (it would pin a
+// dead remote); a single-remote profile keeps it.
+func TestRuntimeConfigStripsPersistRemoteIPMultiRemote(t *testing.T) {
+	multi := "client\nremote a.example 1194\nremote b.example 1194\npersist-remote-ip\nsetenv opt persist-remote-ip\nverb 3\n"
+	p, err := inspectProfile([]byte(multi))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(p.runtimeConfig([]byte(multi))), "client\nremote a.example 1194\nremote b.example 1194\n\n\nverb 3\n"; got != want {
+		t.Errorf("runtimeConfig = %q, want %q", got, want)
+	}
+	single := "client\nremote a.example 1194\npersist-remote-ip\n"
+	p, err = inspectProfile([]byte(single))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(p.runtimeConfig([]byte(single))); got != single {
+		t.Errorf("single-remote runtimeConfig = %q", got)
+	}
+}

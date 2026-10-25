@@ -90,6 +90,7 @@ func inspectProfile(data []byte) (*profile, error) {
 		lowPort                          []int // lines of "port N" with N < 1024
 		cipher                           string
 		explicitCiphers                  bool
+		persistRemote                    []int // lines of the profile's own persist-remote-ip
 	)
 	visit := func(d *directive, topLevel bool) error {
 		if err := checkDirective(d); err != nil {
@@ -147,6 +148,8 @@ func inspectProfile(data []byte) (*profile, error) {
 			if len(args) == 2 {
 				p.pullFilters = append(p.pullFilters, pullFilter{action: args[0], prefix: args[1]})
 			}
+		case "persist-remote-ip":
+			persistRemote = append(persistRemote, d.Line)
 		}
 		return nil
 	}
@@ -173,6 +176,13 @@ func inspectProfile(data []byte) (*profile, error) {
 		return nil, fmt.Errorf("invalid .ovpn: line %d: directive \"port\": binding a local port below 1024 is not allowed; use 'rport' for the server port", lowPort[0])
 	}
 	p.cfg = summarize(ds)
+	// persist-remote-ip pins the remote openvpn last reached across its own
+	// restarts, so with several remotes it never fails over from a dead one
+	// (see Manager.args, which adds it for single-remote profiles only). A
+	// multi-remote profile's own copy is blanked like user/group.
+	if len(p.cfg.Remotes) > 1 {
+		p.stripLines = append(p.stripLines, persistRemote...)
+	}
 	if !explicitCiphers {
 		p.legacyCiphers = legacyDataCiphers(cipher)
 	}

@@ -79,6 +79,7 @@ type ovpnBackend interface {
 	AllStatuses() []domain.ConnectionStatus
 	ActiveRemotes() []ovpn.RemoteEndpoint
 	Recycle(name string) error
+	SetOnDying(fn func(name string))
 	SetOnDied(fn func(name string))
 	Stop()
 }
@@ -109,10 +110,17 @@ type Helper struct {
 	fwHeld         map[string]int                     // reconnect-sequence holds per tunnel (counted)
 	fwPending      map[string]bool                    // held until a sequence or a connect takes over
 	fwBlocked      map[string]domain.Protocol         // dead tunnels kept blocked by the kill switch
+	fwThrough      map[string]bool                    // pending hold of a connect through ANOTHER tunnel's block: a failure drops it, never blocks
 	fwEndpoints    map[string]cachedEndpoints         // last known server endpoints per tunnel
 	dnsLookups     map[string][]string                // resolvers passed during a tunnel's endpoint lookup
+	dnsLookupRefs  map[string]int                     // open lookup windows per tunnel (pre-resolve and reconnect can overlap)
 	ovpnErrors     map[string]domain.ConnectionStatus // last StateError snapshot per OpenVPN tunnel
 	ovpnStuckSince map[string]time.Time               // OpenVPN watchdog: since when a tunnel is in its own reconnect
+	ovpnDying      map[string]bool                    // OpenVPN tunnels between onOVPNDying and onOVPNDied
+	// disconnectEpoch counts user Disconnects per name (bumped under
+	// connectMu): a connect that saw a different value before its
+	// pre-resolve was overtaken by a Disconnect and must not proceed.
+	disconnectEpoch map[string]uint64
 
 	// guiGone is set while no GUI control connection is open (non-daemon
 	// mode only); eventLoop then arms the shutdown timer once idle.
@@ -139,21 +147,25 @@ func Run(addr string, ownerUID int, dataDir string) error {
 
 	manager := tunnel.NewManager(dataDir)
 	h := &Helper{
-		server:         ipc.NewServer(listener, ownerUID),
-		manager:        manager,
-		firewall:       firewall.NewPlatformFirewall(),
-		activeCfgs:     make(map[string]*domain.WireGuardConfig),
-		activeOVPNCfgs: make(map[string][]byte),
-		autoReconnect:  make(map[string]bool),
-		fwHeld:         make(map[string]int),
-		fwPending:      make(map[string]bool),
-		fwBlocked:      make(map[string]domain.Protocol),
-		fwEndpoints:    make(map[string]cachedEndpoints),
-		dnsLookups:     make(map[string][]string),
-		ovpnErrors:     make(map[string]domain.ConnectionStatus),
-		ovpnStuckSince: make(map[string]time.Time),
-		logLevel:       new(slog.LevelVar), // defaults to Info
-		done:           make(chan struct{}),
+		server:          ipc.NewServer(listener, ownerUID),
+		manager:         manager,
+		firewall:        firewall.NewPlatformFirewall(),
+		activeCfgs:      make(map[string]*domain.WireGuardConfig),
+		activeOVPNCfgs:  make(map[string][]byte),
+		autoReconnect:   make(map[string]bool),
+		fwHeld:          make(map[string]int),
+		fwPending:       make(map[string]bool),
+		fwBlocked:       make(map[string]domain.Protocol),
+		fwThrough:       make(map[string]bool),
+		fwEndpoints:     make(map[string]cachedEndpoints),
+		dnsLookups:      make(map[string][]string),
+		dnsLookupRefs:   make(map[string]int),
+		ovpnErrors:      make(map[string]domain.ConnectionStatus),
+		ovpnStuckSince:  make(map[string]time.Time),
+		ovpnDying:       make(map[string]bool),
+		disconnectEpoch: make(map[string]uint64),
+		logLevel:        new(slog.LevelVar), // defaults to Info
+		done:            make(chan struct{}),
 	}
 	// Pipe every log record (including recovery below) to subscribed GUIs.
 	slog.SetDefault(slog.New(newBroadcastHandler(h.logLevel, h.server.Broadcast)))
@@ -209,6 +221,7 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	// A tunnel that dies on its own (wireguard-go fatal TUN error, openvpn
 	// crash) takes the same reconnect path as a stale handshake.
 	manager.SetOnEngineDied(h.onWireGuardEngineDied)
+	h.ovpnManager.SetOnDying(h.onOVPNDying)
 	h.ovpnManager.SetOnDied(h.onOVPNDied)
 
 	// Register RPC handlers
@@ -386,25 +399,58 @@ func (h *Helper) onWireGuardEngineDied(name string) {
 // instead of through onActiveChange(false), so the hold or block below and
 // the removal of its live pass land in one apply.
 func (h *Helper) onOVPNDied(name string) {
+	h.mu.Lock()
+	delete(h.ovpnDying, name)
+	h.mu.Unlock()
 	h.forgetOrHold(name, domain.ProtocolOpenVPN, func() { delete(h.activeOVPNCfgs, name) })
 	_ = h.applyFirewall("ovpn-died")
 	h.monitor.NotifyTunnelDied(name)
 }
 
+// onOVPNDying is the OpenVPN manager's pre-removal hook for an unexpected
+// death: it runs while the dying entry is still active (passed by
+// liveTunnels), before the manager removes it and long before onOVPNDied
+// (management close, DNS restore, file removal and the final status come
+// in between). A tunnel the user still wants gets a pending hold now, so a
+// concurrent applyFirewall in that window sees it held instead of gone and
+// never flushes the kill switch. A pending hold (unlike a block) survives
+// applies that still see the tunnel live; onOVPNDied then turns it into a
+// reconnect hold or a block, and onOVPNGone leaves it alone meanwhile.
+func (h *Helper) onOVPNDying(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, wanted := h.activeOVPNCfgs[name]
+	if !wanted || (!h.autoReconnect[name] && !h.policy.killSwitch) {
+		return // nothing to protect: dropping its pass is correct
+	}
+	h.ovpnDying[name] = true
+	h.fwPending[name] = true
+}
+
 // forgetOrHold handles a tunnel that died: held for reconnect if it has
 // auto-reconnect on, otherwise its cached state is dropped via forget
 // (called with h.mu held) and, under the kill switch, the tunnel is kept
-// blocked (fail closed) until the user disconnects or reconnects it.
+// blocked (fail closed) until the user disconnects or reconnects it. A
+// tunnel the user no longer wants (a Disconnect already cleared its cached
+// config: the death raced the Disconnect) is never blocked.
 func (h *Helper) forgetOrHold(name string, proto domain.Protocol, forget func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.autoReconnect[name] {
 		h.fwPending[name] = true
+		delete(h.fwThrough, name) // a death now: held for reconnect like any other
 		return
 	}
+	_, wantWG := h.activeCfgs[name]
+	_, wantOVPN := h.activeOVPNCfgs[name]
 	forget()
 	delete(h.autoReconnect, name)
 	delete(h.fwPending, name) // a block-lifting connect that died: blocked below, not held
+	delete(h.fwThrough, name)
+	if !wantWG && !wantOVPN {
+		slog.Info("tunnel died after the user disconnected it, not blocking", "tunnel", name)
+		return
+	}
 	if h.policy.killSwitch {
 		slog.Warn("tunnel died without auto-reconnect, kill switch keeps it blocked", "tunnel", name)
 		h.fwBlocked[name] = proto
@@ -437,10 +483,16 @@ func (h *Helper) onOVPNGone(status domain.ConnectionStatus) {
 	}
 	name := status.TunnelName
 	h.mu.Lock()
+	if h.ovpnDying[name] {
+		h.mu.Unlock()
+		return // an active tunnel's death: onOVPNDied handles its hold
+	}
 	pending := h.fwPending[name] && h.fwHeld[name] == 0
-	reblock := pending && h.policy.killSwitch
+	// A connect through another tunnel's block was never blocked itself.
+	reblock := pending && h.policy.killSwitch && !h.fwThrough[name]
 	if pending {
 		delete(h.fwPending, name)
+		delete(h.fwThrough, name)
 	}
 	if reblock {
 		h.fwBlocked[name] = domain.ProtocolOpenVPN
@@ -500,6 +552,7 @@ func (h *Helper) onOVPNActiveChange(tunnelName string, active bool) {
 		if h.ovpnInterfaceKnown(tunnelName) {
 			h.mu.Lock()
 			delete(h.fwPending, tunnelName) // a block-lifting connect made it
+			delete(h.fwThrough, tunnelName)
 			h.mu.Unlock()
 		}
 	}
@@ -601,6 +654,16 @@ func (h *Helper) startShutdownTimer() {
 			h.mu.Unlock()
 			return
 		}
+		// A GUI that reconnected (cancelShutdownTimer) or a newer timer
+		// (startShutdownTimer re-armed) supersedes this one: Stop can lose
+		// the race against a timer that already fired.
+		h.mu.Lock()
+		current := h.shutdownTimer == timer && h.guiGone
+		h.mu.Unlock()
+		if !current {
+			slog.Info("stale shutdown timer fired, ignoring")
+			return
+		}
 		slog.Info("no reconnect within grace window, shutting down")
 		h.shutdown()
 	})
@@ -647,14 +710,17 @@ func (h *Helper) shutdown() {
 // the watchdog recycles its process; a var for tests.
 var ovpnStuckTimeout = 2 * time.Minute
 
-// checkOVPNWatchdog recycles any OpenVPN tunnel stuck in openvpn's own
-// reconnect for ovpnStuckTimeout: a fresh process re-resolves hostname
-// remotes (single-remote profiles run with --persist-remote-ip and would
-// otherwise retry a stale IP forever) and multi-remote ones get every
-// remote passed under the monitor's hold. Recycle reports a death: with
-// auto-reconnect the monitor restarts it under a hold, without it the kill
-// switch keeps it blocked (fail closed). Never fires while waiting for
-// credentials. Called from eventLoop.
+// checkOVPNWatchdog recycles an OpenVPN tunnel with auto-reconnect on that
+// is stuck in openvpn's own reconnect for ovpnStuckTimeout: a fresh process
+// re-resolves hostname remotes (single-remote profiles run with
+// --persist-remote-ip and would otherwise retry a stale IP forever) and
+// multi-remote ones get every remote passed under the monitor's hold.
+// Recycle reports a death, which the monitor restarts under a hold. A
+// tunnel WITHOUT auto-reconnect is never recycled: nothing would restart
+// it, so a laptop offline for a while would lose a tunnel openvpn recovers
+// by itself once the network is back (its own reconnect keeps the kill
+// switch passing it meanwhile). Never fires while waiting for credentials.
+// Called from eventLoop.
 func (h *Helper) checkOVPNWatchdog(now time.Time) {
 	if h.ovpnManager == nil {
 		return
@@ -681,8 +747,10 @@ func (h *Helper) checkOVPNWatchdog(now time.Time) {
 	seen := make(map[string]bool, len(cands))
 	for _, c := range cands {
 		seen[c.name] = true
-		if !c.stuck || c.awaiting {
-			delete(h.ovpnStuckSince, c.name) // a credentials wait restarts the clock
+		if !c.stuck || c.awaiting || !h.autoReconnect[c.name] {
+			// A credentials wait restarts the clock; without auto-reconnect
+			// openvpn's own reconnect is left alone.
+			delete(h.ovpnStuckSince, c.name)
 			continue
 		}
 		since, ok := h.ovpnStuckSince[c.name]

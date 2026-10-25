@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -287,11 +288,12 @@ func TestMultiRemoteConnectResolves(t *testing.T) {
 	}
 }
 
-// L3 watchdog: a multi-remote tunnel stuck in openvpn's own reconnect for
-// ovpnStuckTimeout after having been CONNECTED is recycled; never while
-// awaiting credentials, never a single-remote tunnel. The death then takes
-// the reconnect path (held, every remote passed) or, without
-// auto-reconnect, the fail-closed block.
+// L3 watchdog: an auto-reconnect tunnel stuck in openvpn's own reconnect
+// for ovpnStuckTimeout after having been CONNECTED is recycled (multi- or
+// single-remote); never while awaiting credentials, never without
+// auto-reconnect (openvpn's own reconnect is left to recover it). The death
+// then takes the reconnect path (held, every remote passed); a death
+// without auto-reconnect (crash) takes the fail-closed block.
 func TestOVPNWatchdog(t *testing.T) {
 	h, fw := newTestHelper(t)
 	h.monitor = reconnect.NewMonitor(h.manager, nil, nil, reconnect.DefaultConfig())
@@ -302,6 +304,18 @@ func TestOVPNWatchdog(t *testing.T) {
 	}}
 	h.ovpnManager = fo
 	h.activeOVPNCfgs["work"] = []byte(multiProfile)
+
+	// Auto-reconnect off: never recycled, however long it is stuck.
+	h.checkOVPNWatchdog(t0)
+	h.checkOVPNWatchdog(t0.Add(time.Hour))
+	h.checkOVPNWatchdog(t0.Add(2 * time.Hour))
+	if len(fo.recycled) != 0 {
+		t.Fatalf("recycled a tunnel without auto-reconnect: %v", fo.recycled)
+	}
+	if len(h.ovpnStuckSince) != 0 {
+		t.Fatalf("clock kept without auto-reconnect: %v", h.ovpnStuckSince)
+	}
+	h.autoReconnect["work"] = true
 
 	// Awaiting credentials: never fires, and the clock restarts after.
 	fo.awaiting = true
@@ -388,4 +402,221 @@ func TestActiveTunnelsReportsProtected(t *testing.T) {
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// Item 1: a Disconnect while a connect is still in its pre-resolve (no
+// connectMu yet) wins: the connect aborts once it gets connectMu instead of
+// bringing the tunnel up.
+func TestDisconnectCancelsPreResolvingConnect(t *testing.T) {
+	h, _ := newTestHelper(t)
+	h.policy = fwPolicy{killSwitch: true}
+	h.ovpnBinary = t.TempDir()
+	fo := &fakeOVPN{statuses: map[string]domain.ConnectionStatus{}}
+	h.ovpnManager = fo
+	stubResolver(t, nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	resolveHost = func(_ context.Context, host string) ([]string, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return []string{"203.0.113.1"}, nil
+	}
+
+	params := []byte(`{"protocol":"openvpn","tunnel_name":"work","auto_reconnect":true,"ovpn_config":` + jsonString(multiProfile) + `}`)
+	result := make(chan error, 1)
+	go func() { _, err := h.handleConnect(params); result <- err }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pre-resolve did not start")
+	}
+	if _, err := h.handleDisconnect([]byte(`{"tunnel_name":"work"}`)); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	err := <-result
+	if err == nil || !strings.Contains(err.Error(), "cancelled by disconnect") {
+		t.Fatalf("connect after disconnect: %v", err)
+	}
+	if len(fo.connected) != 0 {
+		t.Fatalf("tunnel brought up after disconnect: %v", fo.connected)
+	}
+	if len(h.activeOVPNCfgs) != 0 || len(h.autoReconnect) != 0 || len(h.fwPending) != 0 || len(h.dnsLookups) != 0 {
+		t.Fatalf("state left: cfgs=%v auto=%v pending=%v lookups=%v", h.activeOVPNCfgs, h.autoReconnect, h.fwPending, h.dnsLookups)
+	}
+
+	// A connect after the disconnect completed is not affected.
+	resolveHost = func(context.Context, string) ([]string, error) { return []string{"203.0.113.1"}, nil }
+	if _, err := h.handleConnect(params); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fo.connected, []string{"work"}) {
+		t.Fatalf("connected %v", fo.connected)
+	}
+}
+
+// Item 11: a death reported after the user's Disconnect (the two raced) does
+// not re-block the tunnel the user just turned off.
+func TestDeathAfterDisconnectNotBlocked(t *testing.T) {
+	h, fw := newTestHelper(t)
+	h.monitor = reconnect.NewMonitor(h.manager, nil, nil, reconnect.DefaultConfig())
+	h.policy = fwPolicy{killSwitch: true}
+	h.ovpnManager = &fakeOVPN{statuses: map[string]domain.ConnectionStatus{}}
+	h.activeCfgs["vpn"] = &domain.WireGuardConfig{Name: "vpn"}
+	h.activeOVPNCfgs["work"] = []byte(singleProfile)
+
+	for _, name := range []string{"vpn", "work"} {
+		if _, err := h.handleDisconnect([]byte(`{"tunnel_name":"` + name + `"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.onWireGuardEngineDied("vpn")
+	h.onOVPNDying("work")
+	h.onOVPNDied("work")
+	if len(h.fwBlocked) != 0 || len(h.fwPending) != 0 || len(h.ovpnDying) != 0 {
+		t.Fatalf("blocked=%v pending=%v dying=%v", h.fwBlocked, h.fwPending, h.ovpnDying)
+	}
+	if got := fw.last(); !reflect.DeepEqual(got, firewall.Ruleset{}) {
+		t.Fatalf("ruleset = %+v", got)
+	}
+}
+
+// Item 10: between an OpenVPN tunnel's death being decided (onOVPNDying,
+// entry still live) and onOVPNDied, the manager removes the entry; an apply
+// in that window must not flush the kill switch of the only tunnel, and
+// onOVPNGone (the final status, emitted in between) must not touch it.
+func TestOVPNDyingWindowKeepsKillSwitch(t *testing.T) {
+	h, fw := newTestHelper(t)
+	h.monitor = reconnect.NewMonitor(h.manager, nil, nil, reconnect.DefaultConfig())
+	h.policy = fwPolicy{killSwitch: true}
+	fo := &fakeOVPN{
+		statuses: map[string]domain.ConnectionStatus{"work": {TunnelName: "work", State: domain.StateConnected, InterfaceName: "utun7"}},
+		remotes:  []ovpn.RemoteEndpoint{{TunnelName: "work", InterfaceName: "utun7", Proto: "udp", Addr: "203.0.113.5:1194"}},
+	}
+	h.ovpnManager = fo
+	h.activeOVPNCfgs["work"] = []byte("client\nremote 203.0.113.5 1194\n")
+	_ = h.applyFirewall("connected")
+
+	h.onOVPNDying("work")
+	_ = h.applyFirewall("concurrent-while-live") // must not clear the mark
+	fo.mu.Lock()
+	delete(fo.statuses, "work")
+	fo.remotes = nil
+	fo.mu.Unlock()
+	_ = h.applyFirewall("concurrent-after-removal")
+	got := fw.last()
+	if eps, _ := passedEndpoints(got); !got.KillSwitch || !reflect.DeepEqual(eps, []string{"udp 203.0.113.5:1194"}) {
+		t.Fatalf("death window flushed or opened the kill switch: %+v", got)
+	}
+	h.onOVPNGone(domain.ConnectionStatus{TunnelName: "work", State: domain.StateError, ErrorMessage: "boom"})
+	if !h.fwPending["work"] || len(h.fwBlocked) != 0 {
+		t.Fatalf("onOVPNGone touched a dying tunnel: pending=%v blocked=%v", h.fwPending, h.fwBlocked)
+	}
+	h.onOVPNDied("work")
+	if h.fwBlocked["work"] != domain.ProtocolOpenVPN || h.fwPending["work"] || len(h.ovpnDying) != 0 {
+		t.Fatalf("pending=%v blocked=%v dying=%v", h.fwPending, h.fwBlocked, h.ovpnDying)
+	}
+	if got := fw.last(); !reflect.DeepEqual(got, firewall.Ruleset{KillSwitch: true}) {
+		t.Fatalf("ruleset = %+v", got)
+	}
+
+	// Kill switch off and no auto-reconnect: nothing to protect, no mark.
+	h.policy.killSwitch = false
+	delete(h.fwBlocked, "work")
+	h.activeOVPNCfgs["work"] = []byte(singleProfile)
+	h.onOVPNDying("work")
+	if len(h.fwPending) != 0 || len(h.ovpnDying) != 0 {
+		t.Fatalf("marked without kill switch: pending=%v dying=%v", h.fwPending, h.ovpnDying)
+	}
+}
+
+// Item 4: overlapping lookup windows for one name are counted: the first to
+// finish keeps port 53 open for the other.
+func TestLookupWindowsRefCounted(t *testing.T) {
+	h, fw := newTestHelper(t)
+	stubResolver(t, nil)
+	h.policy = fwPolicy{killSwitch: true}
+	h.fwHeld["work"] = 1
+	h.openLookupWindow("work")
+	h.openLookupWindow("work")
+	h.mu.Lock()
+	h.closeLookupWindowLocked("work")
+	h.mu.Unlock()
+	_ = h.applyFirewall("first-done")
+	if got := fw.last().DNSLookupServers; !reflect.DeepEqual(got, []string{"192.168.1.1"}) {
+		t.Fatalf("first close shut the other's window: %v", got)
+	}
+	h.mu.Lock()
+	h.closeLookupWindowLocked("work")
+	h.mu.Unlock()
+	_ = h.applyFirewall("second-done")
+	if got := fw.last().DNSLookupServers; len(got) != 0 || len(h.dnsLookupRefs) != 0 {
+		t.Fatalf("window left open: %v refs=%v", got, h.dnsLookupRefs)
+	}
+}
+
+// Item 5: no pre-resolve without the kill switch, nor for a tunnel already
+// running or connecting.
+func TestPreResolveSkipped(t *testing.T) {
+	h, _ := newTestHelper(t)
+	calls := 0
+	stubResolver(t, nil)
+	resolveHost = func(context.Context, string) ([]string, error) { calls++; return []string{"203.0.113.1"}, nil }
+	fo := &fakeOVPN{statuses: map[string]domain.ConnectionStatus{}}
+	h.ovpnManager = fo
+	req := &ipc.ConnectRequest{Protocol: domain.ProtocolOpenVPN, TunnelName: "work", OVPNConfig: multiProfile}
+
+	if got := h.preResolveConnect(req); got != nil || calls != 0 {
+		t.Fatalf("resolved with the kill switch off: %v (%d calls)", got, calls)
+	}
+	h.policy.killSwitch = true
+	fo.statuses["work"] = domain.ConnectionStatus{TunnelName: "work", State: domain.StateConnecting}
+	if got := h.preResolveConnect(req); got != nil || calls != 0 {
+		t.Fatalf("resolved for a connecting tunnel: %v (%d calls)", got, calls)
+	}
+	delete(fo.statuses, "work")
+	if got := h.preResolveConnect(req); len(got) == 0 || calls == 0 {
+		t.Fatalf("multi-remote under the kill switch not resolved: %v", got)
+	}
+}
+
+// Item 9: with X blocked by the kill switch, connecting Y passes Y's
+// endpoints (pre-resolved hostnames included) while X's block stays; a
+// failed Y drops its pass without blocking Y.
+func TestConnectThroughOtherBlock(t *testing.T) {
+	h, fw := newTestHelper(t)
+	h.policy = fwPolicy{killSwitch: true}
+	h.ovpnBinary = t.TempDir()
+	fo := &fakeOVPN{statuses: map[string]domain.ConnectionStatus{}}
+	h.ovpnManager = fo
+	h.fwBlocked["x"] = domain.ProtocolWireGuard
+	stubResolver(t, map[string][]string{"vpn1.example.com": {"203.0.113.1"}})
+
+	params := []byte(`{"protocol":"openvpn","tunnel_name":"y","ovpn_config":` + jsonString(singleProfile) + `}`)
+	if _, err := h.handleConnect(params); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fo.connected, []string{"y"}) {
+		t.Fatalf("connected %v", fo.connected)
+	}
+	if !h.fwPending["y"] || !h.fwThrough["y"] || h.fwBlocked["x"] != domain.ProtocolWireGuard {
+		t.Fatalf("pending=%v through=%v blocked=%v", h.fwPending, h.fwThrough, h.fwBlocked)
+	}
+	got := fw.last()
+	if eps, ifaces := passedEndpoints(got); !got.KillSwitch || !reflect.DeepEqual(eps, []string{"udp 203.0.113.1:1194"}) || len(ifaces) != 0 {
+		t.Fatalf("Y not passed through X's block: %+v", got)
+	}
+
+	h.onOVPNGone(domain.ConnectionStatus{TunnelName: "y", State: domain.StateError, ErrorMessage: "TLS handshake failed"})
+	if h.fwPending["y"] || h.fwThrough["y"] {
+		t.Fatalf("pending=%v through=%v", h.fwPending, h.fwThrough)
+	}
+	if _, ok := h.fwBlocked["y"]; ok || h.fwBlocked["x"] != domain.ProtocolWireGuard {
+		t.Fatalf("blocked=%v", h.fwBlocked)
+	}
+	if got := fw.last(); !reflect.DeepEqual(got, firewall.Ruleset{KillSwitch: true}) {
+		t.Fatalf("ruleset = %+v", got)
+	}
 }

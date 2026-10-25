@@ -69,7 +69,8 @@ func init() {
 		"connect-retry-max", "connect-timeout", "server-poll-timeout",
 		"explicit-exit-notify", "sndbuf", "rcvbuf", "socket-flags", "fast-io",
 		"http-proxy-option", "allow-pull-fqdn")
-	// Persistence.
+	// Persistence. persist-remote-ip is stripped from multi-remote profiles'
+	// runtime config (see inspectProfile).
 	plain("persist-key", "persist-tun", "persist-remote-ip", "persist-local-ip")
 	// TLS / crypto policy (values only).
 	plain("remote-cert-tls", "remote-cert-ku", "remote-cert-eku", "ns-cert-type",

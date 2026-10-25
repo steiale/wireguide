@@ -454,17 +454,18 @@
   // so checking it would close the modal before the user can submit credentials).
   // While the modal is open a prompt is pending (submitting closes it), and
   // openvpn is alive waiting for the answer: an error state of a live tunnel
-  // (e.g. the previous password was rejected; it stays in active_tunnels as
-  // Connecting) never closes it — the text is shown inside so the user can
-  // retry. The prompt ends when openvpn exited: the tunnel disappears, or the
-  // helper keeps only its final error (state 'error', not in active_tunnels).
+  // (e.g. the previous password was rejected, or a transient failure) never
+  // closes it — the text is shown inside so the user can retry. Such a live
+  // error is NOT in active_tunnels, so liveness can't be read from there:
+  // the helper marks a status `terminal` only once openvpn exited and just
+  // its final error (or a kill-switch block) is kept. The prompt ends then,
+  // or when the tunnel disappears.
   $: if (showAuth && authTunnelName) {
     const tunnelStatus = ($connectionStatus?.tunnels || []).find(t => t.tunnel_name === authTunnelName);
-    const live = ($connectionStatus?.active_tunnels || []).includes(authTunnelName);
     if (tunnelStatus?.state === 'connected') {
       // Success — close silently.
       showAuth = false;
-    } else if (tunnelStatus?.state === 'error' && !live && helperReady) {
+    } else if (tunnelStatus?.state === 'error' && tunnelStatus.terminal && helperReady) {
       // Terminal failure: openvpn exited and only its error is kept.
       showAuth = false;
       authSubmittedFor = '';

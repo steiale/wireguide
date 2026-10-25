@@ -31,6 +31,17 @@ func ListTunnelsLocal(s *TunnelService) ([]TunnelInfo, error) { return s.listTun
 // each releases all of them.
 func ActiveTunnelNames(s *TunnelService) ([]string, error) { return s.trackedTunnelNames() }
 
+// RunningAndProtectedTunnels returns the helper's running tunnels and,
+// separately, the protected ones (not running: reconnecting, or blocked by
+// the kill switch). Releasing a protected one can drop the kill switch.
+func RunningAndProtectedTunnels(s *TunnelService) (running, protected []string, err error) {
+	active, err := s.activeTunnels()
+	if err != nil {
+		return nil, nil, err
+	}
+	return active.Names, active.Protected, nil
+}
+
 // ReconcileHistoryFromStatus syncs history sessions against helper status.
 func ReconcileHistoryFromStatus(s *TunnelService, activeNames []string, rxByTunnel, txByTunnel map[string]int64, disappearReason string) {
 	s.reconcileHistoryFromStatus(activeNames, rxByTunnel, txByTunnel, disappearReason)

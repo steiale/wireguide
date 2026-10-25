@@ -300,3 +300,35 @@ func TestCRV1UsesChallengeUsername(t *testing.T) {
 		}
 	}
 }
+
+// onDying runs before the dying entry is removed, while ActiveRemotes still
+// passes it, and before the final status and onDied; a user teardown gets
+// neither.
+func TestOnDyingBeforeRemoval(t *testing.T) {
+	m, spy := newTestManager(t)
+	var order []string
+	m.onDying = func(n string) {
+		spy.mu.Lock()
+		defer spy.mu.Unlock()
+		if m.GetStatus(n) == nil || len(m.ActiveRemotes()) != 1 || len(spy.died) != 0 {
+			t.Errorf("onDying ran after removal: status=%v remotes=%v died=%v", m.GetStatus(n), m.ActiveRemotes(), spy.died)
+		}
+		order = append(order, "dying")
+	}
+	e := addEntry(m, "t")
+	e.status.InterfaceName = "utun7"
+	m.onMgmtState("t", "CONNECTED", "", "203.0.113.5:1194")
+	m.cleanup("t")
+	if !slices.Equal(order, []string{"dying"}) || len(spy.died) != 1 {
+		t.Fatalf("order=%v died=%v", order, spy.died)
+	}
+
+	order = nil
+	e = addEntry(m, "u")
+	m.onMgmtState("u", "CONNECTED", "", "203.0.113.5:1194")
+	e.userInitiated = true
+	m.cleanup("u")
+	if len(order) != 0 {
+		t.Fatalf("onDying fired for a user disconnect")
+	}
+}
