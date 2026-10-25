@@ -41,7 +41,7 @@ What is deliberately NOT carried over:
 - **`LockPlus.app`**: SwiftUI + AppKit, Sparkle, hardened runtime, not sandboxed.
   - Entitlements: `com.apple.developer.system-extension.install`, NE `packet-tunnel-provider(-systemextension)`, `application-groups` `$(TeamIdentifierPrefix)<bundle-id>`.
 - **`LockPlusTunnel.systemextension`** in `Contents/Library/SystemExtensions/`: sandboxed, with `network.client`, `network.server`, the NE entitlement and the same group.
-  - `Info.plist`: `NEProviderClasses` → `com.apple.networkextension.packet-tunnel`, plus `NEMachServiceName = $(TeamIdentifierPrefix)<bundle-id>.tunnel.$(CURRENT_PROJECT_VERSION)`. The name changes with every version (see L-EXT-3).
+  - `Info.plist`: `NEProviderClasses` → `com.apple.networkextension.packet-tunnel`, plus `NEMachServiceName = $(TeamIdentifierPrefix)<bundle-id>.tunnel.v$(CURRENT_PROJECT_VERSION)`. The name changes with every version (see L-EXT-3).
   - WireGuardKit and openvpn3 are embedded **inside** the extension, with rpath `@executable_path/../Frameworks`.
 - **SPM packages:**
   - `LockPlusCore`: models, the `.conf`/`.ovpn` parsers and allowlist, the XPC protocol.
@@ -214,21 +214,21 @@ Practices:
 ## 5. Phased plan (about 77–106 developer-days after the October 2026 design review; was 65–95)
 
 0. **Done in Go (v1.1.0):** dependency upgrades, security hardening, review fixes. The Go app stays the release line until parity.
-1. **Spike (15–20 d, re-estimated in DESIGN §18, including test-server infrastructure):** an openvpn3 shim connecting BHP and AllService with CRV1/SC, plus WireGuardKit (forked, current wireguard-go) in one system extension. Answer the open questions below. **Go/no-go for OpenVPN-in-NE.**
-2. **WireGuard beta (about 20 d):**
+1. **Spike (15–20 d, DESIGN §18 P1, including test-server infrastructure):** an openvpn3 shim connecting BHP and AllService with CRV1/SC, plus WireGuardKit (forked, current wireguard-go) in one system extension. Answer the open questions below. **Go/no-go for OpenVPN-in-NE.**
+2. **WireGuard beta (24 d = DESIGN §18 P2a 6 + P2b 8 + P2c 10):**
    - Xcode project, extension activation, WG tunnel;
    - `includeAllNetworks`, `NEDNSSettings`, the two keychain stores;
    - importer from the Go app, Developer ID export and notarization, DMG, a separate cask;
    - Sparkle and the update-with-extension-replacement flow (moved here from phase 4, because the beta's N-1 → N update test needs it).
    - Coexistence: refuse to connect while the Go helper's pf anchor is loaded.
-3. **OpenVPN (20–30 d):** shim hardening, the auth UI (password, SC, CRV1), the profile allowlist port, a corpus test of the real profiles, an "unsupported directive" report at import.
-4. **UI parity (15–25 d):**
+3. **OpenVPN (20–30 d, DESIGN §18 P3):** shim hardening, the auth UI (password, SC, CRV1), the profile allowlist port, a corpus test of the real profiles, an "unsupported directive" report at import.
+4. **UI parity (13–22 d, DESIGN §18 P4; Sparkle moved to phase 2):**
    - menu bar states and rates, tunnel list and detail, editor;
    - stats (Swift Charts), history, logs (`OSLog`), export/export-all;
    - on-demand Wi-Fi rules, settings, onboarding;
    - String Catalogs (en/de/ko/ja);
    - `SMAppService.mainApp`, in-app Uninstall.
-5. **Cutover (5–10 d):** the Go app's final release runs its uninstaller (helper, pf, DNS). The native app becomes the `lockplus` cask; the old cask is retired.
+5. **Cutover (5–10 d, DESIGN §18 P5):** the Go app's final release runs its uninstaller (helper, pf, DNS). The native app becomes the `lockplus` cask; the old cask is retired.
 
 ## 6. Open questions for the spike
 
@@ -257,7 +257,8 @@ Practices:
   - confirm scope on a bare "deploy";
   - confirm every push separately;
   - run an N-1 → N upgrade test with real data;
-  - check notarization with `notarytool history`.
+  - check notarization with `notarytool history`;
+  - build, sign, notarize and EdDSA-sign releases only on the dev Mac from a fresh clone of the signed tag; CI only builds and tests and holds no signing material (DESIGN §12.4).
 - Debugging: a silent gap in the extension log during a reported freeze points at the app process. Cross-check rates against `netstat -ibn`.
 
 ## Sources
