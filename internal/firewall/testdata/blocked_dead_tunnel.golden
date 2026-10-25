@@ -1,0 +1,9 @@
+# LockPlus
+scrub in all fragment reassemble
+scrub out all fragment reassemble
+pass quick on lo0 all
+pass out quick proto udp from any port 68 to any port 67
+pass out quick proto udp from any port 546 to any port 547
+pass quick inet6 proto ipv6-icmp icmp6-type {133, 134, 135, 136}
+block drop out all
+block drop in all

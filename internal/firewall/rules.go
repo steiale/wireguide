@@ -24,7 +24,7 @@ func validatePort(port string) error {
 // enforcesDNS reports whether rs produces a DNS protection section. With no
 // known servers it is pending (nothing to allow, so blocking all DNS would
 // just break name resolution) unless a tunnel is reconnecting, in which case
-// all DNS stays blocked except an explicit AllowDNSLookup.
+// all DNS stays blocked except the DNSLookupServers.
 func (rs Ruleset) enforcesDNS() bool {
 	if !rs.DNSProtection {
 		return false
@@ -67,8 +67,11 @@ func BuildRules(rs Ruleset) (string, error) {
 		b.WriteString("scrub out all fragment reassemble\n")
 	}
 	b.WriteString("pass quick on lo0 all\n")
-	if rs.AllowDNSLookup {
-		b.WriteString("pass out quick proto {tcp, udp} to any port 53 flags any\n")
+	for _, s := range rs.DNSLookupServers {
+		if net.ParseIP(s) == nil {
+			return "", fmt.Errorf("invalid DNS lookup server IP %q", s)
+		}
+		fmt.Fprintf(&b, "pass out quick proto {tcp, udp} to %s port 53 flags any\n", s)
 	}
 
 	// DNS protection precedes the per-interface passes so it also restricts
@@ -121,6 +124,9 @@ func BuildRules(rs Ruleset) (string, error) {
 	}
 	b.WriteString("pass out quick proto udp from any port 68 to any port 67\n")
 	b.WriteString("pass out quick proto udp from any port 546 to any port 547\n")
+	// IPv6 router/neighbour solicitation and advertisement only: without
+	// ND the link's IPv6 (and DHCPv6 above) can't work.
+	b.WriteString("pass quick inet6 proto ipv6-icmp icmp6-type {133, 134, 135, 136}\n")
 	for _, ifc := range ifaces {
 		fmt.Fprintf(&b, "pass quick on %s all\n", ifc)
 	}

@@ -14,20 +14,23 @@ type KillSwitchTunnel struct {
 // Ruleset is the complete desired pf state. Every Apply rebuilds the whole
 // anchor from it; there is no incremental add/remove.
 type Ruleset struct {
-	// KillSwitch blocks everything except loopback, DHCP, the tunnels'
-	// interfaces and their endpoints.
+	// KillSwitch blocks everything except loopback, DHCP, IPv6 neighbour
+	// discovery, the tunnels' interfaces and their endpoints. With no
+	// Tunnels it blocks everything else (a dead tunnel kept fail-closed).
 	KillSwitch bool
 	Tunnels    []KillSwitchTunnel
 
 	// DNSProtection blocks port 53 except to DNSServers via a tunnel
 	// interface. Pending (no rules) while DNSServers is empty, unless a
-	// tunnel is reconnecting: then all DNS is blocked except AllowDNSLookup.
+	// tunnel is reconnecting: then all DNS is blocked except
+	// DNSLookupServers.
 	DNSProtection bool
 	DNSServers    []string
 
-	// AllowDNSLookup passes port 53 to any server. Set only while a tunnel
-	// whose endpoint is a hostname is reconnecting and must re-resolve it.
-	AllowDNSLookup bool
+	// DNSLookupServers passes port 53 to these resolvers (the system's own,
+	// on any interface). Set only for the moment a reconnecting tunnel
+	// re-resolves its hostname endpoints; never "port 53 to any".
+	DNSLookupServers []string
 }
 
 // FirewallManager loads a Ruleset into pf.

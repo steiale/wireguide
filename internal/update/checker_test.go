@@ -213,25 +213,6 @@ func serveRelease(t *testing.T, rel Release) *httptest.Server {
 	}))
 }
 
-func TestCheckForUpdate_AssetSizeZero(t *testing.T) {
-	rel := makeRelease("99.0.0", 0, false)
-	srv := serveRelease(t, rel)
-	defer srv.Close()
-
-	// Temporarily override the API endpoint by calling the server directly.
-	// We can't easily override the package-level const, so we test the
-	// validation logic through the helper below instead.
-	// The const-based CheckForUpdate always hits the real API, so we validate
-	// the size check logic directly.
-	if 0 > 0 {
-		t.Fatal("size 0 should be rejected")
-	}
-	if !(0 <= 0) {
-		t.Fatal("expected assetSize <= 0 to be true for size 0")
-	}
-	_ = srv // used to validate server setup works
-}
-
 func TestAssetSizeValidation_Zero(t *testing.T) {
 	var assetSize int64 = 0
 	if !(assetSize <= 0) {

@@ -251,6 +251,10 @@
         {@const status = getStatus(tun.name)}
         {@const isLoading = loading[tun.name]}
         {@const cardError = errors[tun.name]}
+        <!-- A dead tunnel the helper still tracks: a kept OpenVPN error, or
+             one the kill switch keeps blocked. Disconnect clears it. -->
+        {@const isFailed = !isConnected && status?.state === 'error'}
+        {@const isBlocked = isFailed && !!status?.kill_switch_blocked}
 
         <div class="tunnel-card" class:connected={isConnected} class:expanded={isExpanded}>
           <!-- Card header — always visible, click to expand -->
@@ -282,6 +286,16 @@
             <span class="card-flex"></span>
             {#if isConnected}
               <span class="card-badge">{isConnected && !hasHandshake ? $t('app.no_handshake') : $t('app.connected')}</span>
+            {:else if isBlocked}
+              <span class="card-badge card-badge-blocked">{$t('app.blocked')}</span>
+            {/if}
+            {#if isFailed}
+              <button
+                class="card-btn card-btn-disconnect"
+                disabled={isLoading}
+                on:click|stopPropagation={() => doDisconnect(tun.name)}>
+                {$t('tunnel.disconnect')}
+              </button>
             {/if}
             <button
               class="card-btn"
@@ -657,6 +671,7 @@
   .card-btn-connect { background: var(--gradient-accent); color: var(--text-inverse); }
   .card-btn-connect:hover:not(:disabled) { filter: brightness(1.1); }
   .card-btn-connect:active:not(:disabled) { filter: brightness(0.92); }
+  .card-badge-blocked { background: var(--error-bg); color: var(--red); }
   .card-btn-disconnect { background: var(--red); color: var(--text-inverse); }
   .card-btn-disconnect:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 84%, white); }
   .card-btn-disconnect:active:not(:disabled) { background: color-mix(in srgb, var(--red) 76%, black); }

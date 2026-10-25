@@ -140,6 +140,7 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	h.activeCfgs[name] = req.Config
 	h.autoReconnect[name] = req.AutoReconnect
 	h.mu.Unlock()
+	lifted := h.liftBlockForConnect(name)
 
 	if err := h.manager.Connect(req.Config); err != nil {
 		h.mu.Lock()
@@ -152,10 +153,48 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 			h.autoReconnect[name] = prevAuto
 		}
 		h.mu.Unlock()
+		if lifted {
+			h.restoreBlock(name, domain.ProtocolWireGuard)
+		}
 		return nil, err
 	}
+	h.mu.Lock()
+	delete(h.fwPending, name)
+	h.mu.Unlock()
 	_ = h.applyFirewall("wg-connect")
 	return ipc.Empty{}, nil
+}
+
+// liftBlockForConnect turns a kill-switch block on name (a dead tunnel the
+// user now reconnects) into a pending hold: everything stays blocked except
+// the tunnel's own server endpoints, resolved first if they are hostnames,
+// so the connect can get out. Returns whether a block was lifted. Caller
+// holds connectMu.
+func (h *Helper) liftBlockForConnect(name string) bool {
+	h.mu.Lock()
+	_, blocked := h.fwBlocked[name]
+	if blocked {
+		delete(h.fwBlocked, name)
+		h.fwPending[name] = true
+	}
+	h.mu.Unlock()
+	if !blocked {
+		return false
+	}
+	h.passResolvedHostnames(name)
+	_ = h.applyFirewall("connect-lift-block")
+	return true
+}
+
+// restoreBlock puts a lifted block back after the connect failed.
+func (h *Helper) restoreBlock(name string, proto domain.Protocol) {
+	h.mu.Lock()
+	delete(h.fwPending, name)
+	if h.policy.killSwitch {
+		h.fwBlocked[name] = proto
+	}
+	h.mu.Unlock()
+	_ = h.applyFirewall("connect-failed")
 }
 
 func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
@@ -177,11 +216,16 @@ func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
 	if h.monitor != nil {
 		h.monitor.CancelRetry(name)
 	}
+	// Also clears what a dead tunnel leaves behind: its kept error and a
+	// kill-switch block. Disconnect is always the way out of those.
 	h.mu.Lock()
 	delete(h.activeCfgs, name)
 	delete(h.activeOVPNCfgs, name)
 	delete(h.autoReconnect, name)
 	delete(h.fwHeld, name)
+	delete(h.fwPending, name)
+	delete(h.fwBlocked, name)
+	delete(h.ovpnErrors, name)
 	h.mu.Unlock()
 
 	var err error
@@ -239,25 +283,43 @@ func (h *Helper) handleSetKillSwitch(params json.RawMessage) (interface{}, error
 		return nil, err
 	}
 	h.mu.Lock()
+	prev := h.policy.killSwitch
 	h.policy.killSwitch = req.Enabled
+	var unblocked map[string]domain.Protocol
+	if !req.Enabled && len(h.fwBlocked) > 0 {
+		// Turning the kill switch off releases every blocked tunnel.
+		unblocked, h.fwBlocked = h.fwBlocked, make(map[string]domain.Protocol)
+	}
 	h.mu.Unlock()
 	if err := h.applyFirewall("policy"); err != nil {
+		// The old rules are still loaded: keep the policy matching them, so
+		// the GUI's rollback and the helper agree.
+		h.mu.Lock()
+		h.policy.killSwitch = prev
+		for name, proto := range unblocked {
+			h.fwBlocked[name] = proto
+		}
+		h.mu.Unlock()
 		return nil, err
 	}
 	return ipc.Empty{}, nil
 }
 
 // handleSetDNSProtection sets the DNS protection policy. The allowed
-// servers are derived from the active tunnels; req.DNSServers is ignored.
+// servers are derived from the active tunnels.
 func (h *Helper) handleSetDNSProtection(params json.RawMessage) (interface{}, error) {
 	var req ipc.DNSProtectionRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
 	h.mu.Lock()
+	prev := h.policy.dnsProtection
 	h.policy.dnsProtection = req.Enabled
 	h.mu.Unlock()
 	if err := h.applyFirewall("policy"); err != nil {
+		h.mu.Lock()
+		h.policy.dnsProtection = prev // see handleSetKillSwitch
+		h.mu.Unlock()
 		return nil, err
 	}
 	return ipc.Empty{}, nil
@@ -318,18 +380,24 @@ func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
 	}
 
 	// Cached for the reconnect monitor, as on the WireGuard path. A new
-	// attempt clears the previous error.
+	// attempt clears the previous error. A kill-switch block on this tunnel
+	// becomes a pending hold until it is CONNECTED (onOVPNActiveChange) or
+	// fails (onOVPNGone puts the block back).
 	h.mu.Lock()
 	delete(h.ovpnErrors, req.TunnelName)
 	h.activeOVPNCfgs[req.TunnelName] = []byte(req.OVPNConfig)
 	h.autoReconnect[req.TunnelName] = req.AutoReconnect
 	h.mu.Unlock()
+	lifted := h.liftBlockForConnect(req.TunnelName)
 
 	if err := h.ovpnManager.Connect(req.TunnelName, []byte(req.OVPNConfig)); err != nil {
 		h.mu.Lock()
 		delete(h.activeOVPNCfgs, req.TunnelName)
 		delete(h.autoReconnect, req.TunnelName)
 		h.mu.Unlock()
+		if lifted {
+			h.restoreBlock(req.TunnelName, domain.ProtocolOpenVPN)
+		}
 		return nil, err
 	}
 	return ipc.Empty{}, nil

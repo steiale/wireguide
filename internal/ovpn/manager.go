@@ -3,6 +3,7 @@ package ovpn
 import (
 	"bufio"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +29,14 @@ var (
 	ifaceLogRe  = regexp.MustCompile(`(?i)opened \S+ device (\S+)`)
 )
 
+// ErrAlreadyActive is returned by Connect when the tunnel already has a
+// running openvpn (connected, reconnecting or still tearing down).
+var ErrAlreadyActive = errors.New("openvpn tunnel already active")
+
+// stopWait bounds how long Stop waits for every tunnel's teardown (DNS
+// restore, runtime files) before killing what is left.
+const stopWait = 5 * time.Second
+
 // authReply carries what FeedCredentials passes to a blocked auth prompt.
 type authReply struct {
 	username string
@@ -43,6 +52,7 @@ type entry struct {
 	prof     *profile
 	authCh   chan authReply // buffered(1)
 	scanDone chan struct{}  // closed when scanOutput has drained stdout
+	done     chan struct{}  // closed when cleanup has finished
 
 	// active is set once onActiveChange(true) fired and stays set through
 	// RECONNECTING, so teardown always revokes the kill-switch pass and a
@@ -71,6 +81,21 @@ type entry struct {
 	remoteProto string // "udp" | "tcp"
 
 	userInitiated bool // set by Disconnect: not a death worth reconnecting
+}
+
+func newEntry(name string, prof *profile) *entry {
+	return &entry{
+		prof:     prof,
+		authCh:   make(chan authReply, 1),
+		closeCh:  make(chan struct{}),
+		scanDone: make(chan struct{}),
+		done:     make(chan struct{}),
+		status: domain.ConnectionStatus{
+			State:      domain.StateConnecting,
+			TunnelName: name,
+			Protocol:   domain.ProtocolOpenVPN,
+		},
+	}
 }
 
 // RemoteEndpoint is one connected tunnel's remote, for the kill switch.
@@ -152,6 +177,7 @@ func NewManager(binaryPath, runtimeDir string, onStatus func(domain.ConnectionSt
 
 func (m *Manager) configPath(name string) string { return filepath.Join(m.runtimeDir, name+".ovpn") }
 func (m *Manager) sockPath(name string) string   { return filepath.Join(m.runtimeDir, name+".mgmt.sock") }
+func (m *Manager) pidPath(name string) string    { return filepath.Join(m.runtimeDir, name+pidSuffix) }
 
 // Connect starts a tunnel from raw .ovpn content and returns once openvpn is
 // running; CONNECTED and auth prompts arrive via the callbacks.
@@ -172,22 +198,12 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 		return fmt.Errorf("openvpn binary not found at %q: %w", m.binaryPath, err)
 	}
 
-	e := &entry{
-		prof:     prof,
-		authCh:   make(chan authReply, 1),
-		closeCh:  make(chan struct{}),
-		scanDone: make(chan struct{}),
-		status: domain.ConnectionStatus{
-			State:      domain.StateConnecting,
-			TunnelName: name,
-			Protocol:   domain.ProtocolOpenVPN,
-		},
-	}
+	e := newEntry(name, prof)
 	// Reserve the name before any slow work so two Connects can't both start.
 	m.mu.Lock()
 	if _, ok := m.tunnels[name]; ok {
 		m.mu.Unlock()
-		return fmt.Errorf("openvpn tunnel %q already active", name)
+		return fmt.Errorf("%w: %q", ErrAlreadyActive, name)
 	}
 	m.tunnels[name] = e
 	m.mu.Unlock()
@@ -197,6 +213,7 @@ func (m *Manager) Connect(name string, ovpnContent []byte) error {
 		m.mu.Lock()
 		delete(m.tunnels, name)
 		m.mu.Unlock()
+		close(e.done)
 		return err
 	}
 	m.mu.Lock()
@@ -236,6 +253,10 @@ func (m *Manager) start(name string, e *entry, ovpnContent []byte) (*exec.Cmd, e
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting openvpn: %w", err)
 	}
+	// Lets the next helper kill this openvpn if we die without cleanup.
+	if err := writePIDFile(m.pidPath(name), cmd.Process.Pid); err != nil {
+		slog.Warn("ovpn: writing pid file failed", "tunnel", name, "error", err)
+	}
 	go m.scanOutput(name, e, stdout)
 	return cmd, nil
 }
@@ -250,6 +271,9 @@ func (m *Manager) start(name string, e *entry, ovpnContent []byte) (*exec.Cmd, e
 //     required for CRV1 (the challenge arrives as a failure).
 //   - --persist-tun keeps the same utun across restarts so the kill-switch
 //     rule stays valid.
+//   - --persist-remote-ip keeps the last authenticated remote ip:port (and
+//     skips re-resolving) across SIGUSR1/ping-restart restarts, so the
+//     CONNECTED-time remote the kill switch passes is the one reused.
 //   - keepalive/mssfix floors only when the profile sets none, so a
 //     provider's tuned values win.
 func (m *Manager) args(cfgPath, sockPath string, p *profile) []string {
@@ -262,6 +286,7 @@ func (m *Manager) args(cfgPath, sockPath string, p *profile) []string {
 		"--dns-updown", "disable",
 		"--auth-retry", "interact",
 		"--persist-tun",
+		"--persist-remote-ip",
 		"--verb", p.runtimeVerb(),
 	}
 	if !p.hasKeepalive {
@@ -315,6 +340,10 @@ func (t *tunnelEvents) authPrompt(sc *AuthChallenge)    { t.m.onMgmtAuthPrompt(t
 func (t *tunnelEvents) dynamicChallenge(ch *AuthChallenge) {
 	t.m.onMgmtDynamicChallenge(t.name, t.e, ch)
 }
+func (t *tunnelEvents) authFailed(msg string) {
+	slog.Warn("ovpn: credentials rejected, waiting for re-prompt", "tunnel", t.name, "error", msg)
+	t.m.onMgmtAuthFailed(t.name, msg)
+}
 func (t *tunnelEvents) failure(msg string, terminate bool) {
 	slog.Warn("ovpn: tunnel error", "tunnel", t.name, "error", msg)
 	t.m.fail(t.name, msg, terminate)
@@ -347,9 +376,24 @@ func (m *Manager) scanOutput(name string, e *entry, r io.Reader) {
 			}
 		default:
 			if mm := ifaceLogRe.FindStringSubmatch(line); mm != nil {
-				m.update(name, func(e *entry) { e.status.InterfaceName = mm[1] })
+				m.setInterface(name, mm[1])
 			}
 		}
+	}
+}
+
+// setInterface records the utun name scraped from stdout. It can arrive
+// after CONNECTED (another goroutine reads the management socket); an
+// active tunnel then gets its firewall pass re-applied, since the apply at
+// CONNECTED had to skip it.
+func (m *Manager) setInterface(name, iface string) {
+	var reapply bool
+	m.update(name, func(e *entry) {
+		reapply = e.active && e.status.InterfaceName == ""
+		e.status.InterfaceName = iface
+	})
+	if reapply && m.onActiveChange != nil {
+		m.onActiveChange(name, true)
 	}
 }
 
@@ -488,10 +532,25 @@ func (m *Manager) onMgmtBytes(name string, rx, tx int64) {
 	})
 }
 
+// onMgmtAuthFailed handles "Verification Failed: 'Auth'". With
+// --auth-retry interact openvpn restarts and asks again, so this is not
+// terminal: the state stays Connecting and the text is only carried as the
+// error message, for the re-prompt to show.
+func (m *Manager) onMgmtAuthFailed(name, msg string) {
+	m.update(name, func(e *entry) {
+		e.status.ErrorMessage = msg
+		if e.errMsg == "" && e.status.State == domain.StateError {
+			e.status.State = domain.StateConnecting
+		}
+	})
+}
+
 // onMgmtAuthPrompt handles Need 'Auth': notify the GUI and block the read
 // loop until FeedCredentials, Disconnect or a timeout. A pending CRV1
 // challenge means this is the auth-retry it triggered; the GUI already has
-// that prompt open, so it isn't re-notified.
+// that prompt open, so it isn't re-notified. A prompt means openvpn is alive
+// and retrying, so any earlier error stops being the tunnel's state (its
+// text stays as the error message).
 func (m *Manager) onMgmtAuthPrompt(name string, e *entry, sc *AuthChallenge) {
 	slog.Info("ovpn: server requesting credentials", "tunnel", name)
 
@@ -501,7 +560,12 @@ func (m *Manager) onMgmtAuthPrompt(name string, e *entry, sc *AuthChallenge) {
 		challenge, notifyGUI = e.pendingChallenge, false
 	}
 	e.awaitingCredentials = true
+	e.errMsg = ""
+	if e.status.State == domain.StateError {
+		e.status.State = domain.StateConnecting
+	}
 	m.mu.Unlock()
+	m.emitStatus(name)
 
 	if notifyGUI {
 		// A stale reply (e.g. an expired TOTP from a timed-out prompt) would
@@ -623,12 +687,22 @@ func (m *Manager) FeedCredentials(name, username, fullPassword, response string)
 
 // Disconnect asks openvpn to exit; supervise reaps and cleans up.
 func (m *Manager) Disconnect(name string) error {
+	return m.stop(name, true)
+}
+
+// stop asks openvpn to exit. user marks the teardown as the user's own, so
+// it is not reported as an unexpected death; a terminal failure (fail) stops
+// with user=false, so an active tunnel that fails is still a death that the
+// kill switch and reconnect logic react to.
+func (m *Manager) stop(name string, user bool) error {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
 	var mgmt *mgmtClient
 	var cmd *exec.Cmd
 	if ok {
-		e.userInitiated = true
+		if user {
+			e.userInitiated = true
+		}
 		mgmt, cmd = e.mgmt, e.cmd
 	}
 	m.mu.Unlock()
@@ -703,10 +777,48 @@ func (m *Manager) ActiveRemotes() []RemoteEndpoint {
 	return out
 }
 
-// Stop disconnects every tunnel (helper shutdown).
+// Stop disconnects every tunnel (helper shutdown) and waits, up to
+// stopWait, for each teardown (DNS restore, runtime files) to finish, so
+// the caller's own cleanup and exit run after it. Stragglers are killed.
+// Finally the DNS route monitor is stopped.
 func (m *Manager) Stop() {
-	for _, name := range m.ActiveTunnelNames() {
+	m.mu.Lock()
+	entries := make(map[string]*entry, len(m.tunnels))
+	for name, e := range m.tunnels {
+		entries[name] = e
+	}
+	m.mu.Unlock()
+	for name := range entries {
 		_ = m.Disconnect(name)
+	}
+	deadline := time.Now().Add(stopWait)
+	for name, e := range entries {
+		select {
+		case <-e.done:
+			continue
+		case <-time.After(time.Until(deadline)):
+		}
+		slog.Warn("ovpn: teardown did not finish in time, killing openvpn", "tunnel", name)
+		m.mu.Lock()
+		cmd := e.cmd
+		m.mu.Unlock()
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		select {
+		case <-e.done:
+		case <-time.After(time.Second):
+		}
+	}
+	m.stopDNSMonitor()
+}
+
+// stopDNSMonitor stops the route monitor SetDNS started on the shared
+// netMgr (it re-applies DNS on network changes); a later SetDNS starts a
+// fresh one.
+func (m *Manager) stopDNSMonitor() {
+	if s, ok := m.netMgr.(interface{ StopMonitor() }); ok {
+		s.StopMonitor()
 	}
 }
 
@@ -719,7 +831,7 @@ func (m *Manager) fail(name, msg string, terminate bool) {
 		e.status.ErrorMessage = msg
 	})
 	if terminate {
-		_ = m.Disconnect(name)
+		_ = m.stop(name, false)
 	}
 }
 
@@ -738,16 +850,25 @@ func (m *Manager) emitStatus(name string) {
 	m.onStatus(s)
 }
 
-// cleanup removes the tunnel's entry and runtime files.
+// cleanup removes the tunnel's entry and runtime files. An active tunnel
+// that died on its own is reported through onDied only (not
+// onActiveChange(false)): the helper then holds or blocks it in the same
+// firewall apply, instead of first dropping its pass.
 func (m *Manager) cleanup(name string) {
 	m.mu.Lock()
 	e, ok := m.tunnels[name]
 	delete(m.tunnels, name)
+	otherDNS := false
+	for _, o := range m.tunnels {
+		otherDNS = otherDNS || o.dnsApplied
+	}
 	m.mu.Unlock()
 	if !ok {
 		return
 	}
-	if e.active && m.onActiveChange != nil {
+	defer close(e.done)
+	died := e.active && !e.userInitiated && m.onDied != nil
+	if e.active && !died && m.onActiveChange != nil {
 		m.onActiveChange(name, false)
 	}
 	if e.mgmt != nil {
@@ -757,9 +878,13 @@ func (m *Manager) cleanup(name string) {
 		if err := m.netMgr.RestoreDNS(name); err != nil {
 			slog.Warn("ovpn: failed to restore DNS", "tunnel", name, "error", err)
 		}
+		if !otherDNS {
+			m.stopDNSMonitor()
+		}
 	}
 	_ = os.Remove(m.sockPath(name))
 	_ = os.Remove(m.configPath(name))
+	_ = os.Remove(m.pidPath(name))
 
 	final := domain.ConnectionStatus{State: domain.StateDisconnected, TunnelName: name, Protocol: domain.ProtocolOpenVPN}
 	if e.errMsg != "" {
@@ -770,7 +895,7 @@ func (m *Manager) cleanup(name string) {
 	}
 	// Last: onDied may synchronously reconnect under the same name, so files
 	// and DNS of this instance must already be gone.
-	if e.active && !e.userInitiated && m.onDied != nil {
+	if died {
 		slog.Warn("ovpn: tunnel died unexpectedly", "tunnel", name)
 		m.onDied(name)
 	}

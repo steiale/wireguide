@@ -452,17 +452,18 @@
   // Auto-close the auth modal once the tunnel it was opened for is fully
   // connected (not just connecting — active_tunnels includes connecting tunnels,
   // so checking it would close the modal before the user can submit credentials).
+  // While the modal is open a prompt is pending (submitting closes it), and
+  // openvpn is alive waiting for the answer: an error state (e.g. the
+  // previous password was rejected) never closes it — the text is shown
+  // inside so the user can retry. Only the tunnel disappearing (openvpn
+  // exited: timeout, unsupported web auth) ends the prompt.
   $: if (showAuth && authTunnelName) {
     const tunnelStatus = ($connectionStatus?.tunnels || []).find(t => t.tunnel_name === authTunnelName);
     if (tunnelStatus?.state === 'connected') {
       // Success — close silently.
       showAuth = false;
-    } else if (tunnelStatus?.state === 'error') {
-      // Tunnel errored out (e.g. credential timeout, unsupported web auth) —
-      // close and say why.
-      showAuth = false;
-      authSubmittedFor = '';
-      showToast(tunnelStatus.error_message || $t('toast.ovpn_lost'));
+    } else if (tunnelStatus?.state === 'error' && tunnelStatus.error_message && !authError) {
+      authError = tunnelStatus.error_message;
     } else if (!tunnelStatus && helperReady) {
       // Tunnel disappeared from the status list after the helper was ready,
       // meaning the entry we were waiting on was cleaned up (timeout/death).

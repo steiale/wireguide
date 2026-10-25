@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -323,4 +324,50 @@ func splitDNSEntries(entries []string) (servers, search []string) {
 		}
 	}
 	return
+}
+
+// resolvConfPath is a var so tests can point it at a fixture.
+var resolvConfPath = "/etc/resolv.conf"
+
+// SystemResolvers returns the resolvers the system queries right now (the
+// "nameserver" lines of /etc/resolv.conf, which macOS keeps in sync with the
+// primary service's DNS), validated as IP literals with any %zone dropped.
+// If none can be read, it falls back to the pre-tunnel baseline captured by
+// SetDNS. Used to open port 53 to exactly these servers, briefly, while a
+// reconnecting tunnel re-resolves its endpoint.
+func SystemResolvers() []string {
+	out := parseResolvConf(resolvConfPath)
+	if len(out) > 0 {
+		return out
+	}
+	dnsMu.Lock()
+	defer dnsMu.Unlock()
+	for _, servers := range dnsSavedDNS {
+		for _, s := range servers {
+			if ip := net.ParseIP(s); ip != nil && !slices.Contains(out, ip.String()) {
+				out = append(out, ip.String())
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func parseResolvConf(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] != "nameserver" {
+			continue
+		}
+		host, _, _ := strings.Cut(f[1], "%")
+		if ip := net.ParseIP(host); ip != nil && !slices.Contains(out, ip.String()) {
+			out = append(out, ip.String())
+		}
+	}
+	return out
 }

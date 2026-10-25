@@ -116,7 +116,7 @@ func (lc *wifiLifecycle) handleSSIDChange(_, newSSID string) {
 		return
 	}
 	action, tunnelName := rules.Action(newSSID)
-	slog.Info("wifi: SSID change action", "ssid", newSSID, "action", action, "tunnel", tunnelName)
+	slog.Info("wifi: SSID change action", "ssid", wifi.SSIDTag(newSSID), "action", action, "tunnel", tunnelName)
 
 	switch action {
 	case "disconnect":

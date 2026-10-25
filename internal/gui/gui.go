@@ -349,12 +349,14 @@ func bootstrapHelper(app *application.App, clients *ipc.ClientHolder, bridge *ev
 		return
 	}
 
-	// Install the new client and re-subscribe the event bridge. Resubscribe
-	// (capitalised) emits "helper_reset" so the frontend reloads tunnel state
-	// from a fresh helper.
+	// Push the persisted policy BEFORE installing the client: until Set, no
+	// tray, Wi-Fi rule or frontend connect can reach this helper, so none
+	// can slip in under the helper's default (kill switch off) policy.
+	// Resubscribe (capitalised) then emits "helper_reset" so the frontend
+	// reloads tunnel state from a fresh helper.
+	pushPersistedSettings(newClient, settingsStore)
 	clients.Set(newClient)
 	bridge.Resubscribe()
-	pushPersistedSettings(newClient, settingsStore)
 
 	// Notify the frontend that helper IPC is now available. App.svelte uses
 	// this to dismiss the connecting toast.
@@ -363,10 +365,10 @@ func bootstrapHelper(app *application.App, clients *ipc.ClientHolder, bridge *ev
 }
 
 // pushPersistedSettings sends the helper-side settings (log level, kill
-// switch and DNS protection policy) to a freshly connected helper. Called
-// after the initial bootstrap and after every recovery: a restarted helper
-// starts from its defaults, and the persisted settings are the source of
-// truth.
+// switch and DNS protection policy, health check, interface pinning) to a
+// freshly connected helper. Called after the initial bootstrap and after
+// every recovery, before the client is installed: a restarted helper starts
+// from its defaults, and the persisted settings are the source of truth.
 func pushPersistedSettings(c *ipc.Client, settingsStore *storage.SettingsStore) {
 	s, err := settingsStore.Load()
 	if err != nil || s == nil {
@@ -378,5 +380,11 @@ func pushPersistedSettings(c *ipc.Client, settingsStore *storage.SettingsStore) 
 	}
 	if err := wgapp.PushFirewallPolicy(c, s); err != nil {
 		slog.Warn("pushing firewall policy to helper failed", "error", err)
+	}
+	if err := c.Call(ipc.MethodSetHealthCheck, ipc.SetHealthCheckRequest{Enabled: s.HealthCheck}, nil); err != nil {
+		slog.Warn("pushing health check setting to helper failed", "error", err)
+	}
+	if err := c.Call(ipc.MethodSetPinInterface, ipc.SetPinInterfaceRequest{Enabled: s.PinInterface}, nil); err != nil {
+		slog.Warn("pushing pin-interface setting to helper failed", "error", err)
 	}
 }

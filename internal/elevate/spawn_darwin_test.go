@@ -22,7 +22,7 @@ func TestInstallScriptVerifiesSignatures(t *testing.T) {
 		if cp < 0 || verify < cp || chmod < verify || mv < chmod {
 			t.Errorf("%s: want root-only copy, then verify, then chmod 755, then mv (cp=%d verify=%d chmod=%d mv=%d)", dst, cp, verify, chmod, mv)
 		}
-		if !strings.Contains(script, "/bin/rm -f "+tmp+`; echo "SIGNATURE_INVALID`) {
+		if !strings.Contains(script, "/bin/rm -f "+tmp+`; echo SIGNATURE_INVALID`) {
 			t.Errorf("signature failure for %s must delete the copy and emit SIGNATURE_INVALID", dst)
 		}
 	}
@@ -96,5 +96,62 @@ func TestInterpretInstallOutput(t *testing.T) {
 	}
 	if err := interpretInstallOutput("INSTALL_OK", nil); err != nil {
 		t.Fatalf("want nil, got %v", err)
+	}
+}
+
+// hostileDir is a bundle directory name that would run commands if it were
+// ever expanded by the shell: command substitution, backticks, both quote
+// kinds and spaces.
+const hostileDir = `Lock Plus $(touch PWNED1) ` + "`touch PWNED2`" + ` "q" 'q' ${HOME}`
+
+// A user-controlled bundle path must stay inert everywhere in the root
+// install script: the script parses, the raw path never appears outside a
+// single-quoted shellQuote form, and running the snippets (as the test user,
+// against scratch files) executes nothing from it.
+func TestInstallScriptQuotesHostilePath(t *testing.T) {
+	work := t.TempDir()
+	bundle := filepath.Join(work, hostileDir, "Contents", "MacOS")
+	if err := os.MkdirAll(bundle, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(bundle, "lockplus-helper")
+	ovpn := filepath.Join(bundle, "openvpn")
+	script := buildInstallScript(exe, "cGxpc3Q=")
+
+	if out, err := exec.Command("/bin/sh", "-n", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("install script has a shell syntax error: %v\n%s", err, out)
+	}
+	stripped := script
+	for _, p := range []string{exe, ovpn} {
+		stripped = strings.ReplaceAll(stripped, shellQuote(p), "")
+	}
+	if strings.Contains(stripped, hostileDir) {
+		t.Fatalf("bundle path interpolated without shellQuote:\n%s", stripped)
+	}
+
+	// Symlink refusal and signature failure paths both echo a marker; run
+	// them for real against hostile scratch paths.
+	if err := os.Symlink("/etc/hosts", exe); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ovpn, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, snippet := range []string{
+		installBinarySnippet(exe, filepath.Join(work, "dst1"), helperIdentifier),
+		verifySignatureSnippet(ovpn, openvpnIdentifier),
+	} {
+		cmd := exec.Command("/bin/sh", "-c", "set -e; "+snippet+"echo REACHED")
+		cmd.Dir = work
+		out, err := cmd.CombinedOutput()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 5 || !strings.Contains(string(out), "SIGNATURE_INVALID") {
+			t.Fatalf("expected exit 5 with marker, got %v\n%s", err, out)
+		}
+	}
+	for _, f := range []string{"PWNED1", "PWNED2"} {
+		if _, err := os.Stat(filepath.Join(work, f)); !os.IsNotExist(err) {
+			t.Fatalf("payload in bundle path executed (%s exists)", f)
+		}
 	}
 }

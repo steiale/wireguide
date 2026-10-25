@@ -3,7 +3,8 @@
     "disconnected": "Getrennt",
     "connecting": "Verbinde...",
     "connected": "Verbunden",
-    "no_handshake": "Kein Handshake"
+    "no_handshake": "Kein Handshake",
+    "blocked": "Blockiert"
   },
   "nav": {
     "tunnels": "Tunnel",

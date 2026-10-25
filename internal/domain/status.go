@@ -43,6 +43,11 @@ type ConnectionStatus struct {
 	Endpoint     string `json:"endpoint,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 
+	// KillSwitchBlocked is set for a tunnel that died unexpectedly while the
+	// kill switch is on: all traffic stays blocked (fail closed) until the
+	// user disconnects or reconnects it, or turns the kill switch off.
+	KillSwitchBlocked bool `json:"kill_switch_blocked,omitempty"`
+
 	// Protocol identifies the VPN backend (WireGuard or OpenVPN). Empty for
 	// legacy/WireGuard statuses; the frontend treats empty as WireGuard.
 	Protocol Protocol `json:"protocol,omitempty"`

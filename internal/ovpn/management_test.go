@@ -33,6 +33,7 @@ func (r *recorder) dynamicChallenge(ch *AuthChallenge) {
 	r.add("crv1 " + ch.StateID + " " + ch.username + " " + ch.Text)
 	r.auth <- ch
 }
+func (r *recorder) authFailed(msg string) { r.add("authfail " + msg) }
 func (r *recorder) failure(msg string, terminate bool) {
 	r.add(fmt.Sprintf("fail %v %s", terminate, msg))
 }
@@ -151,7 +152,7 @@ func TestMgmtProtocol(t *testing.T) {
 	}
 
 	f.say(t, ">PASSWORD:Verification Failed: 'Auth'")
-	r.waitFor(t, "fail false Verification Failed: 'Auth'")
+	r.waitFor(t, "authfail Verification Failed: 'Auth'")
 	f.say(t, ">PASSWORD:Need 'Private Key' password")
 	r.waitFor(t, "fail true "+msgPrivateKeyPw)
 	f.say(t, ">PASSWORD:Need 'HTTP Proxy' username/password")

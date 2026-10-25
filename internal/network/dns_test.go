@@ -1,6 +1,7 @@
 package network
 
 import (
+	"os"
 	"reflect"
 	"testing"
 )
@@ -39,5 +40,33 @@ func TestDNSHolderUnion(t *testing.T) {
 	s.remove("utun4")
 	if s.len() != 0 {
 		t.Fatalf("len = %d after removing all", s.len())
+	}
+}
+
+func TestSystemResolvers(t *testing.T) {
+	path := t.TempDir() + "/resolv.conf"
+	conf := "# comment\ndomain lan\nnameserver 192.168.1.1\nnameserver fe80::1%en0\nnameserver evil;pass\nnameserver 192.168.1.1\nsearch lan\n"
+	if err := os.WriteFile(path, []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := resolvConfPath
+	resolvConfPath = path
+	defer func() { resolvConfPath = old }()
+	if got, want := SystemResolvers(), []string{"192.168.1.1", "fe80::1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("SystemResolvers() = %v, want %v", got, want)
+	}
+
+	// No usable resolv.conf: fall back to the captured baseline.
+	resolvConfPath = path + ".missing"
+	dnsMu.Lock()
+	dnsSavedDNS["Wi-Fi"] = []string{"9.9.9.9", "not-an-ip"}
+	dnsMu.Unlock()
+	defer func() {
+		dnsMu.Lock()
+		delete(dnsSavedDNS, "Wi-Fi")
+		dnsMu.Unlock()
+	}()
+	if got, want := SystemResolvers(), []string{"9.9.9.9"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("fallback = %v, want %v", got, want)
 	}
 }

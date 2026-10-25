@@ -100,6 +100,16 @@ export class ConnectionStatus {
         }
         if (/** @type {any} */(false)) {
             /**
+             * KillSwitchBlocked is set for a tunnel that died unexpectedly while the
+             * kill switch is on: all traffic stays blocked (fail closed) until the
+             * user disconnects or reconnects it, or turns the kill switch off.
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["kill_switch_blocked"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * Protocol identifies the VPN backend (WireGuard or OpenVPN). Empty for
              * legacy/WireGuard statuses; the frontend treats empty as WireGuard.
              * @member
@@ -170,18 +180,18 @@ export class ConnectionStatus {
      * @returns {ConnectionStatus}
      */
     static createFrom($$source = {}) {
-        const $$createField13_0 = $$createType0;
         const $$createField14_0 = $$createType0;
-        const $$createField15_0 = $$createType2;
+        const $$createField15_0 = $$createType0;
+        const $$createField16_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("dns_servers" in $$parsedSource) {
-            $$parsedSource["dns_servers"] = $$createField13_0($$parsedSource["dns_servers"]);
+            $$parsedSource["dns_servers"] = $$createField14_0($$parsedSource["dns_servers"]);
         }
         if ("active_tunnels" in $$parsedSource) {
-            $$parsedSource["active_tunnels"] = $$createField14_0($$parsedSource["active_tunnels"]);
+            $$parsedSource["active_tunnels"] = $$createField15_0($$parsedSource["active_tunnels"]);
         }
         if ("tunnels" in $$parsedSource) {
-            $$parsedSource["tunnels"] = $$createField15_0($$parsedSource["tunnels"]);
+            $$parsedSource["tunnels"] = $$createField16_0($$parsedSource["tunnels"]);
         }
         return new ConnectionStatus(/** @type {Partial<ConnectionStatus>} */($$parsedSource));
     }

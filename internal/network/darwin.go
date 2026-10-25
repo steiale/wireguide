@@ -909,3 +909,16 @@ func prefixLen(cidr string) int {
 	fmt.Sscanf(cidr[idx+1:], "%d", &n)
 	return n
 }
+
+// StopMonitor stops the route monitor (started by SetDNS or AddRoutes) when
+// this manager's holder no longer needs it. A later SetDNS starts a fresh
+// one: a stopped routeMonitor is tombstoned and can't restart.
+func (m *DarwinManager) StopMonitor() {
+	m.mu.Lock()
+	mon := m.monitor
+	m.monitor = nil
+	m.mu.Unlock()
+	if mon != nil {
+		mon.Stop()
+	}
+}

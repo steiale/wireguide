@@ -102,6 +102,9 @@ type mgmtHandler interface {
 	authPrompt(sc *AuthChallenge)
 	// dynamicChallenge: the server answered the base credentials with CRV1.
 	dynamicChallenge(ch *AuthChallenge)
+	// authFailed: the server rejected the credentials. Not terminal: with
+	// --auth-retry interact openvpn restarts and prompts again.
+	authFailed(msg string)
 	// failure: something the user must see. terminate means openvpn would
 	// otherwise wait forever for input we can't give.
 	failure(msg string, terminate bool)
@@ -274,9 +277,12 @@ func (c *mgmtClient) readLoop(h mgmtHandler) {
 			case strings.HasPrefix(payload, "Need "):
 				h.failure(msgUnknownPrompt, true)
 			case strings.HasPrefix(payload, "Verification Failed"):
-				if ch := parseDynamicChallenge(payload); ch != nil {
+				switch ch := parseDynamicChallenge(payload); {
+				case ch != nil:
 					h.dynamicChallenge(ch)
-				} else {
+				case strings.HasPrefix(payload, "Verification Failed: 'Auth'"):
+					h.authFailed(payload)
+				default:
 					h.failure(payload, false)
 				}
 			}

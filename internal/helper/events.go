@@ -15,34 +15,66 @@ import (
 // tunnel package's ConnectionStatus is already an alias for the domain type
 // with wire-safe JSON tags, we just dereference and return it — no field-by-
 // field translation.
+//
+// ActiveTunnels lists only tunnels that are actually running (WireGuard's
+// own list, plus live OpenVPN entries not in an error state). An OpenVPN
+// error kept after its process exited, and a tunnel kept blocked by the
+// kill switch, appear in Tunnels only (State=error, ErrorMessage set), so
+// the GUI never counts them as connected.
 func (h *Helper) statusDTO() ipc.ConnectionStatus {
 	s := h.manager.Status()
 
 	// Gather OpenVPN tunnel statuses (managed separately from WireGuard).
-	var ovpnStatuses []domain.ConnectionStatus
+	var live []domain.ConnectionStatus
 	if h.ovpnManager != nil {
-		ovpnStatuses = h.ovpnManager.AllStatuses()
+		live = h.ovpnManager.AllStatuses()
 	}
+	extra := slices.Clone(live)
+	present := func(name string) int {
+		return slices.IndexFunc(extra, func(s domain.ConnectionStatus) bool { return s.TunnelName == name })
+	}
+	h.mu.Lock()
 	// Tunnels the manager already removed after failing keep their last
 	// error so the GUI can show it.
-	h.mu.Lock()
 	for name, st := range h.ovpnErrors {
-		if !slices.ContainsFunc(ovpnStatuses, func(s domain.ConnectionStatus) bool { return s.TunnelName == name }) {
-			ovpnStatuses = append(ovpnStatuses, st)
+		if present(name) < 0 {
+			extra = append(extra, st)
+		}
+	}
+	if h.policy.killSwitch {
+		for name, proto := range h.fwBlocked {
+			if i := present(name); i >= 0 {
+				extra[i].KillSwitchBlocked = true
+				if extra[i].State != domain.StateConnected {
+					extra[i].State = domain.StateError
+				}
+				if extra[i].ErrorMessage == "" {
+					extra[i].ErrorMessage = blockedMessage
+				}
+				continue
+			}
+			extra = append(extra, domain.ConnectionStatus{
+				State:             domain.StateError,
+				TunnelName:        name,
+				ErrorMessage:      blockedMessage,
+				Protocol:          proto,
+				KillSwitchBlocked: true,
+			})
 		}
 	}
 	h.mu.Unlock()
-	sort.SliceStable(ovpnStatuses, func(i, j int) bool { return ovpnStatuses[i].TunnelName < ovpnStatuses[j].TunnelName })
+	sort.SliceStable(extra, func(i, j int) bool { return extra[i].TunnelName < extra[j].TunnelName })
 
 	var result ipc.ConnectionStatus
 	switch {
 	case s != nil && s.State != domain.StateDisconnected:
 		// WireGuard has an active tunnel — use it as primary.
 		result = *s
-	case len(ovpnStatuses) > 0:
-		// No WireGuard tunnel — promote the first OpenVPN tunnel to primary so
-		// single-OpenVPN-tunnel UIs work without consulting result.Tunnels.
-		result = ovpnStatuses[0]
+	case len(extra) > 0:
+		// No WireGuard tunnel — promote the first other tunnel to primary so
+		// single-tunnel UIs work without consulting result.Tunnels.
+		result = extra[0]
+		result.ActiveTunnels = nil
 	default:
 		return ipc.ConnectionStatus{}
 	}
@@ -65,21 +97,30 @@ func (h *Helper) statusDTO() ipc.ConnectionStatus {
 			}
 		}
 	}
-	// Append OpenVPN tunnels to the per-tunnel list (and to ActiveTunnels).
-	for _, ts := range ovpnStatuses {
+	// Append the other tunnels to the per-tunnel list; only live, non-error
+	// OpenVPN entries count as active.
+	for _, ts := range extra {
+		protocol := ts.Protocol
+		if protocol == "" {
+			protocol = domain.ProtocolOpenVPN
+		}
 		result.Tunnels = append(result.Tunnels, domain.ConnectionStatus{
-			State:         ts.State,
-			TunnelName:    ts.TunnelName,
-			RxBytes:       ts.RxBytes,
-			TxBytes:       ts.TxBytes,
-			Duration:      ts.Duration,
-			LastHandshake: ts.LastHandshake,
-			HasHandshake:  ts.HasHandshake,
-			ErrorMessage:  ts.ErrorMessage,
-			Protocol:      domain.ProtocolOpenVPN,
-			DNSServers:    ts.DNSServers,
+			State:             ts.State,
+			TunnelName:        ts.TunnelName,
+			RxBytes:           ts.RxBytes,
+			TxBytes:           ts.TxBytes,
+			Duration:          ts.Duration,
+			LastHandshake:     ts.LastHandshake,
+			HasHandshake:      ts.HasHandshake,
+			ErrorMessage:      ts.ErrorMessage,
+			Protocol:          protocol,
+			DNSServers:        ts.DNSServers,
+			KillSwitchBlocked: ts.KillSwitchBlocked,
 		})
-		result.ActiveTunnels = appendUnique(result.ActiveTunnels, ts.TunnelName)
+		isLive := slices.ContainsFunc(live, func(l domain.ConnectionStatus) bool { return l.TunnelName == ts.TunnelName })
+		if isLive && ts.State != domain.StateError {
+			result.ActiveTunnels = appendUnique(result.ActiveTunnels, ts.TunnelName)
+		}
 	}
 	return result
 }
@@ -106,6 +147,7 @@ func (h *Helper) eventLoop() {
 		case <-h.done:
 			return
 		case <-ticker.C:
+			h.rearmShutdownIfIdle()
 			status := h.statusDTO()
 			currentJSON, err := json.Marshal(status)
 			if err != nil {

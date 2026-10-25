@@ -9,6 +9,7 @@
 package helper
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -65,11 +66,26 @@ func goSafe(name string, fn func()) {
 // tolerate a normal GUI restart.
 const shutdownGrace = 10 * time.Second
 
+// ovpnBackend is the part of *ovpn.Manager the helper uses (an interface
+// so tests can drive OpenVPN states without an openvpn process).
+type ovpnBackend interface {
+	Connect(name string, ovpnContent []byte) error
+	Disconnect(name string) error
+	FeedCredentials(name, username, fullPassword, response string) error
+	GetStatus(name string) *domain.ConnectionStatus
+	IsAwaitingCredentials(name string) bool
+	ActiveTunnelNames() []string
+	AllStatuses() []domain.ConnectionStatus
+	ActiveRemotes() []ovpn.RemoteEndpoint
+	SetOnDied(fn func(name string))
+	Stop()
+}
+
 // Helper holds the helper process state.
 type Helper struct {
 	server      *ipc.Server
 	manager     *tunnel.Manager
-	ovpnManager *ovpn.Manager
+	ovpnManager ovpnBackend
 	ovpnBinary  string // root-owned openvpn path next to the helper binary
 	firewall    firewall.FirewallManager
 	monitor     *reconnect.Monitor
@@ -88,9 +104,16 @@ type Helper struct {
 	activeOVPNCfgs map[string][]byte                  // raw .ovpn content cached for reconnect
 	autoReconnect  map[string]bool                    // per-tunnel auto-reconnect (both protocols)
 	policy         fwPolicy                           // desired firewall state, set by the GUI
-	fwHeld         map[string]bool                    // tunnels in a reconnect sequence
+	fwHeld         map[string]int                     // reconnect-sequence holds per tunnel (counted)
+	fwPending      map[string]bool                    // held until a sequence or a connect takes over
+	fwBlocked      map[string]domain.Protocol         // dead tunnels kept blocked by the kill switch
 	fwEndpoints    map[string]cachedEndpoints         // last known server endpoints per tunnel
+	dnsLookups     map[string][]string                // resolvers passed during a tunnel's endpoint lookup
 	ovpnErrors     map[string]domain.ConnectionStatus // last StateError snapshot per OpenVPN tunnel
+
+	// guiGone is set while no GUI control connection is open (non-daemon
+	// mode only); eventLoop then arms the shutdown timer once idle.
+	guiGone bool
 
 	// shutdownTimer is the grace-window timer: (re)started when the GUI's
 	// control connection drops, stopped when it reconnects.
@@ -119,8 +142,11 @@ func Run(addr string, ownerUID int, dataDir string) error {
 		activeCfgs:     make(map[string]*domain.WireGuardConfig),
 		activeOVPNCfgs: make(map[string][]byte),
 		autoReconnect:  make(map[string]bool),
-		fwHeld:         make(map[string]bool),
+		fwHeld:         make(map[string]int),
+		fwPending:      make(map[string]bool),
+		fwBlocked:      make(map[string]domain.Protocol),
 		fwEndpoints:    make(map[string]cachedEndpoints),
+		dnsLookups:     make(map[string][]string),
 		ovpnErrors:     make(map[string]domain.ConnectionStatus),
 		logLevel:       new(slog.LevelVar), // defaults to Info
 		done:           make(chan struct{}),
@@ -128,9 +154,17 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	// Pipe every log record (including recovery below) to subscribed GUIs.
 	slog.SetDefault(slog.New(newBroadcastHandler(h.logLevel, h.server.Broadcast)))
 
+	ovpnBinary := filepath.Join(filepath.Dir(os.Args[0]), "openvpn")
+	ovpnRuntimeDir := filepath.Join(dataDir, "ovpn-run")
+
 	// Startup recovery from a previous helper that died without cleanup():
-	// stale pf rules, orphaned routes, overridden DNS. Runs before Serve, so
-	// no request can race it. The GUI re-pushes the firewall policy.
+	// orphaned root openvpn processes, stale pf rules, orphaned routes,
+	// overridden DNS. Runs before Serve, so no request can race it. The GUI
+	// re-pushes the firewall policy. openvpn goes first: it would otherwise
+	// keep its routes and could re-apply nothing, but holds its utun.
+	if killed := ovpn.KillStaleProcesses(ovpnRuntimeDir, ovpnBinary); len(killed) > 0 {
+		slog.Warn("startup: killed openvpn processes orphaned by a previous helper", "tunnels", killed)
+	}
 	firewall.RecoverStaleState()
 	if recovered := tunnel.RecoverFromCrash(dataDir); len(recovered) > 0 {
 		slog.Warn("recovered from previous crash", "tunnels", recovered)
@@ -149,13 +183,11 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	// binary from it as root would let same-user malware escalate. If it's
 	// missing, OpenVPN connects fail (ovpn.Manager stats the path) and the
 	// user is told to reinstall the helper.
-	ovpnBinary := filepath.Join(filepath.Dir(os.Args[0]), "openvpn")
 	if _, err := os.Stat(ovpnBinary); err != nil {
 		slog.Error("openvpn binary not found next to helper — OpenVPN unavailable; reinstall the helper (relaunch LockPlus and approve the admin prompt)",
 			"path", ovpnBinary, "error", err)
 	}
 	h.ovpnBinary = ovpnBinary
-	ovpnRuntimeDir := filepath.Join(dataDir, "ovpn-run")
 	h.ovpnManager = ovpn.NewManager(ovpnBinary, ovpnRuntimeDir,
 		h.broadcastOvpnStatus,
 		h.broadcastAuthPrompt,
@@ -173,9 +205,7 @@ func Run(addr string, ownerUID int, dataDir string) error {
 	// A tunnel that dies on its own (wireguard-go fatal TUN error, openvpn
 	// crash) takes the same reconnect path as a stale handshake.
 	manager.SetOnEngineDied(h.onWireGuardEngineDied)
-	if h.ovpnManager != nil {
-		h.ovpnManager.SetOnDied(h.onOVPNDied)
-	}
+	h.ovpnManager.SetOnDied(h.onOVPNDied)
 
 	// Register RPC handlers
 	h.registerHandlers()
@@ -268,43 +298,57 @@ func (h *Helper) reconnectFn(name string) error {
 	h.mu.Unlock()
 	err := h.ovpnManager.Connect(name, ovpnContent)
 	h.connectMu.Unlock()
+	if errors.Is(err, ovpn.ErrAlreadyActive) {
+		// Still running from before (connected, connecting, or a previous
+		// attempt tearing down): poll it instead of failing every retry.
+		slog.Info("reconnect: openvpn tunnel already running, waiting for it", "tunnel", name)
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
 	return h.waitOVPNConnected(name)
 }
 
+// ovpnConnectTimeout bounds waitOVPNConnected (about openvpn's own connect
+// timeout); a var for tests.
+var ovpnConnectTimeout = 90 * time.Second
+
 // waitOVPNConnected blocks until an OpenVPN tunnel is CONNECTED with a known
 // remote and interface (ovpn.Manager.Connect returns once the process
 // starts). Without it the monitor would release the firewall hold before
-// the new tunnel could be passed. The deadline (about openvpn's own connect
-// timeout) is pushed out while the tunnel waits for the user to type
-// credentials, so a 2FA prompt isn't torn down under them.
+// the new tunnel could be passed. The deadline is pushed out while the
+// tunnel waits for the user to type credentials, so a 2FA prompt isn't torn
+// down under them. An error state is not terminal while the process is
+// alive (a rejected password is followed by a re-prompt); only the entry
+// disappearing (openvpn exited) is.
 func (h *Helper) waitOVPNConnected(name string) error {
-	const connectTimeout = 90 * time.Second
+	connectTimeout := ovpnConnectTimeout
 	deadline := time.Now().Add(connectTimeout)
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	lastErr := ""
 	for time.Now().Before(deadline) {
+		status := h.ovpnManager.GetStatus(name)
+		if status == nil {
+			if lastErr != "" {
+				return fmt.Errorf("openvpn tunnel %q failed to connect: %s", name, lastErr)
+			}
+			return fmt.Errorf("openvpn tunnel %q disappeared while connecting", name)
+		}
+		if status.ErrorMessage != "" {
+			lastErr = status.ErrorMessage
+		}
+		if status.State == domain.StateConnected && ovpnTunnelHasKnownRemote(h.ovpnManager, name) {
+			return nil
+		}
+		if h.ovpnManager.IsAwaitingCredentials(name) {
+			deadline = time.Now().Add(connectTimeout)
+		}
 		select {
 		case <-h.done:
 			return fmt.Errorf("openvpn tunnel %q: helper shutting down", name)
 		case <-ticker.C:
-		}
-		status := h.ovpnManager.GetStatus(name)
-		if status == nil {
-			return fmt.Errorf("openvpn tunnel %q disappeared while connecting", name)
-		}
-		switch status.State {
-		case domain.StateConnected:
-			if ovpnTunnelHasKnownRemote(h.ovpnManager, name) {
-				return nil
-			}
-		case domain.StateError, domain.StateDisconnected:
-			return fmt.Errorf("openvpn tunnel %q failed to connect: %s", name, status.ErrorMessage)
-		}
-		if h.ovpnManager.IsAwaitingCredentials(name) {
-			deadline = time.Now().Add(connectTimeout)
 		}
 	}
 	// Kill the stuck attempt so the next retry's Connect starts clean.
@@ -314,7 +358,7 @@ func (h *Helper) waitOVPNConnected(name string) error {
 
 // ovpnTunnelHasKnownRemote reports whether name has a known remote address
 // and interface (ovpn.Manager.ActiveRemotes), which the firewall needs.
-func ovpnTunnelHasKnownRemote(m *ovpn.Manager, name string) bool {
+func ovpnTunnelHasKnownRemote(m ovpnBackend, name string) bool {
 	for _, r := range m.ActiveRemotes() {
 		if r.TunnelName == name {
 			return true
@@ -328,30 +372,38 @@ func ovpnTunnelHasKnownRemote(m *ovpn.Manager, name string) bool {
 // right away, before the policy is re-applied, so the kill switch never
 // opens while the reconnect is pending.
 func (h *Helper) onWireGuardEngineDied(name string) {
-	h.forgetOrHold(name, func() { delete(h.activeCfgs, name) })
+	h.forgetOrHold(name, domain.ProtocolWireGuard, func() { delete(h.activeCfgs, name) })
 	_ = h.applyFirewall("wg-engine-died")
 	h.monitor.NotifyTunnelDied(name)
 }
 
-// onOVPNDied runs after an OpenVPN tunnel's process died on its own. The
-// firewall was already re-applied by onOVPNActiveChange.
+// onOVPNDied runs after an OpenVPN tunnel died on its own (process crash,
+// server-side exit, terminal auth failure). The manager reports it here
+// instead of through onActiveChange(false), so the hold or block below and
+// the removal of its live pass land in one apply.
 func (h *Helper) onOVPNDied(name string) {
-	h.forgetOrHold(name, func() { delete(h.activeOVPNCfgs, name) })
+	h.forgetOrHold(name, domain.ProtocolOpenVPN, func() { delete(h.activeOVPNCfgs, name) })
+	_ = h.applyFirewall("ovpn-died")
 	h.monitor.NotifyTunnelDied(name)
 }
 
 // forgetOrHold handles a tunnel that died: held for reconnect if it has
 // auto-reconnect on, otherwise its cached state is dropped via forget
-// (called with h.mu held).
-func (h *Helper) forgetOrHold(name string, forget func()) {
+// (called with h.mu held) and, under the kill switch, the tunnel is kept
+// blocked (fail closed) until the user disconnects or reconnects it.
+func (h *Helper) forgetOrHold(name string, proto domain.Protocol, forget func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.autoReconnect[name] {
-		h.fwHeld[name] = true
+		h.fwPending[name] = true
 		return
 	}
 	forget()
 	delete(h.autoReconnect, name)
+	if h.policy.killSwitch {
+		slog.Warn("tunnel died without auto-reconnect, kill switch keeps it blocked", "tunnel", name)
+		h.fwBlocked[name] = proto
+	}
 }
 
 // broadcastOvpnStatus is the OpenVPN manager's onStatus callback: it pushes
@@ -360,10 +412,32 @@ func (h *Helper) forgetOrHold(name string, forget func()) {
 // tunnel right after emitting it.
 func (h *Helper) broadcastOvpnStatus(status domain.ConnectionStatus) {
 	h.recordOVPNStatus(status)
+	h.onOVPNGone(status)
 	if h.server == nil {
 		return
 	}
 	h.server.Broadcast(ipc.EventStatus, h.statusDTO())
+}
+
+// onOVPNGone handles the final status of an OpenVPN tunnel that ended
+// without ever becoming active: a connect that was lifting a kill-switch
+// block (fwPending, see connectOpenVPN) failed, so the block comes back.
+func (h *Helper) onOVPNGone(status domain.ConnectionStatus) {
+	if status.State == domain.StateConnected || status.State == domain.StateConnecting ||
+		h.ovpnManager == nil || h.ovpnManager.GetStatus(status.TunnelName) != nil {
+		return
+	}
+	name := status.TunnelName
+	h.mu.Lock()
+	reblock := h.fwPending[name] && h.fwHeld[name] == 0 && h.policy.killSwitch
+	if reblock {
+		delete(h.fwPending, name)
+		h.fwBlocked[name] = domain.ProtocolOpenVPN
+	}
+	h.mu.Unlock()
+	if reblock {
+		_ = h.applyFirewall("ovpn-connect-failed")
+	}
 }
 
 // recordOVPNStatus keeps a tunnel's last error until it next connects.
@@ -399,18 +473,15 @@ func (h *Helper) broadcastAuthPrompt(tunnelName string, challenge *ovpn.AuthChal
 }
 
 // onOVPNActiveChange is the OpenVPN manager's onActiveChange callback,
-// fired when a tunnel reaches CONNECTED or is torn down. A tunnel going down
-// while it still has auto-reconnect on was not disconnected by the user
-// (handleDisconnect clears the flag first): hold it for the reconnect that
-// onOVPNDied is about to start.
+// fired when a tunnel reaches CONNECTED (or its utun name arrives after
+// that) and when an active tunnel is torn down by the user. Unexpected
+// deaths arrive via onOVPNDied instead.
 func (h *Helper) onOVPNActiveChange(tunnelName string, active bool) {
-	reason := "ovpn-connect"
-	if !active {
-		reason = "ovpn-disconnect"
+	reason := "ovpn-disconnect"
+	if active {
+		reason = "ovpn-connect"
 		h.mu.Lock()
-		if h.autoReconnect[tunnelName] {
-			h.fwHeld[tunnelName] = true
-		}
+		delete(h.fwPending, tunnelName) // a block-lifting connect made it
 		h.mu.Unlock()
 	}
 	_ = h.applyFirewall(reason)
@@ -426,7 +497,9 @@ func (h *Helper) onReconnectState(state reconnect.State) {
 	})
 }
 
-// anyTunnelActive reports whether any WireGuard or OpenVPN tunnel is active.
+// anyTunnelActive reports whether any WireGuard or OpenVPN tunnel is
+// active, or one is kept blocked by the kill switch (exiting would flush
+// that block).
 func (h *Helper) anyTunnelActive() (name string, active bool) {
 	if h.manager != nil {
 		if t := h.manager.ActiveTunnel(); t != "" {
@@ -438,6 +511,13 @@ func (h *Helper) anyTunnelActive() (name string, active bool) {
 			return names[0], true
 		}
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.policy.killSwitch {
+		for name := range h.fwBlocked {
+			return name, true
+		}
+	}
 	return "", false
 }
 
@@ -445,6 +525,9 @@ func (h *Helper) anyTunnelActive() (name string, active bool) {
 // control connection drops (non-daemon mode only). Like wg-quick, the helper
 // never exits while a tunnel is active.
 func (h *Helper) startShutdownTimer() {
+	h.mu.Lock()
+	h.guiGone = true
+	h.mu.Unlock()
 	active, isActive := h.anyTunnelActive()
 
 	if isActive {
@@ -478,11 +561,27 @@ func (h *Helper) startShutdownTimer() {
 func (h *Helper) cancelShutdownTimer() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.guiGone = false
 	if h.shutdownTimer != nil {
 		if h.shutdownTimer.Stop() {
 			slog.Info("GUI reconnected within grace window, shutdown cancelled")
 		}
 		h.shutdownTimer = nil
+	}
+}
+
+// rearmShutdownIfIdle arms the grace-window timer once the last tunnel is
+// gone while no GUI is connected: startShutdownTimer skips arming while a
+// tunnel is up, and nothing else would re-arm it.
+func (h *Helper) rearmShutdownIfIdle() {
+	h.mu.Lock()
+	idleCandidate := h.guiGone && h.shutdownTimer == nil
+	h.mu.Unlock()
+	if !idleCandidate {
+		return
+	}
+	if _, active := h.anyTunnelActive(); !active {
+		h.startShutdownTimer()
 	}
 }
 
@@ -511,15 +610,18 @@ func (h *Helper) cleanup() {
 		}
 		h.monitor.Stop()
 		// Wait out any in-flight connect/reconnect, then tear tunnels down
-		// (DisconnectAll includes still-connecting ones). Firewall last, so
-		// nothing leaks in between; applyFirewall is a no-op once done is
-		// closed, and fwMu waits out an apply already in flight.
+		// (DisconnectAll includes still-connecting ones). OpenVPN first, and
+		// Stop waits for its teardown: its DNS hold is released before
+		// WireGuard's RestoreDNS, which would otherwise re-apply the stale
+		// OpenVPN entries. Firewall last, so nothing leaks in between;
+		// applyFirewall is a no-op once done is closed, and fwMu waits out
+		// an apply already in flight.
 		h.connectMu.Lock()
 		defer h.connectMu.Unlock()
-		h.manager.DisconnectAll()
 		if h.ovpnManager != nil {
 			h.ovpnManager.Stop()
 		}
+		h.manager.DisconnectAll()
 		h.fwMu.Lock()
 		_ = h.firewall.Cleanup()
 		h.fwMu.Unlock()

@@ -50,14 +50,18 @@ func codeSignRequirement(identifier string) string {
 	return teamRequirement + ` and identifier "` + identifier + `"`
 }
 
+// Every value interpolated into the root install script must be a constant or
+// pass through shellQuote, and never inside double quotes: the bundle path is
+// user-controlled, and "$(...)" or backticks in it would run as root.
+
 // verifySignatureSnippet returns a shell fragment (for the root install
 // script) that verifies path against codeSignRequirement(identifier) and, on
 // failure, deletes path and aborts the script with a SIGNATURE_INVALID marker
 // that installAndLoadDaemon turns into a *SignatureError.
 func verifySignatureSnippet(path, identifier string) string {
 	return fmt.Sprintf(
-		`CSERR=$(/usr/bin/codesign --verify --strict -R=%s %s 2>&1) || { /bin/rm -f %s; echo "SIGNATURE_INVALID: %s: $CSERR"; exit 5; }; `,
-		shellQuote(codeSignRequirement(identifier)), shellQuote(path), shellQuote(path), path,
+		`CSERR=$(/usr/bin/codesign --verify --strict -R=%s %s 2>&1) || { /bin/rm -f %s; echo SIGNATURE_INVALID: %s: "$CSERR"; exit 5; }; `,
+		shellQuote(codeSignRequirement(identifier)), shellQuote(path), shellQuote(path), shellQuote(path),
 	)
 }
 
@@ -72,12 +76,12 @@ func installBinarySnippet(src, dst, identifier string) string {
 	tmp := dst + ".new"
 	q, qs, qt := shellQuote(dst), shellQuote(src), shellQuote(tmp)
 	return fmt.Sprintf(
-		`if [ -L %s ]; then echo "SIGNATURE_INVALID: %s is a symlink"; exit 5; fi; `+
+		`if [ -L %s ]; then echo "SIGNATURE_INVALID: source binary is a symlink"; exit 5; fi; `+
 			`rm -f %s; (umask 077 && cp %s %s); chown root:wheel %s; `+
 			`xattr -d com.apple.quarantine %s 2>/dev/null || true; `+
 			`%s`+
 			`chmod 755 %s; mv -f %s %s; `,
-		qs, src,
+		qs,
 		qt, qs, qt, qt,
 		qt,
 		verifySignatureSnippet(tmp, identifier),

@@ -387,9 +387,9 @@ func recoverHelper(clients *ipc.ClientHolder, settingsStore *storage.SettingsSto
 		slog.Debug("helper recovery attempt failed", "error", err)
 		return false, err
 	}
+	pushPersistedSettings(newClient, settingsStore) // before the client is usable
 	clients.Set(newClient)
 	bridge.Resubscribe()
-	pushPersistedSettings(newClient, settingsStore)
 	return true, nil
 }
 

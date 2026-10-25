@@ -3,7 +3,8 @@
     "disconnected": "未接続",
     "connecting": "接続中…",
     "connected": "接続済み",
-    "no_handshake": "ハンドシェイクなし"
+    "no_handshake": "ハンドシェイクなし",
+    "blocked": "ブロック中"
   },
   "nav": {
     "tunnels": "トンネル",

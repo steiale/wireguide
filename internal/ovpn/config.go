@@ -17,6 +17,28 @@ type OVPNConfig struct {
 	Remote       string // first "remote <host> [port]", IPv6 hosts bracketed when a port follows
 	Proto        string // "udp" | "tcp" | "tcp-client" etc., empty if unspecified
 	AuthUserPass bool   // bare auth-user-pass present (credentials prompted)
+
+	// Remotes is every remote openvpn may try (top level and <connection>
+	// blocks, in file order), so the kill switch can pass all of them while
+	// a multi-remote or remote-random profile reconnects.
+	Remotes []RemoteSpec
+}
+
+// RemoteSpec is one "remote host [port [proto]]" with the profile's
+// defaults (port/rport, proto, also per <connection> block) filled in.
+type RemoteSpec struct {
+	Host  string // hostname or IP literal, unbracketed
+	Port  string
+	Proto string // "udp" or "tcp"
+}
+
+// transportProto folds openvpn's proto variants (tcp-client, tcp4, udp6...)
+// into "udp" or "tcp".
+func transportProto(p string) string {
+	if strings.HasPrefix(strings.ToLower(p), "tcp") {
+		return "tcp"
+	}
+	return "udp"
 }
 
 // profile is everything Connect needs from a validated .ovpn, gathered in
@@ -246,8 +268,67 @@ func ParseOVPN(data []byte) (*OVPNConfig, error) {
 	return &cfg, nil
 }
 
+// remoteDefaults are the proto and port a "remote" without them inherits.
+type remoteDefaults struct{ proto, port string }
+
+// apply updates defaults from a proto/port/rport directive.
+func (rd *remoteDefaults) apply(d *directive) {
+	if d.Inline || len(d.Args) < 1 {
+		return
+	}
+	switch d.Name {
+	case "proto":
+		rd.proto = d.Args[0]
+	case "port", "rport":
+		rd.port = d.Args[0]
+	}
+}
+
+// collectRemotes lists every remote in file order. A <connection> block
+// inherits the top-level proto/port and may override them.
+func collectRemotes(ds []directive) []RemoteSpec {
+	global := remoteDefaults{proto: "udp", port: "1194"}
+	for i := range ds {
+		global.apply(&ds[i])
+	}
+	var out []RemoteSpec
+	add := func(d *directive, def remoteDefaults) {
+		if d.Inline || len(d.Args) < 1 || d.Args[0] == "" {
+			return
+		}
+		r := RemoteSpec{Host: strings.Trim(d.Args[0], "[]"), Port: def.port, Proto: transportProto(def.proto)}
+		if len(d.Args) >= 2 && d.Args[1] != "" {
+			r.Port = d.Args[1]
+		}
+		if len(d.Args) >= 3 && d.Args[2] != "" {
+			r.Proto = transportProto(d.Args[2])
+		}
+		out = append(out, r)
+	}
+	for i := range ds {
+		d := &ds[i]
+		if d.Name == "remote" {
+			add(d, global)
+		}
+		if len(d.Children) == 0 {
+			continue
+		}
+		local := global
+		for j := range d.Children {
+			local.apply(&d.Children[j])
+		}
+		for j := range d.Children {
+			if d.Children[j].Name == "remote" {
+				add(&d.Children[j], local)
+			}
+		}
+	}
+	return out
+}
+
 func summarize(ds []directive) OVPNConfig {
 	var cfg OVPNConfig
+	cfg.Remotes = collectRemotes(ds)
 	walkDirectives(ds, func(d *directive) bool {
 		switch d.Name {
 		case "remote":

@@ -86,9 +86,6 @@ type KillSwitchRequest struct {
 // DNSProtectionRequest is the parameter for Firewall.SetDNSProtection.
 type DNSProtectionRequest struct {
 	Enabled bool `json:"enabled"`
-	// Deprecated: ignored. The helper derives the allowed servers from the
-	// active tunnels.
-	DNSServers []string `json:"dns_servers,omitempty"`
 }
 
 // ReconnectStateDTO describes ongoing reconnection.
