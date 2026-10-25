@@ -14,11 +14,8 @@ import (
 // Listen creates a Unix socket listener at addr.
 // If ownerUID >= 0, chowns the socket to that UID and sets mode 0600.
 func Listen(addr string, ownerUID int) (net.Listener, error) {
-	// Ensure parent directory exists. On macOS the socket lives in
-	// /var/run/wireguide/ — the helper (root) creates it, and the GUI
-	// (unprivileged user) needs to traverse it to reach the socket.
-	// 0755 allows traversal; the socket itself is chmod 0600 + chowned
-	// to the GUI user, so only that user can actually connect.
+	// The GUI (unprivileged) must traverse the parent directory, so it is
+	// 0755; access control is the socket's own 0600 + chown to ownerUID.
 	if dir := filepath.Dir(addr); dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("mkdir %s: %w", dir, err)
@@ -58,25 +55,16 @@ func Listen(addr string, ownerUID int) (net.Listener, error) {
 		}
 	}
 
-	// Refuse to hijack a socket a live process is still accepting
-	// connections on. Without this, a second helper instance (e.g. started
-	// while an earlier one is still running due to a launchd race, a
-	// manual second invocation, or crash-recovery running against a
-	// daemon that never actually died) would silently unlink the first
-	// instance's socket and bind its own — new IPC connections would go to
-	// the second instance while the first kept running unaware, and
-	// crash-recovery cleanup (ResetDNSToSystemDefault, RemoveRoutes,
-	// firewall.Cleanup) would then run against state a still-live daemon
-	// believes it owns, tearing down a working tunnel's kill switch/DNS
-	// out from under it.
+	// Refuse to hijack a socket a live process still accepts on: a second
+	// helper instance must fail here, before its startup recovery flushes
+	// the live helper's pf rules and DNS.
 	if conn, err := net.DialTimeout("unix", addr, 200*time.Millisecond); err == nil {
 		conn.Close()
 		return nil, fmt.Errorf("refusing to bind %s: another process is already listening on it", addr)
 	}
 
-	// The parent directory (0700, ownership-verified) is the real security
-	// boundary for the socket itself — no TOCTOU-prone Lstat check needed
-	// on top of the liveness probe above.
+	// The parent directory is ownership-verified above, so no extra Lstat
+	// check on the stale socket is needed.
 	if err := os.Remove(addr); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("remove stale socket %s: %w", addr, err)
 	}

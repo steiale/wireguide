@@ -76,14 +76,18 @@ type FeedCredentialsRequest struct {
 // the frontend. Unifying on the domain type prevents that class of bug.
 type ConnectionStatus = domain.ConnectionStatus
 
-// KillSwitchRequest is the parameter for Firewall.SetKillSwitch.
+// KillSwitchRequest is the parameter for Firewall.SetKillSwitch. Both
+// firewall requests set POLICY: the helper stores it and applies it whenever
+// tunnels are up (see internal/helper/firewall.go).
 type KillSwitchRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
 // DNSProtectionRequest is the parameter for Firewall.SetDNSProtection.
 type DNSProtectionRequest struct {
-	Enabled    bool     `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// Deprecated: ignored. The helper derives the allowed servers from the
+	// active tunnels.
 	DNSServers []string `json:"dns_servers,omitempty"`
 }
 
@@ -120,8 +124,8 @@ type SetLogLevelRequest struct {
 	Level string `json:"level"` // "debug" | "info" | "warn" | "error"
 }
 
-// DisconnectRequest is the parameter for Tunnel.Disconnect.
-// If TunnelName is empty, all tunnels are disconnected (backward compat).
+// DisconnectRequest is the parameter for Tunnel.Disconnect. TunnelName is
+// required.
 type DisconnectRequest struct {
 	TunnelName string `json:"tunnel_name,omitempty"`
 }

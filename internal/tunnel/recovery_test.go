@@ -11,7 +11,6 @@ func TestSaveAndLoadActiveState(t *testing.T) {
 	state := &ActiveTunnelState{
 		TunnelName:    "test-vpn",
 		InterfaceName: "utun5",
-		FullTunnel:    true,
 	}
 
 	if err := SaveActiveState(dir, state); err != nil {
@@ -33,9 +32,6 @@ func TestSaveAndLoadActiveState(t *testing.T) {
 	}
 	if loaded[0].InterfaceName != "utun5" {
 		t.Errorf("interface name mismatch: %s", loaded[0].InterfaceName)
-	}
-	if !loaded[0].FullTunnel {
-		t.Error("full tunnel should be true")
 	}
 }
 
@@ -103,23 +99,6 @@ func TestLoadActiveStateNoFile(t *testing.T) {
 	dir := t.TempDir()
 	if len(LoadActiveState(dir)) != 0 {
 		t.Error("should return empty when no state file")
-	}
-}
-
-func TestLoadActiveState_LegacyMigration(t *testing.T) {
-	dir := t.TempDir()
-	// Write a legacy single-file state.
-	legacyData := `{"tunnel_name":"legacy-vpn","interface_name":"utun5","full_tunnel":true}`
-	if err := os.WriteFile(filepath.Join(dir, activeTunnelFile), []byte(legacyData), 0600); err != nil {
-		t.Fatalf("write legacy file failed: %v", err)
-	}
-
-	loaded := LoadActiveState(dir)
-	if len(loaded) != 1 {
-		t.Fatalf("expected 1 state from legacy, got %d", len(loaded))
-	}
-	if loaded[0].TunnelName != "legacy-vpn" {
-		t.Errorf("expected legacy-vpn, got %s", loaded[0].TunnelName)
 	}
 }
 

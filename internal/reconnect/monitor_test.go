@@ -2,11 +2,13 @@ package reconnect
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/steiale/wireguide/internal/domain"
 	"github.com/steiale/wireguide/internal/tunnel"
 )
 
@@ -30,18 +32,6 @@ func (m *mockManager) IsConnected() bool {
 	return m.connected
 }
 
-func (m *mockManager) ActiveTunnel() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.activeName
-}
-
-func (m *mockManager) Status() *tunnel.ConnectionStatus {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.status
-}
-
 func (m *mockManager) AllStatuses() []*tunnel.ConnectionStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -51,16 +41,6 @@ func (m *mockManager) AllStatuses() []*tunnel.ConnectionStatus {
 	// Default: return single status if set.
 	if m.status != nil {
 		return []*tunnel.ConnectionStatus{m.status}
-	}
-	return nil
-}
-
-func (m *mockManager) Disconnect() error {
-	m.mu.Lock()
-	fn := m.disconnectFn
-	m.mu.Unlock()
-	if fn != nil {
-		return fn()
 	}
 	return nil
 }
@@ -115,10 +95,10 @@ func (d *mockSleepDetector) sendWake() {
 // testConfig returns a Config with very short timeouts for testing.
 func testConfig() Config {
 	return Config{
-		HandshakeTimeout: 50 * time.Millisecond,
-		InitialDelay:     10 * time.Millisecond,
-		MaxDelay:         80 * time.Millisecond,
-		MaxAttempts:      0, // unlimited
+		InitialDelay: 10 * time.Millisecond,
+		MaxDelay:     80 * time.Millisecond,
+		MaxAttempts:  0, // unlimited
+		WakeGrace:    10 * time.Millisecond,
 	}
 }
 
@@ -221,12 +201,12 @@ func TestHealthCheck_StaleHandshake_TriggersReconnect(t *testing.T) {
 		LastHandshakeTime: time.Now().Add(-4 * time.Minute),
 	})
 
-	// Directly call triggerReconnect to simulate what monitorLoop does.
+	// Directly call triggerReconnectTunnel to simulate what monitorLoop does.
 	mon.mu.Lock()
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	waitFor(t, 2*time.Second, "reconnectFn called for stale handshake", func() bool {
 		return reconnectCalls.Load() > 0
@@ -300,7 +280,7 @@ func TestExponentialBackoff(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	select {
 	case <-done:
@@ -347,7 +327,7 @@ func TestCancelRetry_StopsInProgressReconnect(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	// Wait for at least one attempt to happen (the first backoff sleep).
 	waitFor(t, 2*time.Second, "first reconnect attempt", func() bool {
@@ -360,14 +340,13 @@ func TestCancelRetry_StopsInProgressReconnect(t *testing.T) {
 	// removes the map entry, so it must be read first.
 	mon.mu.Lock()
 	var retryDone chan struct{}
-	if rs, ok := mon.retries[""]; ok {
+	if rs, ok := mon.retries["test-tunnel"]; ok {
 		retryDone = rs.done
 	}
 	mon.mu.Unlock()
 
-	// Cancel retry while it's sleeping before the next attempt. "" matches
-	// triggerReconnect()'s legacy (nameless) tunnel key.
-	mon.CancelRetry("")
+	// Cancel retry while it's sleeping before the next attempt.
+	mon.CancelRetry("test-tunnel")
 
 	// Wait for the retry goroutine to fully exit.
 	if retryDone != nil {
@@ -417,7 +396,7 @@ func TestFirewallCallbacks_CalledInOrder(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	// Grab the retry goroutine's done channel IMMEDIATELY after
 	// triggerReconnect returns — the map entry is written synchronously
@@ -426,7 +405,7 @@ func TestFirewallCallbacks_CalledInOrder(t *testing.T) {
 	// quickly, so this must not be delayed.
 	mon.mu.Lock()
 	var retryDone chan struct{}
-	if rs, ok := mon.retries[""]; ok {
+	if rs, ok := mon.retries["test-tunnel"]; ok {
 		retryDone = rs.done
 	}
 	mon.mu.Unlock()
@@ -446,14 +425,8 @@ func TestFirewallCallbacks_CalledInOrder(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Expected order: suspend -> reconnect -> resume -> resume. The second
-	// resume is reconnectWithBackoff's unconditional backstop (a deferred
-	// call at function entry, guaranteeing the firewall gets a resume
-	// attempt no matter how the retry sequence exits — see its doc
-	// comment). It fires here IN ADDITION TO the explicit
-	// resume-after-success call, since fwResumeFn/resumeFirewall is a safe
-	// no-op when nothing is actually suspended.
-	expected := []string{"suspend", "reconnect", "resume", "resume"}
+	// The firewall hold spans the whole sequence: one suspend, one resume.
+	expected := []string{"suspend", "reconnect", "resume"}
 	if len(order) != len(expected) {
 		t.Fatalf("expected %v, got %v", expected, order)
 	}
@@ -488,7 +461,7 @@ func TestFirewallCallbacks_ResumedOnFailure(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	// Wait for attempts to be exhausted.
 	waitFor(t, 2*time.Second, "max attempts reached", func() bool {
@@ -497,15 +470,10 @@ func TestFirewallCallbacks_ResumedOnFailure(t *testing.T) {
 	// Give a moment for post-attempt cleanup.
 	time.Sleep(50 * time.Millisecond)
 
-	// resumeCalls = suspendCalls + 1: the explicit resume-after-failed-attempt
-	// call, PLUS reconnectWithBackoff's unconditional backstop resume that
-	// now fires once when the whole retry sequence exits (see that
-	// function's doc comment) — a safe no-op on top of the already-resumed
-	// state, added so cancel/stop/max-attempts exit paths that previously
-	// had no resume call at all are guaranteed one too.
-	if want := suspendCalls.Load() + 1; resumeCalls.Load() != want {
-		t.Fatalf("expected resume calls (%d) to be suspend calls (%d) + 1, got %d",
-			want, suspendCalls.Load(), resumeCalls.Load())
+	// Failed attempts keep the hold; it is released once, when the
+	// sequence gives up.
+	if suspendCalls.Load() != 1 || resumeCalls.Load() != 1 {
+		t.Fatalf("expected 1 suspend and 1 resume, got %d / %d", suspendCalls.Load(), resumeCalls.Load())
 	}
 }
 
@@ -527,7 +495,7 @@ func TestMaxAttempts_LimitsRetries(t *testing.T) {
 		stateMu.Unlock()
 	}
 
-	mgr := &mockManager{connected: true, activeName: "test"}
+	mgr := &mockManager{connected: true}
 	sd := newMockSleepDetector()
 	mon := NewMonitor(mgr, reconnectFn, statusFn, cfg)
 	mon.sleepDetector = sd
@@ -535,7 +503,7 @@ func TestMaxAttempts_LimitsRetries(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	// Wait for max attempts to be reached.
 	waitFor(t, 5*time.Second, "max attempts exhausted", func() bool {
@@ -571,7 +539,7 @@ func TestMaxAttempts_ZeroMeansUnlimited(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	// Let it run for enough attempts.
 	waitFor(t, 5*time.Second, "at least 5 attempts with unlimited retries", func() bool {
@@ -579,9 +547,11 @@ func TestMaxAttempts_ZeroMeansUnlimited(t *testing.T) {
 	})
 
 	// Should still be trying (not stopped).
-	state := mon.GetState()
-	if !state.Reconnecting {
-		t.Error("expected Reconnecting=true with unlimited retries")
+	mon.mu.Lock()
+	_, retrying := mon.retries["test-tunnel"]
+	mon.mu.Unlock()
+	if !retrying {
+		t.Error("expected an active retry with unlimited retries")
 	}
 
 	mon.Stop()
@@ -656,7 +626,7 @@ func TestStop_CancelsActiveReconnect(t *testing.T) {
 	}
 }
 
-func TestGetState_ReflectsAttempt(t *testing.T) {
+func TestRetryState_ReflectsAttempt(t *testing.T) {
 	cfg := testConfig()
 	cfg.InitialDelay = 200 * time.Millisecond
 	cfg.MaxAttempts = 5
@@ -678,18 +648,18 @@ func TestGetState_ReflectsAttempt(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 	<-attemptSeen
 
-	state := mon.GetState()
-	if !state.Reconnecting {
-		t.Error("expected Reconnecting=true during retry")
+	mon.mu.Lock()
+	rs := mon.retries["test-tunnel"]
+	attempt := 0
+	if rs != nil {
+		attempt = rs.attempt
 	}
-	if state.Attempt < 1 {
-		t.Errorf("expected Attempt >= 1, got %d", state.Attempt)
-	}
-	if state.MaxAttempts != 5 {
-		t.Errorf("expected MaxAttempts=5, got %d", state.MaxAttempts)
+	mon.mu.Unlock()
+	if attempt < 1 {
+		t.Errorf("expected attempt >= 1, got %d", attempt)
 	}
 
 	mon.Stop()
@@ -739,7 +709,7 @@ func TestStatusCallback_CalledDuringReconnect(t *testing.T) {
 		return errors.New("fail")
 	}
 
-	mgr := &mockManager{connected: true, activeName: "test"}
+	mgr := &mockManager{connected: true}
 	sd := newMockSleepDetector()
 	mon := NewMonitor(mgr, reconnectFn, statusFn, cfg)
 	mon.sleepDetector = sd
@@ -747,7 +717,7 @@ func TestStatusCallback_CalledDuringReconnect(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	// Wait for completion.
 	waitFor(t, 2*time.Second, "reconnect finished", func() bool {
@@ -864,7 +834,7 @@ func TestBackoffCapsAtMaxDelay(t *testing.T) {
 	mon.running = true
 	mon.mu.Unlock()
 
-	mon.triggerReconnect()
+	mon.triggerReconnectTunnel("test-tunnel")
 
 	select {
 	case <-done:
@@ -886,5 +856,49 @@ func TestBackoffCapsAtMaxDelay(t *testing.T) {
 			t.Errorf("last gap %v exceeds 3x MaxDelay %v -- backoff may not be capped",
 				lastGap, cfg.MaxDelay)
 		}
+	}
+}
+
+func TestSleepWake_SkipsTunnelWithFreshHandshake(t *testing.T) {
+	var reconnectCalls atomic.Int32
+	mon, mgr, sd := newTestMonitor(testConfig(), func(string) error {
+		reconnectCalls.Add(1)
+		return nil
+	})
+	mon.SetShouldReconnect(func(string) bool { return true })
+	mon.Start()
+	defer mon.Stop()
+
+	sd.sendWake()
+	// The tunnel re-handshakes on its own within the grace period.
+	mgr.setStatus(&tunnel.ConnectionStatus{TunnelName: "t", State: domain.StateConnected,
+		LastHandshakeTime: time.Now().Add(time.Second)})
+	time.Sleep(100 * time.Millisecond)
+	if n := reconnectCalls.Load(); n != 0 {
+		t.Fatalf("healthy tunnel was reconnected after wake (%d calls)", n)
+	}
+}
+
+func TestErrGiveUp_EndsSequence(t *testing.T) {
+	var reconnectCalls, resumeCalls atomic.Int32
+	mon, _, _ := newTestMonitor(testConfig(), func(string) error {
+		reconnectCalls.Add(1)
+		return fmt.Errorf("tunnel was disconnected: %w", ErrGiveUp)
+	})
+	mon.SetFirewallCallbacks(func(string) error { return nil },
+		func(string) error { resumeCalls.Add(1); return nil })
+	mon.Start()
+	defer mon.Stop()
+
+	mon.triggerReconnectTunnel("t")
+	waitFor(t, 2*time.Second, "firewall hold released", func() bool { return resumeCalls.Load() == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if n := reconnectCalls.Load(); n != 1 {
+		t.Fatalf("expected a single attempt, got %d", n)
+	}
+	mon.mu.Lock()
+	defer mon.mu.Unlock()
+	if len(mon.retries) != 0 {
+		t.Fatalf("retry state not cleared: %v", mon.retries)
 	}
 }

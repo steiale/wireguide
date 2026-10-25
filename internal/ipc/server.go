@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -259,7 +260,8 @@ func (s *Server) dispatch(req *Request) *Response {
 	result, err := handler(req.Params)
 	if err != nil {
 		code := ErrCodeAppError
-		if ce, ok := err.(*CodedError); ok {
+		var ce *CodedError
+		if errors.As(err, &ce) {
 			code = ce.Code
 		}
 		return NewErrorResponse(req.ID, code, err.Error())
@@ -308,20 +310,9 @@ func (s *Server) handleSubscribe(conn net.Conn, reqID uint64) {
 			if !ok {
 				return
 			}
-			if _, err := conn.Write(frameBytes(data)); err != nil {
+			if err := writeRawFrame(conn, data); err != nil {
 				return
 			}
 		}
 	}
-}
-
-// frameBytes prepends the 4-byte length prefix.
-func frameBytes(data []byte) []byte {
-	buf := make([]byte, 4+len(data))
-	buf[0] = byte(len(data) >> 24)
-	buf[1] = byte(len(data) >> 16)
-	buf[2] = byte(len(data) >> 8)
-	buf[3] = byte(len(data))
-	copy(buf[4:], data)
-	return buf
 }

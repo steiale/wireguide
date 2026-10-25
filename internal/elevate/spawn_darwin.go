@@ -33,24 +33,55 @@ const (
 	// script pre-creates it root:wheel 0600 before launchd opens it.
 	helperLogPath = "/var/log/lockplus-helper.log"
 
-	// codeSignRequirement pins every binary the root install script copies
-	// out of the (user-writable) app bundle to our Developer ID team. Checked
-	// AFTER the copy, against the root-owned destination, so a same-user
-	// process swapping the bundle's file before or during the admin prompt
-	// can't get an unsigned/foreign binary installed as root. Both dev
-	// (build/darwin/Taskfile.yml) and release builds sign with this team's
-	// Developer ID; an unsigned local openvpn will now fail the install.
-	codeSignRequirement = `anchor apple generic and certificate leaf[subject.OU] = "M53GHX9FAY"`
+	// teamRequirement pins every binary the root install script copies out
+	// of the (user-writable) app bundle to our Developer ID team; each check
+	// also pins the binary's signing identifier (see codeSignRequirement).
+	// Dev (build/darwin/Taskfile.yml) and release (wails3 tool sign) builds
+	// both sign with this team and both yield the file-name identifiers below.
+	teamRequirement = `anchor apple generic and certificate leaf[subject.OU] = "M53GHX9FAY"`
+
+	helperIdentifier  = "lockplus-helper"
+	openvpnIdentifier = "openvpn"
 )
 
+// codeSignRequirement is the requirement for a binary signed with identifier,
+// so one of our signed binaries can't be installed in place of another.
+func codeSignRequirement(identifier string) string {
+	return teamRequirement + ` and identifier "` + identifier + `"`
+}
+
 // verifySignatureSnippet returns a shell fragment (for the root install
-// script) that verifies dst against codeSignRequirement and, on failure,
-// deletes dst and aborts the script with a SIGNATURE_INVALID marker that
-// installAndLoadDaemon turns into a *SignatureError.
-func verifySignatureSnippet(dst string) string {
+// script) that verifies path against codeSignRequirement(identifier) and, on
+// failure, deletes path and aborts the script with a SIGNATURE_INVALID marker
+// that installAndLoadDaemon turns into a *SignatureError.
+func verifySignatureSnippet(path, identifier string) string {
 	return fmt.Sprintf(
 		`CSERR=$(/usr/bin/codesign --verify --strict -R=%s %s 2>&1) || { /bin/rm -f %s; echo "SIGNATURE_INVALID: %s: $CSERR"; exit 5; }; `,
-		shellQuote(codeSignRequirement), shellQuote(dst), shellQuote(dst), dst,
+		shellQuote(codeSignRequirement(identifier)), shellQuote(path), shellQuote(path), path,
+	)
+}
+
+// installBinarySnippet copies src from the app bundle to dst as root. The
+// copy is made root-only (umask 077) under a temporary name in dst's
+// directory, verified, and only then made executable and renamed into
+// place, so nothing is ever world-readable before verification (a swapped-in
+// symlink can't expose root-readable content). The rename also gives dst a
+// fresh inode: overwriting an executed binary in place can wedge
+// syspolicyd's per-file approval cache into a codesigning kill loop.
+func installBinarySnippet(src, dst, identifier string) string {
+	tmp := dst + ".new"
+	q, qs, qt := shellQuote(dst), shellQuote(src), shellQuote(tmp)
+	return fmt.Sprintf(
+		`if [ -L %s ]; then echo "SIGNATURE_INVALID: %s is a symlink"; exit 5; fi; `+
+			`rm -f %s; (umask 077 && cp %s %s); chown root:wheel %s; `+
+			`xattr -d com.apple.quarantine %s 2>/dev/null || true; `+
+			`%s`+
+			`chmod 755 %s; mv -f %s %s; `,
+		qs, src,
+		qt, qs, qt, qt,
+		qt,
+		verifySignatureSnippet(tmp, identifier),
+		qt, qt, q,
 	)
 }
 
@@ -64,7 +95,6 @@ func verifySignatureSnippet(dst string) string {
 //  1. Socket already live → helper running, return immediately.
 //  2. Daemon not installed → install binary + plist + bootstrap (one-time sudo).
 //  3. Daemon installed but not running → bootout + bootstrap to restart.
-//  4. Dev fallback: if all else fails, osascript spawns helper directly.
 func SpawnHelper(args Args) error {
 	// 1. Already running? (skip check if force-reinstalling after version mismatch)
 	if !args.ForceReinstall && isSocketLive(args.SocketPath) {
@@ -79,18 +109,15 @@ func SpawnHelper(args Args) error {
 	return nil
 }
 
-// installAndLoadDaemon writes the plist to a temp file (no escaping issues),
-// then runs a shell script as root via osascript that copies everything into
-// place and bootstraps the daemon. The user sees one password prompt.
+// installAndLoadDaemon runs a shell script as root via osascript that copies
+// the binaries and the (embedded) plist into place and bootstraps the
+// daemon. The user sees one password prompt.
 func installAndLoadDaemon(args Args) error {
 	exe, err := helperBinaryPath()
 	if err != nil {
 		return err
 	}
 
-	// Write plist to a temp file — avoids heredoc/escaping issues inside
-	// the AppleScript string. Go writes it as the current user to /tmp,
-	// then the root shell script copies it to /Library/LaunchDaemons/.
 	uid := os.Getuid()
 	// L2: XML-escape every interpolated value before embedding it in the
 	// plist. The current values come from constants and our own argv so
@@ -124,16 +151,9 @@ func installAndLoadDaemon(args Args) error {
 `, xmlEscape(daemonLabel), xmlEscape(daemonBinary), xmlEscape(args.SocketPath), uid, xmlEscape(args.DataDir),
 		xmlEscape(helperLogPath), xmlEscape(helperLogPath))
 
-	// Validate plist syntax using a throwaway file at an unpredictable path
-	// (os.CreateTemp, not a fixed name) purely for our own linting — it is
-	// NEVER referenced by the privileged shell script below. Writing the
-	// real plist to a fixed, predictable, user-owned path and then having
-	// root's shell `cp` it moments later (the previous approach) was a
-	// TOCTOU: any other process running as the same user could swap the
-	// file's contents in that window and get root to install an
-	// attacker-controlled LaunchDaemon. Instead we base64-embed the
-	// in-memory plist string directly into the root-run shell script, so
-	// root never trusts a path a co-located process could have raced.
+	// Lint the plist via a throwaway temp file that the root script never
+	// reads: the real plist is base64-embedded in the script, so root never
+	// trusts a path a same-user process could swap.
 	lintFile, err := os.CreateTemp("", daemonLabel+"-lint-*.plist")
 	if err != nil {
 		return fmt.Errorf("create lint temp file: %w", err)
@@ -173,114 +193,54 @@ func installAndLoadDaemon(args Args) error {
 // to install the helper. exe is the helper binary inside the app bundle;
 // plistB64 is the base64-encoded LaunchDaemon plist.
 func buildInstallScript(exe, plistB64 string) string {
-	// If the app bundle ships an openvpn binary (Contents/MacOS/openvpn), copy
-	// it to /Library/PrivilegedHelperTools/openvpn so the helper can find it
-	// via filepath.Dir(os.Args[0]). The copy is conditional — dev builds that
-	// lack the binary still install the helper successfully.
+	// The bundled openvpn (Contents/MacOS/openvpn) goes next to the helper,
+	// which finds it via filepath.Dir(os.Args[0]). Optional: dev builds
+	// without it still install the helper.
 	ovpnExe := filepath.Join(filepath.Dir(exe), "openvpn")
 	ovpnDst := "/Library/PrivilegedHelperTools/openvpn"
-	// rm the destination before cp: overwriting an already-executed binary's
-	// file in place (same inode) has been observed to poison syspolicyd's
-	// per-file exec-approval cache on some macOS versions, permanently
-	// wedging that inode into an "OS_REASON_CODESIGNING" kill loop even
-	// though the binary is validly signed and notarized (spctl/codesign both
-	// pass). rm+cp gets a fresh inode and avoids the whole class of bug.
-	//
-	// The signature check runs on the root-owned COPY (not the bundle source,
-	// which a same-user process could swap after we check it).
-	ovpnSnippet := fmt.Sprintf(
-		`if [ -f %s ]; then rm -f %s; cp -f %s %s && xattr -d com.apple.quarantine %s 2>/dev/null || true; chown root:wheel %s && chmod 755 %s; %sfi; `,
-		shellQuote(ovpnExe), shellQuote(ovpnDst), shellQuote(ovpnExe), shellQuote(ovpnDst), shellQuote(ovpnDst),
-		shellQuote(ovpnDst), shellQuote(ovpnDst), verifySignatureSnippet(ovpnDst),
-	)
+	ovpnSnippet := fmt.Sprintf(`if [ -e %s ] || [ -L %s ]; then %sfi; `,
+		shellQuote(ovpnExe), shellQuote(ovpnExe), installBinarySnippet(ovpnExe, ovpnDst, openvpnIdentifier))
 
-	// The shell script runs as root via osascript. It is structured so that a
-	// failure at any step aborts (set -e) and prints a recognisable marker on
-	// stdout. We DELIBERATELY do not suppress errors on the bootstrap step:
-	// when launchd refuses to load the daemon (blocked Login Item, bad
-	// signature, ...) we need that error text to surface back to Go so the GUI
-	// can show something actionable instead of silently looping.
-	//
-	// Flow inside the script:
-	//  1. bootout the current + legacy labels (ignore "not loaded" errors).
-	//  2. Remove legacy binary/plist.
-	//  3. Copy the fresh helper binary + plist into place, fix ownership.
-	//  4. (conditionally) copy the bundled openvpn binary.
-	//  5. Try `kickstart -k` (in-place restart of an already-loaded service);
-	//     if that fails (service not loaded), `bootstrap` it from the plist.
-	//     Bootstrap errors are NOT suppressed.
-	//  6. Verify with `launchctl print` that the service is actually
-	//     registered. If it is not, emit BOOTSTRAP_FAILED so Go can detect it.
-	//
-	// We echo a leading "INSTALL_OK" only when everything (including the
-	// verification) succeeds. Its presence/absence is how Go distinguishes a
-	// real success from a partial one.
+	// Runs as root via osascript. set -e aborts on any failure; markers on
+	// stdout (INSTALL_OK, BOOTSTRAP_FAILED, SIGNATURE_INVALID) tell
+	// interpretInstallOutput what happened. Bootstrap errors are surfaced,
+	// not suppressed, so the GUI can show something actionable.
 	return fmt.Sprintf(
 		`set -e; `+
-			// Pin PATH to the standard system directories before running
-			// anything else. Without this, every bare command below (cp, rm,
-			// chown, launchctl, ...) resolves via the invoking user's PATH —
-			// a same-user process could plant a malicious binary earlier in
-			// PATH and have it silently execute as root inside this script.
+			// Pin PATH: bare commands must not resolve via the user's PATH.
 			`export PATH="/usr/bin:/bin:/usr/sbin:/sbin"; `+
 			`launchctl bootout system/`+daemonLabel+` 2>/dev/null || true; `+
 			`launchctl bootout system/com.wireguide.helper 2>/dev/null || true; `+
 			`rm -f /Library/LaunchDaemons/com.wireguide.helper.plist; `+
 			`rm -f /Library/PrivilegedHelperTools/com.wireguide.helper; `+
 			`mkdir -p /Library/PrivilegedHelperTools; `+
-			// rm before cp — see ovpnSnippet comment above for why overwriting
-			// the existing binary's inode in place is unsafe.
-			`rm -f %s; `+
-			`cp -f %s %s; `+
-			`xattr -d com.apple.quarantine %s 2>/dev/null || true; `+
-			`chown root:wheel %s; `+
-			`chmod 755 %s; `+
-			// Verify the root-owned copy is signed by our team; on
-			// failure it is deleted and the script aborts (exit 5).
-			`%s`+
-			// Decode the plist directly to its destination from the
-			// base64 blob embedded in this script — root never reads a
-			// path a co-located user process could have raced (see the
-			// lintFile comment above).
+			`%s`+ // helper binary
+			// The plist is decoded straight from the blob in this script.
 			`printf '%%s' %s | base64 -d > %s; `+
 			`chown root:wheel %s; `+
 			`chmod 644 %s; `+
-			`%s`+
-			// Pre-create the helper log root:wheel 0600 before launchd
-			// opens it (it would otherwise be created 0644, world-readable,
-			// and it receives openvpn's stderr). chmod also tightens a log
-			// left 0644 by an older install.
+			`%s`+ // openvpn
+			// The log receives openvpn's stderr: pre-create it root-only
+			// before launchd opens it (and tighten an older 0644 one).
 			`/usr/bin/touch %s; /usr/sbin/chown root:wheel %s; /bin/chmod 600 %s; `+
-			// Ensure launchd's persistent disabled-state is cleared before we
-			// try to load the daemon. Without this, a prior macOS Login Items
-			// block (or an explicit `launchctl disable`) keeps the service
-			// disabled even after the plist is in place — bootstrap then
-			// succeeds (exit 0) but the daemon never actually starts.
+			// Clear a persistent disabled state (Login Items block or
+			// `launchctl disable`): bootstrap would succeed but never start.
 			`launchctl enable system/%s 2>/dev/null || true; `+
-			// Load the daemon. kickstart restarts an already-loaded service in
-			// place; if it isn't loaded yet, bootstrap it. Capture bootstrap's
-			// error so it ends up in the osascript output.
+			// kickstart restarts a loaded service; otherwise bootstrap it.
 			`if launchctl kickstart -k system/%s 2>/dev/null; then :; `+
 			`else BOOTERR=$(launchctl bootstrap system %s 2>&1) || { echo "BOOTSTRAP_FAILED: $BOOTERR"; exit 3; }; fi; `+
-			// Verify the service is now registered. `launchctl print` exits
-			// non-zero if the label is unknown to launchd.
 			`if launchctl print system/%s >/dev/null 2>&1; then echo INSTALL_OK; `+
 			`else echo "BOOTSTRAP_FAILED: service not registered after load"; exit 4; fi`,
-		shellQuote(daemonBinary),
-		shellQuote(exe), shellQuote(daemonBinary),
-		shellQuote(daemonBinary),
-		shellQuote(daemonBinary),
-		shellQuote(daemonBinary),
-		verifySignatureSnippet(daemonBinary),
+		installBinarySnippet(exe, daemonBinary, helperIdentifier),
 		shellQuote(plistB64), shellQuote(daemonPlist),
 		shellQuote(daemonPlist),
 		shellQuote(daemonPlist),
 		ovpnSnippet,
 		shellQuote(helperLogPath), shellQuote(helperLogPath), shellQuote(helperLogPath),
-		daemonLabel,             // enable system/%s
-		daemonLabel,             // kickstart -k system/%s
-		shellQuote(daemonPlist), // bootstrap system %s
-		daemonLabel,             // print system/%s
+		daemonLabel,
+		daemonLabel,
+		shellQuote(daemonPlist),
+		daemonLabel,
 	)
 }
 
@@ -379,17 +339,12 @@ func helperBinaryPath() (string, error) {
 	}
 	dir := filepath.Dir(self)
 	candidate := filepath.Join(dir, "lockplus-helper")
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate, nil
+	// No fallback to the GUI binary: it would fail the identifier pin anyway,
+	// and as a root daemon it crashes (AppKit without a window server).
+	if _, err := os.Stat(candidate); err != nil {
+		return "", fmt.Errorf("helper binary missing at %s (reinstall the app): %w", candidate, err)
 	}
-	// Inside a .app bundle the helper MUST be present — falling back to the
-	// GUI binary would silently reinstall the crashing Wails binary as the
-	// root daemon, recreating the crash-loop we fixed in v1.0.22.
-	if strings.HasSuffix(dir, ".app/Contents/MacOS") {
-		return "", fmt.Errorf("helper binary missing from app bundle at %s (reinstall the app)", candidate)
-	}
-	slog.Warn("helper binary not found; falling back to self (dev build only)", "path", candidate)
-	return self, nil
+	return candidate, nil
 }
 
 // isSocketLive checks whether the helper socket accepts a connection.

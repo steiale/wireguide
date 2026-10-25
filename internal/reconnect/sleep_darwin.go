@@ -126,11 +126,7 @@ func (d *darwinSleepDetector) Start() {
 		slog.Warn("IOKit power watcher failed to start; relying on poll fallback")
 	}
 
-	// Pass stopCh by value rather than having poll() read d.stopCh on every
-	// tick — a later Start() call reassigns d.stopCh under d.mu while
-	// poll()'s loop reads it unsynchronized, a data race that (beyond being
-	// undefined behavior) can leave a stale poll() goroutine waiting on a
-	// channel nothing will ever close again, leaking it forever.
+	// Pass stopCh by value: a later Start() reassigns d.stopCh.
 	go d.poll(stopCh)
 }
 
@@ -163,8 +159,10 @@ func (d *darwinSleepDetector) sendWake() {
 	}
 }
 
+// poll detects a sleep as a gap between ticks. It must compare WALL clock
+// readings: Go's monotonic clock does not advance while a Mac sleeps.
 func (d *darwinSleepDetector) poll(stopCh chan struct{}) {
-	lastCheck := time.Now()
+	lastCheck := time.Now().Round(0)
 	const pollInterval = 10 * time.Second
 	const sleepThreshold = 30 * time.Second
 
@@ -176,7 +174,7 @@ func (d *darwinSleepDetector) poll(stopCh chan struct{}) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			now := time.Now()
+			now := time.Now().Round(0)
 			elapsed := now.Sub(lastCheck)
 			lastCheck = now
 			if elapsed > pollInterval+sleepThreshold {

@@ -9,13 +9,8 @@ import (
 	"time"
 )
 
-// routeMonitor runs `route -n monitor` in the background and triggers
-// re-application of endpoint bypass + DNS + MTU whenever a network change
-// event (RTM_*) is received. This mirrors wg-quick's monitor_daemon.
-//
-// Without this, switching Wi-Fi networks or changing the default gateway
-// while a full-tunnel VPN is up would leave the endpoint bypass route
-// pointing at the stale gateway, breaking the tunnel.
+// routeMonitor runs `route -n monitor` and calls reapply (bypass routes,
+// DNS, MTU) on network change events, like wg-quick's monitor_daemon.
 type routeMonitor struct {
 	mu       sync.Mutex
 	cmd      *exec.Cmd
@@ -40,19 +35,10 @@ func newRouteMonitor(reapply func()) *routeMonitor {
 	return &routeMonitor{reapply: reapply}
 }
 
-// Start begins monitoring. Safe to call multiple times (no-op if already
-// running). Also a permanent no-op once Stop() has ever been called on this
-// instance (see stopped) — AddRoutes schedules Start() after a 2s delay, and
-// if teardown (RemoveRoutes/Cleanup, e.g. on a failed connect or a fast
-// manual disconnect) happens inside that window, Stop() runs against a
-// monitor that was never started (running==false, so it no-ops) with
-// nothing to prevent the delayed Start() from firing 2s later against an
-// already-discarded manager — leaking a root `route -n monitor` subprocess
-// and its reader goroutine for the helper daemon's lifetime, once per
-// occurrence. A new connect cycle always builds a fresh DarwinManager (and
-// thus a fresh routeMonitor via newRouteMonitor), so tombstoning this
-// instance permanently is correct — it will never legitimately need to
-// start again.
+// Start begins monitoring. Idempotent, and a permanent no-op once Stop() has
+// been called: startMonitor's delayed Start() may land after a fast teardown
+// and must not leak a `route -n monitor` process. Each connect builds a fresh
+// manager, so a stopped monitor never needs to restart.
 func (rm *routeMonitor) Start() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
@@ -86,11 +72,7 @@ func (rm *routeMonitor) Start() {
 // occur, so the caller can safely tear down shared state.
 func (rm *routeMonitor) Stop() {
 	rm.mu.Lock()
-	// Set unconditionally, even on the early-return below: Stop() can race
-	// with AddRoutes's 2s-delayed Start() and run first, while
-	// rm.running is still false — that must still tombstone the instance
-	// so the delayed Start() call later on doesn't spin up a subprocess
-	// against an already-torn-down manager (see Start()'s comment).
+	// Tombstone even if never started (see Start).
 	rm.stopped = true
 	if !rm.running {
 		rm.mu.Unlock()

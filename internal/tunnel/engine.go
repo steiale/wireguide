@@ -44,9 +44,7 @@ type Engine struct {
 	died chan struct{}
 
 	// stopped is closed exactly once, unconditionally, whenever
-	// wgDevice.Wait() returns — whether that's from our own Close() or from
-	// wireguard-go self-destructing. See Stopped's doc comment for why a
-	// caller needs this in addition to died.
+	// wgDevice.Wait() returns, after died (if it fires).
 	stopped chan struct{}
 
 	// resolvedEndpointIPs caches the IP address each peer endpoint was
@@ -113,13 +111,7 @@ func NewEngine(cfg *config.WireGuardConfig) (*Engine, error) {
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("peer[%d] resolve %q: no addresses found", i, host)
 		}
-		// M4: Prefer IPv4 records over IPv6 when both are returned. Many
-		// WireGuard servers publish both A and AAAA records but only have
-		// outbound IPv4 reachability working reliably, and on a typical
-		// dual-stack home network IPv4 also tends to be the more reliable
-		// path. By trying IPv4 first we avoid a class of "first IP is
-		// unreachable, no failover" failures where the resolver happens to
-		// hand us the AAAA record first.
+		// Prefer IPv4: dual-stack servers often only have reliable IPv4.
 		ordered := orderIPsV4First(ips)
 		// Use the first IPv4 (or first IP if none) for the WG config.
 		// wireguard-go will roam to a different source if the peer's
@@ -176,12 +168,9 @@ func NewEngine(cfg *config.WireGuardConfig) (*Engine, error) {
 	}
 
 	// Watch for wireguard-go tearing the device down on its own (fatal TUN
-	// I/O error) rather than via our Close(). Wait() also returns on a
-	// normal Close(), so this only signals Died() when closing is still
-	// false at that point. stopped is closed unconditionally either way —
-	// callers (Manager.watchEngineDeath) select on both so a NORMAL
-	// shutdown lets the watcher goroutine exit instead of blocking on
-	// Died() forever, which never fires again once this engine is closed.
+	// I/O error) rather than via our Close(). died is closed strictly before
+	// stopped, so Manager.watchEngineDeath can wait on Stopped() and then
+	// check Died() without a race.
 	go func() {
 		<-wgDev.Wait()
 		if !engine.closing.Load() {
@@ -274,22 +263,15 @@ func (e *Engine) Close() {
 }
 
 // Died returns a channel that is closed if wireguard-go tears the device
-// down on its own — e.g. after a fatal "Failed to read packet from TUN
-// device" error — without anyone calling Close(). It never fires for a
-// normal, caller-initiated shutdown. Callers (the tunnel Manager) select on
-// this alongside their other work to detect a tunnel that looks connected
-// but is actually dead, instead of leaving it silently stuck.
+// down on its own (e.g. a fatal TUN read error) without Close() being
+// called. It never fires for a normal shutdown.
 func (e *Engine) Died() <-chan struct{} {
 	return e.died
 }
 
 // Stopped returns a channel that is closed once wireguard-go's device loop
-// has actually exited, for ANY reason — a normal Close() included. A watcher
-// that only selected on Died() would block forever after a normal shutdown
-// (died never fires in that case), leaking one goroutine — and everything it
-// holds a reference to (the device, its TUN fd, peer/handshake state) — per
-// connect/disconnect cycle for the rest of the process's lifetime. Select on
-// both: Died() to react to an unexpected death, Stopped() to exit cleanly.
+// has exited for any reason, a normal Close() included. Wait on it, then
+// check Died(): it is already decided by then.
 func (e *Engine) Stopped() <-chan struct{} {
 	return e.stopped
 }
@@ -310,10 +292,7 @@ func buildIpcConfig(cfg *config.WireGuardConfig) (string, error) {
 	if cfg.Interface.ListenPort > 0 {
 		b.WriteString(fmt.Sprintf("listen_port=%d\n", cfg.Interface.ListenPort))
 	}
-	// FwMark is intentionally NOT set here in the UAPI config. The platform
-	// network manager sets it via `wg set <iface> fwmark <value>` AFTER
-	// engine creation, which avoids a brief mismatch window on Linux
-	// full-tunnel where the platform installs fwmark-aware routing rules.
+	// FwMark is not applied: it has no meaning on macOS.
 	b.WriteString("replace_peers=true\n")
 
 	for i, peer := range cfg.Peers {

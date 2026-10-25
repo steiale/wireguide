@@ -5,7 +5,7 @@ package elevate
 type Args struct {
 	// SocketPath is passed to the helper as --socket=PATH
 	SocketPath string
-	// SocketUID is the UID to chown the socket to (Unix only). On Windows, 0.
+	// SocketUID is the UID to chown the socket to.
 	SocketUID int
 	// DataDir for crash recovery state
 	DataDir string

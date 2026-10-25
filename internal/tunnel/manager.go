@@ -21,9 +21,8 @@ import (
 	"github.com/steiale/wireguide/internal/network"
 )
 
-// tunnelEntry holds the state for a single tunnel within the multi-tunnel
-// manager. Each entry has its own state machine, engine, config, connected
-// timestamp, and per-tunnel NetworkManager instance.
+// tunnelEntry is one tunnel's state machine, engine, config and its own
+// NetworkManager.
 type tunnelEntry struct {
 	state       domain.State
 	engine      *Engine
@@ -128,14 +127,15 @@ func (m *Manager) Connect(cfg *domain.WireGuardConfig) error {
 
 	// --- Phase 1: claim the connecting slot under the lock ---
 	m.mu.Lock()
-	entry := m.getOrCreateEntry(name)
-	switch entry.state {
-	case domain.StateConnected:
-		m.mu.Unlock()
-		return newTunnelError(ErrAlreadyConnected, fmt.Sprintf("tunnel %q is already connected", name), nil)
-	case domain.StateConnecting, stateDisconnecting:
-		m.mu.Unlock()
-		return newTunnelError(ErrTransitionInProgress, fmt.Sprintf("tunnel %q: another transition is in progress", name), nil)
+	if existing, ok := m.tunnels[name]; ok {
+		switch existing.state {
+		case domain.StateConnected:
+			m.mu.Unlock()
+			return newTunnelError(ErrAlreadyConnected, fmt.Sprintf("tunnel %q is already connected", name), nil)
+		case domain.StateConnecting, stateDisconnecting:
+			m.mu.Unlock()
+			return newTunnelError(ErrTransitionInProgress, fmt.Sprintf("tunnel %q: another transition is in progress", name), nil)
+		}
 	}
 	// Reject if the new config is full-tunnel and any existing connected tunnel
 	// is also full-tunnel — two 0.0.0.0/0 routes conflict on the route table.
@@ -149,8 +149,10 @@ func (m *Manager) Connect(cfg *domain.WireGuardConfig) error {
 		}
 	}
 
-	// Stash the tunnel config early so Status() can show "connecting <name>"
-	// while the phases are running.
+	// Create the entry only now that the connect is accepted, so a rejected
+	// connect leaves no nameless Disconnected entry behind. The config is
+	// stashed early so Status() can show "connecting <name>".
+	entry := m.getOrCreateEntry(name)
 	entry.cfg = cfg
 	entry.state = domain.StateConnecting
 
@@ -179,27 +181,14 @@ func (m *Manager) Connect(cfg *domain.WireGuardConfig) error {
 		m.mu.Unlock()
 		return err
 	}
-	// Re-validate state: a Disconnect may have landed while we were outside
-	// the lock. If so, discard the engine we just created.
-	//
-	// In practice DisconnectTunnel POLLS until a tunnel leaves
-	// StateConnecting before touching it (it never mutates a connecting
-	// entry directly) and Connect calls are already serialized upstream
-	// (helper.connectMu), so this branch should be unreachable today — but
-	// it's cheap to check and kept as a safety net against a future change
-	// to either of those invariants. It does NOT hold m.mu across the slow
-	// network cleanup calls below (a previous version did, via this
-	// function's now-removed top-level `defer m.mu.Unlock()`) — doing so
-	// would block every other Status()/IsConnected() caller for as long as
-	// RemoveRoutes/RestoreDNS/Cleanup's networksetup/route fan-out takes.
+	// Safety net: DisconnectTunnel never mutates a connecting entry and
+	// connects are serialized upstream, so this should be unreachable. The
+	// slow cleanup runs outside the lock.
 	if entry.state != domain.StateConnecting {
 		m.mu.Unlock()
-		// Clean up the network state that connectPhases just installed —
-		// outside the lock, see comment above.
-		netMgr.RemoveRoutes(engine.InterfaceName(), nil, cfg.IsFullTunnel())
-		netMgr.RestoreDNS(engine.InterfaceName())
-		netMgr.Cleanup(engine.InterfaceName())
+		_ = netMgr.Cleanup(engine.InterfaceName())
 		engine.Close()
+		_ = ClearActiveState(m.dataDir, name)
 		m.mu.Lock()
 		m.removeEntry(name)
 		m.mu.Unlock()
@@ -213,19 +202,9 @@ func (m *Manager) Connect(cfg *domain.WireGuardConfig) error {
 	return nil
 }
 
-// watchEngineDeath blocks until the engine's device loop exits for ANY
-// reason (Stopped(), which — unlike Died() — always fires, including on a
-// normal Close()) and then checks whether that exit was an unexpected death.
-//
-// This deliberately does NOT `select` on Died() and Stopped() together: both
-// channels can be closed by the time this goroutine gets scheduled, and a
-// select with two simultaneously-ready cases picks between them uniformly at
-// RANDOM — a 50% chance of silently skipping handleEngineDied on a genuine
-// death. Waiting on Stopped() alone and then checking Died() with a
-// non-blocking select is race-free instead: engine.go's watcher closes died
-// (if applicable) strictly before it closes stopped, in that order, in the
-// same goroutine — so by the time Stopped() has been observed as closed,
-// Died()'s closed-or-not state is already decided and visible, no race.
+// watchEngineDeath waits for the engine's device loop to exit, then checks
+// whether it died on its own. Not a select on both channels: both may be
+// ready and select would pick randomly; died is closed before stopped.
 func (m *Manager) watchEngineDeath(name string, engine *Engine) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -248,11 +227,7 @@ func (m *Manager) watchEngineDeath(name string, engine *Engine) {
 func (m *Manager) handleEngineDied(name string, engine *Engine) {
 	m.mu.Lock()
 	entry, ok := m.tunnels[name]
-	// entry.engine != engine guards against a stale watcher from a PRIOR
-	// engine instance for this tunnel name (e.g. it died, this handler is
-	// still queued behind m.mu, and meanwhile the tunnel was manually
-	// reconnected with a fresh engine before we got the lock) — don't tear
-	// down the new, healthy connection.
+	// A stale watcher from a prior engine must not tear down a newer one.
 	if !ok || entry.engine != engine || entry.state != domain.StateConnected {
 		m.mu.Unlock()
 		return
@@ -273,25 +248,6 @@ func (m *Manager) handleEngineDied(name string, engine *Engine) {
 	if onDied != nil {
 		onDied(name)
 	}
-}
-
-// Disconnect tears down the first connected tunnel. Kept for backward
-// compatibility with callers that only support a single tunnel (reconnect
-// monitor, tray, etc.). Use DisconnectTunnel for named disconnects.
-func (m *Manager) Disconnect() error {
-	m.mu.Lock()
-	var name string
-	for n, e := range m.tunnels {
-		if e.state == domain.StateConnected || e.state == domain.StateConnecting {
-			name = n
-			break
-		}
-	}
-	m.mu.Unlock()
-	if name == "" {
-		return newTunnelError(ErrNotConnected, "no tunnel is connected", nil)
-	}
-	return m.DisconnectTunnel(name)
 }
 
 // DisconnectTunnel tears down a specific tunnel by name. Like Connect, runs
@@ -363,179 +319,119 @@ func (m *Manager) DisconnectAll() {
 	}
 }
 
-// Status returns the status of the first connected (or connecting) tunnel.
-// For backward compatibility with single-tunnel callers. The returned
-// ConnectionStatus includes ActiveTunnels listing all active tunnel names.
+// entrySnap is the part of a tunnelEntry needed to build its status
+// outside m.mu (GetStatus talks to wgctrl).
+type entrySnap struct {
+	state       domain.State
+	engine      *Engine
+	connectedAt time.Time
+	name        string
+}
+
+func snapOf(e *tunnelEntry) entrySnap {
+	s := entrySnap{state: e.state, engine: e.engine, connectedAt: e.connectedAt}
+	if e.cfg != nil {
+		s.name = e.cfg.Name
+	}
+	return s
+}
+
+// status maps an entry to its wire status. Connecting and disconnecting both
+// surface as "connecting".
+func (s entrySnap) status() *ConnectionStatus {
+	switch s.state {
+	case domain.StateConnecting, stateDisconnecting:
+		return &ConnectionStatus{State: domain.StateConnecting, TunnelName: s.name}
+	case domain.StateConnected:
+		if s.engine == nil {
+			break
+		}
+		st, err := GetStatus(s.engine.InterfaceName(), s.name, s.connectedAt)
+		if err != nil {
+			slog.Debug("failed to get tunnel status", "tunnel", s.name, "error", err)
+			return &ConnectionStatus{State: domain.StateError, TunnelName: s.name}
+		}
+		return st
+	case domain.StateError:
+		return &ConnectionStatus{State: domain.StateError, TunnelName: s.name}
+	}
+	return &ConnectionStatus{State: domain.StateDisconnected, TunnelName: s.name}
+}
+
+// Status returns the status of the "primary" tunnel (first connected, else
+// first transitioning, else first errored, by name), with ActiveTunnels
+// listing every active tunnel.
 func (m *Manager) Status() *ConnectionStatus {
 	m.mu.Lock()
-	// Find the "primary" tunnel (first connected, or first connecting).
+	active := m.activeTunnelNamesLocked()
 	var primary *tunnelEntry
-	var primaryName string
-	activeTunnels := m.activeTunnelNamesLocked()
-	for _, name := range activeTunnels {
-		e := m.tunnels[name]
-		if e.state == domain.StateConnected {
-			primary = e
-			primaryName = name
+	for _, want := range []func(domain.State) bool{
+		func(st domain.State) bool { return st == domain.StateConnected },
+		func(st domain.State) bool { return st == domain.StateConnecting || st == stateDisconnecting },
+		func(st domain.State) bool { return st == domain.StateError },
+	} {
+		for _, name := range m.sortedNamesLocked() {
+			if e := m.tunnels[name]; want(e.state) {
+				primary = e
+				break
+			}
+		}
+		if primary != nil {
 			break
 		}
 	}
 	if primary == nil {
-		for _, name := range activeTunnels {
-			e := m.tunnels[name]
-			if e.state == domain.StateConnecting || e.state == stateDisconnecting {
-				primary = e
-				primaryName = name
-				break
-			}
-		}
-	}
-	// Check for error state tunnels if nothing else found.
-	if primary == nil {
-		for name, e := range m.tunnels {
-			if e.state == domain.StateError {
-				primary = e
-				primaryName = name
-				break
-			}
-		}
-	}
-
-	if primary == nil {
 		m.mu.Unlock()
-		return &ConnectionStatus{
-			State:         domain.StateDisconnected,
-			ActiveTunnels: activeTunnels,
-		}
+		return &ConnectionStatus{State: domain.StateDisconnected, ActiveTunnels: active}
 	}
-
-	state := primary.state
-	engine := primary.engine
-	connectedAt := primary.connectedAt
-	_ = primaryName // used for logging only
-	cfgName := ""
-	if primary.cfg != nil {
-		cfgName = primary.cfg.Name
-	}
+	snap := snapOf(primary)
 	m.mu.Unlock()
 
-	switch state {
-	case domain.StateConnecting, stateDisconnecting:
-		return &ConnectionStatus{
-			State:         domain.StateConnecting,
-			TunnelName:    cfgName,
-			ActiveTunnels: activeTunnels,
-		}
-	case domain.StateDisconnected:
-		return &ConnectionStatus{
-			State:         domain.StateDisconnected,
-			ActiveTunnels: activeTunnels,
-		}
-	case domain.StateError:
-		return &ConnectionStatus{
-			State:         domain.StateError,
-			TunnelName:    cfgName,
-			ActiveTunnels: activeTunnels,
-		}
-	}
-
-	// StateConnected — talk to wgctrl without holding m.mu.
-	if engine == nil {
-		return &ConnectionStatus{
-			State:         domain.StateDisconnected,
-			ActiveTunnels: activeTunnels,
-		}
-	}
-	status, err := GetStatus(engine.InterfaceName(), cfgName, connectedAt)
-	if err != nil {
-		slog.Warn("failed to get status", "error", err)
-		return &ConnectionStatus{
-			State:         domain.StateError,
-			TunnelName:    cfgName,
-			ActiveTunnels: activeTunnels,
-		}
-	}
-	status.ActiveTunnels = activeTunnels
-	return status
-}
-
-// StatusFor returns the status of a specific tunnel by name.
-func (m *Manager) StatusFor(name string) *ConnectionStatus {
-	m.mu.Lock()
-	entry, ok := m.tunnels[name]
-	if !ok {
-		m.mu.Unlock()
-		return &ConnectionStatus{State: domain.StateDisconnected, TunnelName: name}
-	}
-	state := entry.state
-	engine := entry.engine
-	connectedAt := entry.connectedAt
-	cfgName := ""
-	if entry.cfg != nil {
-		cfgName = entry.cfg.Name
-	}
-	m.mu.Unlock()
-
-	switch state {
-	case domain.StateConnecting, stateDisconnecting:
-		return &ConnectionStatus{State: domain.StateConnecting, TunnelName: cfgName}
-	case domain.StateDisconnected:
-		return &ConnectionStatus{State: domain.StateDisconnected, TunnelName: cfgName}
-	case domain.StateError:
-		return &ConnectionStatus{State: domain.StateError, TunnelName: cfgName}
-	}
-
-	if engine == nil {
-		return &ConnectionStatus{State: domain.StateDisconnected, TunnelName: cfgName}
-	}
-	status, err := GetStatus(engine.InterfaceName(), cfgName, connectedAt)
-	if err != nil {
-		return &ConnectionStatus{State: domain.StateError, TunnelName: cfgName}
-	}
-	return status
+	st := snap.status()
+	st.ActiveTunnels = active
+	return st
 }
 
 // AllStatuses returns the status of every tunnel that has an entry.
 func (m *Manager) AllStatuses() []*ConnectionStatus {
 	m.mu.Lock()
-	type snap struct {
-		name        string
-		state       domain.State
-		engine      *Engine
-		connectedAt time.Time
-		cfgName     string
-	}
-	var snaps []snap
-	for name, e := range m.tunnels {
-		cfgName := ""
-		if e.cfg != nil {
-			cfgName = e.cfg.Name
-		}
-		snaps = append(snaps, snap{name, e.state, e.engine, e.connectedAt, cfgName})
+	snaps := make([]entrySnap, 0, len(m.tunnels))
+	for _, name := range m.sortedNamesLocked() {
+		snaps = append(snaps, snapOf(m.tunnels[name]))
 	}
 	m.mu.Unlock()
 
-	var out []*ConnectionStatus
+	out := make([]*ConnectionStatus, 0, len(snaps))
 	for _, s := range snaps {
-		switch s.state {
-		case domain.StateConnecting, stateDisconnecting:
-			out = append(out, &ConnectionStatus{State: domain.StateConnecting, TunnelName: s.cfgName})
-		case domain.StateDisconnected:
-			out = append(out, &ConnectionStatus{State: domain.StateDisconnected, TunnelName: s.cfgName})
-		case domain.StateError:
-			out = append(out, &ConnectionStatus{State: domain.StateError, TunnelName: s.cfgName})
-		case domain.StateConnected:
-			if s.engine == nil {
-				out = append(out, &ConnectionStatus{State: domain.StateDisconnected, TunnelName: s.cfgName})
-				continue
-			}
-			st, err := GetStatus(s.engine.InterfaceName(), s.cfgName, s.connectedAt)
-			if err != nil {
-				out = append(out, &ConnectionStatus{State: domain.StateError, TunnelName: s.cfgName})
-			} else {
-				out = append(out, st)
-			}
+		out = append(out, s.status())
+	}
+	return out
+}
+
+// TunnelInfo describes a connected tunnel for the helper's firewall policy.
+type TunnelInfo struct {
+	Name          string
+	InterfaceName string
+	Endpoints     []string // resolved "ip:port" of every peer
+	DNS           []string // configured DNS entries (servers and search domains)
+}
+
+// ConnectedTunnels returns every fully connected tunnel, sorted by name.
+func (m *Manager) ConnectedTunnels() []TunnelInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []TunnelInfo
+	for _, name := range m.sortedNamesLocked() {
+		e := m.tunnels[name]
+		if e.state != domain.StateConnected || e.engine == nil || e.cfg == nil {
+			continue
 		}
+		out = append(out, TunnelInfo{
+			Name:          name,
+			InterfaceName: e.engine.InterfaceName(),
+			Endpoints:     e.engine.ResolvedEndpoints(),
+			DNS:           append([]string(nil), e.cfg.Interface.DNS...),
+		})
 	}
 	return out
 }
@@ -558,50 +454,6 @@ func (m *Manager) IsTunnelConnected(name string) bool {
 	defer m.mu.Unlock()
 	e, ok := m.tunnels[name]
 	return ok && e.state == domain.StateConnected
-}
-
-// ResolvedEndpointIPs returns the union of pre-resolved endpoint IP addresses
-// from all active engines. Returns nil if no tunnel is connected.
-func (m *Manager) ResolvedEndpointIPs() []string {
-	m.mu.Lock()
-	var engines []*Engine
-	for _, e := range m.tunnels {
-		if e.engine != nil {
-			engines = append(engines, e.engine)
-		}
-	}
-	m.mu.Unlock()
-
-	if len(engines) == 0 {
-		return nil
-	}
-	var all []string
-	for _, eng := range engines {
-		all = append(all, eng.ResolvedEndpointIPs()...)
-	}
-	return all
-}
-
-// ResolvedEndpoints returns the union of pre-resolved endpoint ip:port pairs
-// from all active engines. Returns nil if no tunnel is connected.
-func (m *Manager) ResolvedEndpoints() []string {
-	m.mu.Lock()
-	var engines []*Engine
-	for _, e := range m.tunnels {
-		if e.engine != nil {
-			engines = append(engines, e.engine)
-		}
-	}
-	m.mu.Unlock()
-
-	if len(engines) == 0 {
-		return nil
-	}
-	var all []string
-	for _, eng := range engines {
-		all = append(all, eng.ResolvedEndpoints()...)
-	}
-	return all
 }
 
 // ActiveTunnel returns the name of the first connected (or connecting)
@@ -629,34 +481,23 @@ func (m *Manager) ActiveTunnels() []string {
 // Caller MUST hold m.mu.
 func (m *Manager) activeTunnelNamesLocked() []string {
 	var names []string
-	for name, e := range m.tunnels {
-		if e.state == domain.StateConnected || e.state == domain.StateConnecting || e.state == stateDisconnecting {
+	for _, name := range m.sortedNamesLocked() {
+		switch m.tunnels[name].state {
+		case domain.StateConnected, domain.StateConnecting, stateDisconnecting:
 			names = append(names, name)
 		}
 	}
-	sort.Strings(names)
 	return names
 }
 
-// AllDNSServers returns the union of DNS servers from all connected tunnels'
-// configs. Used to re-apply the combined DNS when a tunnel connects or
-// disconnects, preventing one tunnel from overwriting another's DNS settings.
-func (m *Manager) AllDNSServers() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	seen := make(map[string]struct{})
-	var all []string
-	for _, e := range m.tunnels {
-		if e.state == domain.StateConnected && e.cfg != nil {
-			for _, dns := range e.cfg.Interface.DNS {
-				if _, ok := seen[dns]; !ok {
-					seen[dns] = struct{}{}
-					all = append(all, dns)
-				}
-			}
-		}
+// sortedNamesLocked returns every entry's name, sorted. Caller MUST hold m.mu.
+func (m *Manager) sortedNamesLocked() []string {
+	names := make([]string, 0, len(m.tunnels))
+	for name := range m.tunnels {
+		names = append(names, name)
 	}
-	return all
+	sort.Strings(names)
+	return names
 }
 
 // SetPinInterface enables or disables -ifscope bypass route pinning on macOS.

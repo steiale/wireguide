@@ -19,11 +19,11 @@ func withJournal(t *testing.T) (path string, restored *[2]map[string][]string) {
 	t.Cleanup(func() {
 		restoreBaselineFn = origFn
 		SetDNSJournalPath("")
-		dnsStateMu.Lock()
+		dnsMu.Lock()
 		dnsSavedDNS = make(map[string][]string)
 		dnsSavedSearch = make(map[string][]string)
-		dnsActiveIfaces = make(map[string]bool)
-		dnsStateMu.Unlock()
+		dnsHolders = dnsHolderSet{}
+		dnsMu.Unlock()
 	})
 	return path, &got
 }
@@ -33,11 +33,11 @@ func TestDNSJournalRoundTrip(t *testing.T) {
 
 	wantDNS := map[string][]string{"Wi-Fi": {"192.168.1.1", "1.1.1.1"}, "Ethernet": nil}
 	wantSearch := map[string][]string{"Wi-Fi": {"corp.example"}, "Ethernet": nil}
-	dnsStateMu.Lock()
+	dnsMu.Lock()
 	dnsSavedDNS = wantDNS
 	dnsSavedSearch = wantSearch
 	writeDNSJournalLocked()
-	dnsStateMu.Unlock()
+	dnsMu.Unlock()
 
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -86,25 +86,34 @@ func TestDNSJournalRejectsInsecureFile(t *testing.T) {
 	}
 }
 
-func TestClearDNSJournalOnlyWhenIdle(t *testing.T) {
-	path, _ := withJournal(t)
-	dnsStateMu.Lock()
-	dnsSavedDNS = map[string][]string{"Wi-Fi": {"1.1.1.1"}}
+// Releasing the last holder restores the baseline, then drops the journal.
+func TestLastReleaseRestoresBaselineAndClearsJournal(t *testing.T) {
+	path, restored := withJournal(t)
+	baseline := map[string][]string{"Wi-Fi": {"192.168.1.1"}}
+	dnsMu.Lock()
+	dnsSavedDNS = baseline
 	writeDNSJournalLocked()
-	dnsActiveIfaces["utun9"] = true // a new override is active
-	dnsStateMu.Unlock()
+	dnsHolders.set("utun9", []string{"10.0.0.1"})
+	dnsMu.Unlock()
 
-	clearDNSJournalIfIdle()
+	if err := (&DarwinManager{}).RestoreDNS("other"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("journal removed while an override is still active: %v", err)
+		t.Fatalf("unknown holder release touched the journal: %v", err)
 	}
 
-	dnsStateMu.Lock()
-	dnsActiveIfaces = make(map[string]bool)
-	dnsSavedDNS = make(map[string][]string)
-	dnsStateMu.Unlock()
-	clearDNSJournalIfIdle()
+	dnsMu.Lock()
+	dnsHolders.remove("utun9")
+	releaseOrReapplyLocked(nil)
+	dnsMu.Unlock()
+	if !reflect.DeepEqual(restored[0], baseline) {
+		t.Fatalf("baseline not restored: %v", restored[0])
+	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("journal not removed when idle: %v", err)
+		t.Fatalf("journal not removed after last release: %v", err)
+	}
+	if len(dnsSavedDNS) != 0 {
+		t.Fatalf("in-memory baseline not reset: %v", dnsSavedDNS)
 	}
 }

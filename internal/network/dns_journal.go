@@ -19,7 +19,7 @@ import (
 // RestoreDNSFromJournal, so dead VPN resolvers never outlive the helper.
 const DNSJournalFile = "dns-journal.json"
 
-// dnsJournalPath is guarded by dnsStateMu. Empty disables journaling.
+// dnsJournalPath is guarded by dnsMu. Empty disables journaling.
 var dnsJournalPath string
 
 // restoreBaselineFn is the function used to push a baseline back to the
@@ -34,13 +34,13 @@ type dnsJournal struct {
 // SetDNSJournalPath sets where the DNS baseline journal is kept. The helper
 // calls this once at startup with a path under its root-owned data dir.
 func SetDNSJournalPath(path string) {
-	dnsStateMu.Lock()
+	dnsMu.Lock()
 	dnsJournalPath = path
-	dnsStateMu.Unlock()
+	dnsMu.Unlock()
 }
 
 // writeDNSJournalLocked persists the current in-memory baseline. Caller must
-// hold dnsStateMu. Written atomically (temp file + rename), mode 0600.
+// hold dnsMu. Written atomically (temp file + rename), mode 0600.
 func writeDNSJournalLocked() {
 	if dnsJournalPath == "" {
 		return
@@ -55,13 +55,9 @@ func writeDNSJournalLocked() {
 	}
 }
 
-// clearDNSJournalIfIdle removes the journal, but only if no new DNS override
-// has started since the caller's restore began (otherwise the journal now
-// belongs to that new activation).
-func clearDNSJournalIfIdle() {
-	dnsStateMu.Lock()
-	defer dnsStateMu.Unlock()
-	if dnsJournalPath == "" || len(dnsActiveIfaces) > 0 || len(dnsSavedDNS) > 0 {
+// removeDNSJournalLocked deletes the journal. Caller must hold dnsMu.
+func removeDNSJournalLocked() {
+	if dnsJournalPath == "" {
 		return
 	}
 	if err := os.Remove(dnsJournalPath); err != nil && !os.IsNotExist(err) {
@@ -121,9 +117,9 @@ func loadDNSJournal(path string) (*dnsJournal, error) {
 // process and removes it. Must be called at helper startup, before any tunnel
 // is connected. Returns true if a journal was found and replayed.
 func RestoreDNSFromJournal() (bool, error) {
-	dnsStateMu.Lock()
+	dnsMu.Lock()
 	path := dnsJournalPath
-	dnsStateMu.Unlock()
+	dnsMu.Unlock()
 	if path == "" {
 		return false, nil
 	}

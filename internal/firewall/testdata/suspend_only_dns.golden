@@ -1,0 +1,3 @@
+# LockPlus
+pass quick on lo0 all
+block drop out quick proto {tcp, udp} to any port 53

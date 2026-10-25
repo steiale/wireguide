@@ -1,0 +1,15 @@
+# LockPlus
+scrub in all fragment reassemble
+scrub out all fragment reassemble
+pass quick on lo0 all
+pass out quick proto {tcp, udp} to any port 53 flags any
+pass out quick on utun4 proto {tcp, udp} to 10.0.0.1 port 53 flags any
+block drop out quick proto {tcp, udp} to any port 53
+pass out quick proto udp to 198.51.100.7 port 51820
+pass out quick proto udp to 2001:db8::7 port 51820
+pass out quick proto udp to 203.0.113.9 port 51821
+pass out quick proto udp from any port 68 to any port 67
+pass out quick proto udp from any port 546 to any port 547
+pass quick on utun4 all
+block drop out all
+block drop in all

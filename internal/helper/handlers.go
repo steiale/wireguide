@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -76,7 +77,6 @@ func (h *Helper) handleShutdown(params json.RawMessage) (interface{}, error) {
 }
 
 func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
-	// Serialize Connect calls so two GUIs can't race on activeCfg.
 	h.connectMu.Lock()
 	defer h.connectMu.Unlock()
 
@@ -85,9 +85,7 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 		return nil, err
 	}
 
-	// OpenVPN path: route to the OpenVPN manager. WireGuard logic below is
-	// unchanged. NormalizeProtocol treats an empty protocol as WireGuard so
-	// legacy GUI builds keep working.
+	// An empty protocol means WireGuard.
 	if domain.NormalizeProtocol(req.Protocol) == domain.ProtocolOpenVPN {
 		return h.connectOpenVPN(&req)
 	}
@@ -95,12 +93,7 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 	if req.Config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
-	// The tunnel name flows straight into filesystem paths (state files,
-	// UAPI socket lookups) — reject anything ValidateTunnelName wouldn't
-	// accept as a saved tunnel's name, same as the storage layer requires
-	// on save/rename. This helper runs as root and must not trust the
-	// caller's name to already be safe (see the equivalent check on the
-	// OpenVPN path in connectOpenVPN, added for the same reason).
+	// The name flows into root-owned file paths: never trust the caller.
 	if err := storage.ValidateTunnelName(req.Config.Name); err != nil {
 		return nil, fmt.Errorf("invalid tunnel name: %w", err)
 	}
@@ -130,175 +123,83 @@ func (h *Helper) handleConnect(params json.RawMessage) (interface{}, error) {
 		}
 	}
 
-	// M6: Early-return if this exact tunnel is already active. The manager
-	// would also catch this and return ErrAlreadyConnected, but checking up
-	// front avoids the unnecessary mutate-then-rollback dance on activeCfgs
-	// and lets the GUI treat it as a no-op via a typed error code.
-	h.mu.Lock()
-	_, alreadyCached := h.activeCfgs[req.Config.Name]
-	h.mu.Unlock()
-	if alreadyCached {
-		for _, n := range h.manager.ActiveTunnels() {
-			if n == req.Config.Name {
-				return nil, &ipc.CodedError{
-					Code:    ipc.ErrCodeAlreadyConnected,
-					Message: fmt.Sprintf("tunnel %q is already connected", req.Config.Name),
-				}
-			}
+	// Already up: a typed no-op for the GUI, without touching the cache.
+	name := req.Config.Name
+	if slices.Contains(h.manager.ActiveTunnels(), name) {
+		return nil, &ipc.CodedError{
+			Code:    ipc.ErrCodeAlreadyConnected,
+			Message: fmt.Sprintf("tunnel %q is already connected", name),
 		}
 	}
 
-	// Cache the active config BEFORE dispatching to the manager, so that if
-	// the reconnect monitor fires during Connect() it sees the new config
-	// (not nil or the previous one). Roll back on failure.
-	//
-	// H1: snapshot autoReconnect alongside activeCfgs so that a failed
-	// reconnect rollback restores the user's auto-reconnect preference,
-	// not the default zero value.
+	// Cache config + auto-reconnect before connecting (a death callback
+	// during Connect must see them); restore the previous values on failure.
 	h.mu.Lock()
-	prevCfgs := h.copyActiveCfgs()
-	prevAutoReconnect, prevHadAutoReconnect := h.autoReconnect[req.Config.Name]
-	h.activeCfgs[req.Config.Name] = req.Config
-	h.autoReconnect[req.Config.Name] = req.AutoReconnect
+	prevCfg, hadCfg := h.activeCfgs[name]
+	prevAuto, hadAuto := h.autoReconnect[name]
+	h.activeCfgs[name] = req.Config
+	h.autoReconnect[name] = req.AutoReconnect
 	h.mu.Unlock()
 
 	if err := h.manager.Connect(req.Config); err != nil {
 		h.mu.Lock()
-		delete(h.activeCfgs, req.Config.Name)
-		delete(h.autoReconnect, req.Config.Name)
-		// Restore previous config + autoReconnect if there was one.
-		if prev, ok := prevCfgs[req.Config.Name]; ok {
-			h.activeCfgs[req.Config.Name] = prev
+		delete(h.activeCfgs, name)
+		delete(h.autoReconnect, name)
+		if hadCfg {
+			h.activeCfgs[name] = prevCfg
 		}
-		if prevHadAutoReconnect {
-			h.autoReconnect[req.Config.Name] = prevAutoReconnect
+		if hadAuto {
+			h.autoReconnect[name] = prevAuto
 		}
 		h.mu.Unlock()
 		return nil, err
 	}
-	h.refreshKillSwitchIfEnabled("wg-connect", req.Config.Name)
+	_ = h.applyFirewall("wg-connect")
 	return ipc.Empty{}, nil
 }
 
 func (h *Helper) handleDisconnect(params json.RawMessage) (interface{}, error) {
+	var req ipc.DisconnectRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid disconnect request: %w", err)
+	}
+	name := req.TunnelName
+	if name == "" {
+		return nil, fmt.Errorf("tunnel_name is required")
+	}
+
+	// Holding connectMu makes a concurrent reconnectFn wait, then see the
+	// cleared auto-reconnect flag and give up instead of resurrecting the
+	// tunnel. Cleared before teardown so a death callback racing this
+	// disconnect can't schedule a reconnect either.
 	h.connectMu.Lock()
 	defer h.connectMu.Unlock()
-
-	// Parse optional tunnel name from request. Genuinely empty params means
-	// a legacy caller with no tunnel name — disconnect the first active
-	// tunnel (backward compat). But params that ARE present and fail to
-	// unmarshal are a malformed request, not "no name given" — silently
-	// falling through to the nameless path previously meant a garbled
-	// request tore down an arbitrary (first) tunnel instead of surfacing
-	// the actual error.
-	var tunnelName string
-	if len(params) > 0 {
-		var req ipc.DisconnectRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid disconnect request: %w", err)
-		}
-		tunnelName = req.TunnelName
-	}
-
-	// Cancel any in-flight reconnect backoff first — otherwise the monitor
-	// could wake up seconds after the user clicked Disconnect and re-connect
-	// against their wishes. Scoped to tunnelName so disconnecting one tunnel
-	// doesn't abort a different tunnel's still-in-progress recovery; the
-	// legacy nameless-disconnect path (tunnelName == "") still cancels
-	// every active retry, matching what it actually tears down.
 	if h.monitor != nil {
-		h.monitor.CancelRetry(tunnelName)
+		h.monitor.CancelRetry(name)
 	}
+	h.mu.Lock()
+	delete(h.activeCfgs, name)
+	delete(h.activeOVPNCfgs, name)
+	delete(h.autoReconnect, name)
+	delete(h.fwHeld, name)
+	h.mu.Unlock()
 
-	// OpenVPN tunnels are tracked separately. If the named tunnel is an active
-	// OpenVPN tunnel, route the disconnect there and return.
-	if tunnelName != "" && h.ovpnManager != nil {
-		for _, n := range h.ovpnManager.ActiveTunnelNames() {
-			if n == tunnelName {
-				// Clear BEFORE tearing down, same reasoning as the WireGuard
-				// path below: a concurrent "died unexpectedly" callback
-				// (ovpn.Manager.SetOnDied) must never see this tunnel as
-				// still wanting auto-reconnect once the user has explicitly
-				// asked to disconnect it.
-				h.mu.Lock()
-				delete(h.activeOVPNCfgs, tunnelName)
-				delete(h.autoReconnect, tunnelName)
-				h.mu.Unlock()
-				err := h.ovpnManager.Disconnect(tunnelName)
-				if h.monitor != nil {
-					// Cancel again in case onOVPNDied's NotifyTunnelDied
-					// registered a retry in the window between the
-					// CancelRetry at the top of this function and the
-					// autoReconnect clear just above — without this, an
-					// orphaned retry would keep calling reconnectFn for a
-					// tunnel with no cached config anymore, failing forever
-					// and flapping the kill switch on every backoff cycle.
-					h.monitor.CancelRetry(tunnelName)
-				}
-				return ipc.Empty{}, err
-			}
-		}
-	}
-
-	if tunnelName != "" {
-		// Clear BEFORE tearing down the manager-side tunnel (not after): if
-		// this disconnect races with a concurrent engine-death teardown for
-		// the same tunnel (tunnel.Manager's handleEngineDied, triggered by
-		// wireguard-go silently self-destructing — see Engine.Died),
-		// clearing the auto-reconnect gate first guarantees
-		// onWireGuardEngineDied's NotifyTunnelDied call can never reconnect
-		// a tunnel the user is actively disconnecting, regardless of which
-		// goroutine's cleanup happens to win the race.
-		h.mu.Lock()
-		delete(h.activeCfgs, tunnelName)
-		delete(h.autoReconnect, tunnelName)
-		h.mu.Unlock()
-		err := h.manager.DisconnectTunnel(tunnelName)
-		// Refresh regardless of err: DisconnectTunnel can legitimately
-		// report ErrNotConnected/ErrTimeout if the engine-death path
-		// already tore this tunnel down concurrently — it's gone either
-		// way, and the kill-switch ruleset needs to reflect that.
-		h.refreshKillSwitchIfEnabled("wg-disconnect", tunnelName)
-		if h.monitor != nil {
-			// Cancel again in case a retry was triggered in the narrow
-			// window between the CancelRetry above and the autoReconnect
-			// clear just now.
-			h.monitor.CancelRetry(tunnelName)
-		}
-		if err != nil && h.manager.IsTunnelConnected(tunnelName) {
-			// Only surface the error if the tunnel is actually still there —
-			// a concurrent engine-death teardown winning this exact race can
-			// make DisconnectTunnel report ErrNotConnected/ErrTimeout for a
-			// tunnel that is, from the user's point of view, already gone
-			// exactly as they asked. Confusing to show as a failure.
-			return nil, err
-		}
+	var err error
+	isOVPN := h.ovpnManager != nil && slices.Contains(h.ovpnManager.ActiveTunnelNames(), name)
+	if isOVPN {
+		err = h.ovpnManager.Disconnect(name)
 	} else {
-		// No name specified — disconnect first active OpenVPN tunnel if there
-		// is no WireGuard tunnel active, then fall through to WireGuard.
-		// MiniMode's Disconnect() call lands here.
-		if h.ovpnManager != nil && !h.manager.IsConnected() {
-			if ovpnNames := h.ovpnManager.ActiveTunnelNames(); len(ovpnNames) > 0 {
-				return ipc.Empty{}, h.ovpnManager.Disconnect(ovpnNames[0])
-			}
-		}
-		// Disconnect first WireGuard tunnel (backward compat). Same
-		// clear-before-teardown reasoning as the named-tunnel branch above.
-		activeName := h.manager.ActiveTunnel()
-		if activeName != "" {
-			h.mu.Lock()
-			delete(h.activeCfgs, activeName)
-			delete(h.autoReconnect, activeName)
-			h.mu.Unlock()
-		}
-		err := h.manager.Disconnect()
-		h.refreshKillSwitchIfEnabled("wg-disconnect", activeName)
-		if h.monitor != nil && activeName != "" {
-			h.monitor.CancelRetry(activeName)
-		}
-		if err != nil {
-			return nil, err
-		}
+		err = h.manager.DisconnectTunnel(name)
+	}
+	if h.monitor != nil {
+		h.monitor.CancelRetry(name) // a retry registered by a racing death callback
+	}
+	_ = h.applyFirewall("disconnect")
+
+	// A concurrent engine-death teardown can make DisconnectTunnel report
+	// not-connected for a tunnel that is gone exactly as asked.
+	if err != nil && (isOVPN || h.manager.IsTunnelConnected(name)) {
+		return nil, err
 	}
 	return ipc.Empty{}, nil
 }
@@ -325,73 +226,39 @@ func (h *Helper) handleActiveName(params json.RawMessage) (interface{}, error) {
 func (h *Helper) handleActiveTunnels(params json.RawMessage) (interface{}, error) {
 	names := h.manager.ActiveTunnels()
 	if h.ovpnManager != nil {
-		for _, n := range h.ovpnManager.ActiveTunnelNames() {
-			names = append(names, n)
-		}
+		names = append(names, h.ovpnManager.ActiveTunnelNames()...)
 	}
 	return ipc.ActiveTunnelsResponse{Names: names}, nil
 }
 
+// handleSetKillSwitch sets the kill switch policy (see firewall.go): stored,
+// applied now if a tunnel is up, and on every later tunnel transition.
 func (h *Helper) handleSetKillSwitch(params json.RawMessage) (interface{}, error) {
 	var req ipc.KillSwitchRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
-	// A manual toggle is authoritative — it must win over any stale
-	// suspend/resume bookkeeping left behind by a cancelled or abandoned
-	// reconnect retry sequence (see clearFirewallSuspendState).
-	h.clearFirewallSuspendState()
-	if req.Enabled {
-		if err := h.enableKillSwitchNow(); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := h.firewall.DisableKillSwitch(); err != nil {
-			return nil, err
-		}
+	h.mu.Lock()
+	h.policy.killSwitch = req.Enabled
+	h.mu.Unlock()
+	if err := h.applyFirewall("policy"); err != nil {
+		return nil, err
 	}
 	return ipc.Empty{}, nil
 }
 
+// handleSetDNSProtection sets the DNS protection policy. The allowed
+// servers are derived from the active tunnels; req.DNSServers is ignored.
 func (h *Helper) handleSetDNSProtection(params json.RawMessage) (interface{}, error) {
 	var req ipc.DNSProtectionRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
-	// See handleSetKillSwitch — same rationale.
-	h.clearFirewallSuspendState()
-	if req.Enabled {
-		// DNS protection uses a single tunnel's interface name for the pf
-		// rule. This is intentional: the pf rule blocks port 53 globally
-		// and only allows it through the tunnel interface. With multiple
-		// tunnels, using the first connected tunnel's interface is
-		// sufficient because the DNS protection rule is a global "block
-		// port 53 except on <tunnel_iface>" anchor — any tunnel interface
-		// will work as the exception — which is also why it's fine to
-		// prefer WireGuard's interface when both protocols are active and
-		// fall back to the first active OpenVPN tunnel's when WireGuard
-		// isn't connected, rather than needing to pick "the right" one.
-		ifaceName := ""
-		if status := h.manager.Status(); status.State == tunnel.StateConnected {
-			ifaceName = status.InterfaceName
-		} else if h.ovpnManager != nil {
-			for _, ovpnStatus := range h.ovpnManager.AllStatuses() {
-				if ovpnStatus.State == domain.StateConnected && ovpnStatus.InterfaceName != "" {
-					ifaceName = ovpnStatus.InterfaceName
-					break
-				}
-			}
-		}
-		if ifaceName == "" {
-			return nil, fmt.Errorf("no active tunnel")
-		}
-		if err := h.firewall.EnableDNSProtection(ifaceName, req.DNSServers); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := h.firewall.DisableDNSProtection(); err != nil {
-			return nil, err
-		}
+	h.mu.Lock()
+	h.policy.dnsProtection = req.Enabled
+	h.mu.Unlock()
+	if err := h.applyFirewall("policy"); err != nil {
+		return nil, err
 	}
 	return ipc.Empty{}, nil
 }
@@ -426,12 +293,7 @@ func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
 	if req.TunnelName == "" {
 		return nil, fmt.Errorf("tunnel_name is required for OpenVPN")
 	}
-	// The name is interpolated directly into runtime file paths in
-	// ovpn.Manager (configPath/sockPath) with no sanitization of
-	// its own — reject anything ValidateTunnelName wouldn't accept as a
-	// saved tunnel's name before it ever reaches that code, or a name like
-	// "../../../etc/foo" lets a caller make this root process write an
-	// attacker-controlled file outside its runtime dir.
+	// The name becomes root-owned runtime file paths in ovpn.Manager.
 	if err := storage.ValidateTunnelName(req.TunnelName); err != nil {
 		return nil, fmt.Errorf("invalid tunnel name: %w", err)
 	}
@@ -443,30 +305,22 @@ func (h *Helper) connectOpenVPN(req *ipc.ConnectRequest) (interface{}, error) {
 		return nil, fmt.Errorf("invalid openvpn config: %w", err)
 	}
 
-	// The openvpn binary is only ever exec'd from the root-owned helper
-	// tools dir (see Run) — no app-bundle fallback. Surface an actionable
-	// error instead of ovpn.Manager's bare "not found".
+	// openvpn only runs from the root-owned helper dir (see Run).
 	if _, err := os.Stat(h.ovpnBinary); err != nil {
 		return nil, fmt.Errorf("OpenVPN is unavailable: %s is missing — reinstall the helper (quit and relaunch LockPlus, then approve the admin prompt)", h.ovpnBinary)
 	}
 
-	// Already active? Treat as a no-op via the typed code (matches WireGuard).
-	for _, n := range h.ovpnManager.ActiveTunnelNames() {
-		if n == req.TunnelName {
-			return nil, &ipc.CodedError{
-				Code:    ipc.ErrCodeAlreadyConnected,
-				Message: fmt.Sprintf("tunnel %q is already connected", req.TunnelName),
-			}
+	if slices.Contains(h.ovpnManager.ActiveTunnelNames(), req.TunnelName) {
+		return nil, &ipc.CodedError{
+			Code:    ipc.ErrCodeAlreadyConnected,
+			Message: fmt.Sprintf("tunnel %q is already connected", req.TunnelName),
 		}
 	}
 
-	// Cache the raw config + auto-reconnect preference BEFORE dispatching,
-	// mirroring handleConnect's WireGuard path — the reconnect monitor's
-	// NotifyTunnelDied (wired to ovpn.Manager.SetOnDied) needs both to
-	// recover this tunnel if it later dies unexpectedly. Without this, the
-	// OpenVPN "auto-reconnect" toggle was silently a no-op: nothing ever
-	// recorded the preference, so shouldReconnectFn always saw false.
+	// Cached for the reconnect monitor, as on the WireGuard path. A new
+	// attempt clears the previous error.
 	h.mu.Lock()
+	delete(h.ovpnErrors, req.TunnelName)
 	h.activeOVPNCfgs[req.TunnelName] = []byte(req.OVPNConfig)
 	h.autoReconnect[req.TunnelName] = req.AutoReconnect
 	h.mu.Unlock()

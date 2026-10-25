@@ -1,0 +1,7 @@
+# LockPlus
+pass quick on lo0 all
+pass out quick on utun4 proto {tcp, udp} to 10.0.0.1 port 53 flags any
+pass out quick on utun6 proto {tcp, udp} to 10.0.0.1 port 53 flags any
+pass out quick on utun4 proto {tcp, udp} to fd00::1 port 53 flags any
+pass out quick on utun6 proto {tcp, udp} to fd00::1 port 53 flags any
+block drop out quick proto {tcp, udp} to any port 53

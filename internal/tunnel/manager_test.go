@@ -23,7 +23,6 @@ type mockNetworkManager struct {
 	setMTUErr        error
 	bringUpErr       error
 	addRoutesErr     error
-	removeRoutesErr  error
 	setDNSErr        error
 	restoreDNSErr    error
 	cleanupErr       error
@@ -59,18 +58,11 @@ func (m *mockNetworkManager) BringUp(string) error {
 	return m.bringUpErr
 }
 
-func (m *mockNetworkManager) AddRoutes(string, []string, bool, []string, string, string) error {
+func (m *mockNetworkManager) AddRoutes(string, []string, bool, []string, string) error {
 	m.mu.Lock()
 	m.routeCalls++
 	m.mu.Unlock()
 	return m.addRoutesErr
-}
-
-func (m *mockNetworkManager) RemoveRoutes(string, []string, bool) error {
-	m.mu.Lock()
-	m.cleanupCalls++ // counts as cleanup-related
-	m.mu.Unlock()
-	return m.removeRoutesErr
 }
 
 func (m *mockNetworkManager) SetDNS(string, []string) error {
@@ -80,8 +72,7 @@ func (m *mockNetworkManager) SetDNS(string, []string) error {
 	return m.setDNSErr
 }
 
-func (m *mockNetworkManager) RestoreDNS(string) error        { return m.restoreDNSErr }
-func (m *mockNetworkManager) ResetDNSToSystemDefault() error { return nil }
+func (m *mockNetworkManager) RestoreDNS(string) error { return m.restoreDNSErr }
 func (m *mockNetworkManager) Cleanup(string) error {
 	m.mu.Lock()
 	m.cleanupCalls++
@@ -488,7 +479,7 @@ func TestDisconnect_Success(t *testing.T) {
 		t.Fatalf("Connect failed: %v", err)
 	}
 
-	if err := mgr.Disconnect(); err != nil {
+	if err := mgr.DisconnectTunnel("vpn1"); err != nil {
 		t.Fatalf("Disconnect failed: %v", err)
 	}
 
@@ -508,7 +499,7 @@ func TestDisconnect_NotConnected(t *testing.T) {
 	net := &mockNetworkManager{}
 	mgr := newTestManagerWithDir(net, succeedingFactory(), dir)
 
-	err := mgr.Disconnect()
+	err := mgr.DisconnectTunnel("vpn1")
 	assertTunnelError(t, err, ErrNotConnected)
 }
 
@@ -527,7 +518,7 @@ func TestDisconnect_WaitsForConnectToFinish(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Disconnect should wait for Connect to finish, then disconnect.
-	if err := mgr.Disconnect(); err != nil {
+	if err := mgr.DisconnectTunnel("vpn1"); err != nil {
 		t.Fatalf("Disconnect failed: %v", err)
 	}
 
@@ -713,49 +704,29 @@ func TestActiveTunnel_DuringConnecting(t *testing.T) {
 	}
 }
 
-func TestResolvedEndpointIPs_NoEngine(t *testing.T) {
-	dir := t.TempDir()
-	mgr := newTestManagerWithDir(&mockNetworkManager{}, succeedingFactory(), dir)
-
-	if ips := mgr.ResolvedEndpointIPs(); ips != nil {
-		t.Fatalf("expected nil, got %v", ips)
+func TestConnectedTunnels(t *testing.T) {
+	mgr := newTestManagerWithDir(&mockNetworkManager{}, succeedingFactory(), t.TempDir())
+	if got := mgr.ConnectedTunnels(); got != nil {
+		t.Fatalf("expected none, got %v", got)
 	}
-}
-
-func TestResolvedEndpoints_NoEngine(t *testing.T) {
-	dir := t.TempDir()
-	mgr := newTestManagerWithDir(&mockNetworkManager{}, succeedingFactory(), dir)
-
-	if eps := mgr.ResolvedEndpoints(); eps != nil {
-		t.Fatalf("expected nil, got %v", eps)
+	cfg := testConfig("vpn2")
+	cfg.Interface.DNS = []string{"10.0.0.1", "corp.example"}
+	for _, c := range []*domain.WireGuardConfig{cfg, testConfig("vpn1")} {
+		if err := mgr.Connect(c); err != nil {
+			t.Fatalf("Connect %s failed: %v", c.Name, err)
+		}
 	}
-}
+	setTunnelEntry(mgr, "vpn3", domain.StateConnecting, testConfig("vpn3"), nil)
 
-func TestResolvedEndpointIPs_WithEngine(t *testing.T) {
-	dir := t.TempDir()
-	mgr := newTestManagerWithDir(&mockNetworkManager{}, succeedingFactory(), dir)
-
-	if err := mgr.Connect(testConfig("vpn1")); err != nil {
-		t.Fatalf("Connect failed: %v", err)
+	got := mgr.ConnectedTunnels()
+	if len(got) != 2 || got[0].Name != "vpn1" || got[1].Name != "vpn2" {
+		t.Fatalf("expected vpn1, vpn2 sorted, got %+v", got)
 	}
-
-	ips := mgr.ResolvedEndpointIPs()
-	if len(ips) != 1 || ips[0] != "1.2.3.4" {
-		t.Fatalf("expected [1.2.3.4], got %v", ips)
+	if got[1].InterfaceName != "utun42" || len(got[1].Endpoints) != 1 || got[1].Endpoints[0] != "1.2.3.4:51820" {
+		t.Fatalf("unexpected tunnel info %+v", got[1])
 	}
-}
-
-func TestResolvedEndpoints_WithEngine(t *testing.T) {
-	dir := t.TempDir()
-	mgr := newTestManagerWithDir(&mockNetworkManager{}, succeedingFactory(), dir)
-
-	if err := mgr.Connect(testConfig("vpn1")); err != nil {
-		t.Fatalf("Connect failed: %v", err)
-	}
-
-	eps := mgr.ResolvedEndpoints()
-	if len(eps) != 1 || eps[0] != "1.2.3.4:51820" {
-		t.Fatalf("expected [1.2.3.4:51820], got %v", eps)
+	if len(got[1].DNS) != 2 {
+		t.Fatalf("DNS not reported: %+v", got[1])
 	}
 }
 
@@ -819,7 +790,7 @@ func TestConnectDisconnect_FullCycle(t *testing.T) {
 		if !mgr.IsConnected() {
 			t.Fatalf("cycle %d: expected connected", i)
 		}
-		if err := mgr.Disconnect(); err != nil {
+		if err := mgr.DisconnectTunnel("vpn1"); err != nil {
 			t.Fatalf("cycle %d: Disconnect failed: %v", i, err)
 		}
 		if mgr.IsConnected() {
@@ -974,43 +945,15 @@ func TestIsTunnelConnected(t *testing.T) {
 	}
 }
 
-func TestStatusFor(t *testing.T) {
-	dir := t.TempDir()
-	mgr := newTestManagerWithDir(&mockNetworkManager{}, succeedingFactory(), dir)
-
-	// Not connected — should return disconnected.
-	status := mgr.StatusFor("vpn1")
-	if status.State != domain.StateDisconnected {
-		t.Fatalf("expected disconnected, got %s", status.State)
-	}
-
-	// Connect.
+func TestAllStatuses_ReportsEveryEntryByName(t *testing.T) {
+	mgr := newTestManagerWithDir(&mockNetworkManager{}, succeedingFactory(), t.TempDir())
+	setTunnelEntry(mgr, "vpn2", domain.StateError, testConfig("vpn2"), nil)
 	setTunnelEntry(mgr, "vpn1", domain.StateConnecting, testConfig("vpn1"), nil)
-	status = mgr.StatusFor("vpn1")
-	if status.State != domain.StateConnecting {
-		t.Fatalf("expected connecting, got %s", status.State)
-	}
-}
 
-func TestResolvedEndpoints_MultiTunnel(t *testing.T) {
-	dir := t.TempDir()
-	mgr := newTestManagerWithDir(&mockNetworkManager{}, succeedingFactory(), dir)
-
-	if err := mgr.Connect(testConfig("vpn1")); err != nil {
-		t.Fatalf("Connect vpn1 failed: %v", err)
-	}
-	if err := mgr.Connect(testConfig("vpn2")); err != nil {
-		t.Fatalf("Connect vpn2 failed: %v", err)
-	}
-
-	ips := mgr.ResolvedEndpointIPs()
-	if len(ips) != 2 {
-		t.Fatalf("expected 2 endpoint IPs, got %d: %v", len(ips), ips)
-	}
-
-	eps := mgr.ResolvedEndpoints()
-	if len(eps) != 2 {
-		t.Fatalf("expected 2 endpoints, got %d: %v", len(eps), eps)
+	got := mgr.AllStatuses()
+	if len(got) != 2 || got[0].TunnelName != "vpn1" || got[0].State != domain.StateConnecting ||
+		got[1].TunnelName != "vpn2" || got[1].State != domain.StateError {
+		t.Fatalf("unexpected statuses: %+v %+v", got[0], got[1])
 	}
 }
 
@@ -1027,6 +970,12 @@ func TestConnect_FullTunnelConflict(t *testing.T) {
 	// Second full-tunnel connect should be rejected.
 	err := mgr.Connect(testFullTunnelConfig("vpn-full-2"))
 	assertTunnelError(t, err, ErrFullTunnelConflict)
+	// The rejected connect must not leave an entry behind.
+	for _, st := range mgr.AllStatuses() {
+		if st.TunnelName != "vpn-full-1" {
+			t.Fatalf("rejected connect left entry %+v", st)
+		}
+	}
 
 	// A split-tunnel should still be allowed alongside a full-tunnel.
 	if err := mgr.Connect(testConfig("vpn-split")); err != nil {
